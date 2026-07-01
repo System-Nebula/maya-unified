@@ -1,0 +1,27 @@
+[project]
+name = "maya-bot"
+version = "0.1.0"
+description = "Self-hostable Maya Discord bot — /imagine ComfyUI arena"
+requires-python = ">=3.11"
+dependencies = [
+    "maya-image",
+    "maya-db",
+    "discord.py>=2.3",
+    "python-dotenv>=1.0",
+    "structlog>=24.0",
+    "opentelemetry-api>=1.20",
+]
+
+[project.scripts]
+maya-bot = "maya_bot.launcher:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maya_bot"]
+
+[tool.uv.sources]
+maya-image = { workspace = true }
+maya-db = { workspace = true }
