@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Memory — Maya Unified</title>
+    <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-dashboard.css" />
+  </head>
+  <body>
+    <header class="mu-shell" x-data="mayaShell()" x-init="init()">
+      <div class="mu-brand">Maya <span>Unified</span></div>
+      <nav class="mu-nav">
+        <a href="/" :class="{ active: s.page === 'dashboard' }">Dashboard</a>
+        <a href="/memory" :class="{ active: s.page === 'memory' }">Memory</a>
+        <a href="/settings" :class="{ active: s.page === 'settings' }">Settings</a>
+        <a href="/docs" target="_blank" rel="noopener">API</a>
+      </nav>
+      <div class="mu-status">
+        <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
+        <span class="mu-hint" x-show="s.hint()" x-text="s.hint()"></span>
+      </div>
+    </header>
+
+    <div class="md-page mv-root" data-mv-theme="dark">
+      <div class="md-hero">
+        <h1>Memory</h1>
+        <p>Curated facts, semantic recall, session search, and database explorer.</p>
+      </div>
+
+      <section class="md-memory-section md-memory-page" x-data="mayaMemoryPanel()" x-init="init()">
+        <div class="md-memory-head">
+          <div>
+            <p class="mv-eyebrow">Recall</p>
+            <h2 class="mv-title" style="font-size:16px;margin:0">Agent memory</h2>
+          </div>
+          <button type="button" class="mv-btn" @click="refresh()" :disabled="loading">Refresh</button>
+        </div>
+
+        <p class="md-banner error" x-show="error" x-text="error"></p>
+        <p class="mv-desc" x-show="!loading && !enabled">Memory is disabled — turn on in <a href="/settings" style="color:var(--mv-accent)">Settings → Memory</a> and save (agent reloads automatically).</p>
+        <p class="mv-desc" x-show="!agentReady && !loading">Waiting for agent…</p>
+
+        <template x-if="enabled && agentReady">
+          <div>
+            <div class="md-memory-grid">
+              <div class="md-memory-card">
+                <div class="md-memory-card-head">
+                  <h3>User profile</h3>
+                  <span class="mv-mono" style="font-size:11px;color:var(--mv-muted)" x-text="userUsage"></span>
+                </div>
+                <ul class="md-mem-list">
+                  <template x-for="(text, i) in userEntries" :key="'u'+i">
+                    <li>
+                      <span x-text="text"></span>
+                      <button type="button" class="md-mem-del" @click="removeEntry('user', text)" title="Remove">×</button>
+                    </li>
+                  </template>
+                  <li class="md-empty" x-show="!userEntries.length">No entries yet</li>
+                </ul>
+                <div class="md-mem-add">
+                  <input class="mv-input" x-model="userAdd" placeholder="Add a fact about you…" @keydown.enter.prevent="addEntry('user')" />
+                  <button type="button" class="mv-btn mv-btn-primary" @click="addEntry('user')">Add</button>
+                </div>
+              </div>
+
+              <div class="md-memory-card">
+                <div class="md-memory-card-head">
+                  <h3>Agent notes</h3>
+                  <span class="mv-mono" style="font-size:11px;color:var(--mv-muted)" x-text="memUsage"></span>
+                </div>
+                <ul class="md-mem-list">
+                  <template x-for="(text, i) in memEntries" :key="'m'+i">
+                    <li>
+                      <span x-text="text"></span>
+                      <button type="button" class="md-mem-del" @click="removeEntry('memory', text)" title="Remove">×</button>
+                    </li>
+                  </template>
+                  <li class="md-empty" x-show="!memEntries.length">No entries yet</li>
+                </ul>
+                <div class="md-mem-add">
+                  <input class="mv-input" x-model="memAdd" placeholder="Add a note Maya should remember…" @keydown.enter.prevent="addEntry('memory')" />
+                  <button type="button" class="mv-btn mv-btn-primary" @click="addEntry('memory')">Add</button>
+                </div>
+              </div>
+
+              <div class="md-memory-card">
+                <div class="md-memory-card-head"><h3>Semantic memory</h3></div>
+                <p class="mv-desc" style="margin:0" x-text="cognitive.total ? (cognitive.total + ' stored · ' + (cognitive.model || 'embeddings') + (cognitive.loaded ? ' · loaded' : ' · lazy')) : 'No semantic memories yet'"></p>
+              </div>
+
+              <div class="md-memory-card">
+                <div class="md-memory-card-head"><h3>Skills</h3></div>
+                <ul class="md-mem-list md-skill-list">
+                  <template x-for="s in skills" :key="s.name">
+                    <li class="md-skill-row" @click="loadSkill(s.name)">
+                      <strong x-text="s.name"></strong>
+                      <span class="mv-desc" x-text="s.description || ''"></span>
+                    </li>
+                  </template>
+                  <li class="md-empty" x-show="!skills.length">No skills yet</li>
+                </ul>
+                <pre class="md-skill-detail" x-show="skillDetail" x-text="skillDetail"></pre>
+              </div>
+            </div>
+
+            <div class="md-memory-card" x-show="pending.length" style="margin-top:14px">
+              <div class="md-memory-card-head"><h3>Pending approvals</h3></div>
+              <ul class="md-mem-list">
+                <template x-for="p in pending" :key="p.id">
+                  <li class="md-pending-row">
+                    <span x-text="pendingLabel(p)"></span>
+                    <div class="md-pending-actions">
+                      <button type="button" class="mv-btn mv-btn-primary" @click="approvePending(p.id)">Approve</button>
+                      <button type="button" class="mv-btn" @click="rejectPending(p.id)">Reject</button>
+                    </div>
+                  </li>
+                </template>
+              </ul>
+            </div>
+
+            <div class="md-memory-card" style="margin-top:14px">
+              <div class="md-memory-card-head"><h3>Search past conversations</h3></div>
+              <div class="md-mem-add">
+                <input class="mv-input" x-model="searchQuery" placeholder="e.g. what did we talk about yesterday…" @keydown.enter.prevent="runSearch()" />
+                <button type="button" class="mv-btn mv-btn-primary" @click="runSearch()">Search</button>
+              </div>
+              <ul class="md-mem-list" style="margin-top:10px">
+                <template x-for="(r, i) in searchResults" :key="'sr'+i">
+                  <li><span x-text="searchResultLabel(r)"></span></li>
+                </template>
+                <li class="md-empty" x-show="searchQuery && !searchResults.length">No matches</li>
+              </ul>
+            </div>
+
+            <div class="md-memory-card" style="margin-top:14px">
+              <div class="md-memory-card-head">
+                <h3>Explore databases</h3>
+                <span class="mv-mono" style="font-size:11px;color:var(--mv-muted)" x-text="dbPageLabel"></span>
+              </div>
+              <div class="md-db-toolbar">
+                <select class="mv-select" x-model="db" @change="onDbChange()">
+                  <option value="state">state.db (sessions)</option>
+                  <option value="cognitive">cognitive.db (semantic)</option>
+                </select>
+                <select class="mv-select" x-show="db === 'state'" x-model="dbSessionId" @change="onDbChange()">
+                  <option value="">All sessions</option>
+                  <template x-for="s in sessions" :key="s.session_id">
+                    <option :value="s.session_id" x-text="s.session_id + ' (' + s.messages + ' msgs)'"></option>
+                  </template>
+                </select>
+                <input class="mv-input" x-show="db === 'cognitive'" x-model="dbScope" placeholder="Scope filter" @change="onDbChange()" style="max-width:160px" />
+                <button type="button" class="mv-btn" @click="exploreDb(false)">Refresh</button>
+              </div>
+              <div class="md-db-table-wrap">
+                <table class="md-db-table">
+                  <thead>
+                    <tr>
+                      <template x-for="col in dbColumns" :key="col">
+                        <th x-text="col"></th>
+                      </template>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="(row, ri) in dbRows" :key="ri">
+                      <tr>
+                        <td x-text="row.id"></td>
+                        <td x-text="row.time"></td>
+                        <td x-text="row.session || row.scope"></td>
+                        <td x-text="row.role || row.imp"></td>
+                        <td class="md-db-content" x-text="row.content"></td>
+                      </tr>
+                    </template>
+                    <tr x-show="!dbRows.length">
+                      <td :colspan="dbColumns.length || 5" class="md-empty">No rows</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="md-db-pager">
+                <button type="button" class="mv-btn" @click="dbPrev()" :disabled="!dbHasPrev">Previous</button>
+                <button type="button" class="mv-btn" @click="dbNext()" :disabled="!dbHasNext">Next</button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </section>
+    </div>
+
+    <script defer src="/dashboard/js/mayaShell.js"></script>
+    <script defer src="/dashboard/js/mayaMemoryPanel.js"></script>
+    <script defer src="/sdk/vendor/alpine.min.js"></script>
+  </body>
+</html>

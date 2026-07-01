@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>qwen3 Standalone — Maya Unified</title>
+    <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
+    <style>
+      .xp-wrap { max-width: 720px; margin: 0 auto; padding: 32px 24px 64px; }
+      .xp-hero h1 { font-size: 1.5rem; font-weight: 600; margin: 0 0 8px; color: var(--mv-text, #f5f5f5); }
+      .xp-hero p { color: var(--mv-muted, #9ca3af); line-height: 1.6; margin: 0 0 20px; }
+      .xp-card {
+        background: var(--mv-surface, #1a1a1a);
+        border: 1px solid var(--mv-line, rgba(255,255,255,0.08));
+        padding: 20px;
+        margin-bottom: 16px;
+      }
+      .xp-card h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mv-muted); margin: 0 0 12px; }
+      .xp-card p, .xp-card li { color: var(--mv-text); line-height: 1.55; font-size: 14px; }
+      .xp-card ul { margin: 8px 0 0; padding-left: 1.2rem; }
+      .xp-warn {
+        border-color: rgba(245, 158, 11, 0.35);
+        background: rgba(245, 158, 11, 0.08);
+      }
+      .xp-warn strong { color: #fbbf24; }
+      pre {
+        background: #0a0a0a;
+        border: 1px solid var(--mv-line);
+        padding: 14px 16px;
+        overflow-x: auto;
+        font-size: 13px;
+        line-height: 1.5;
+        margin: 12px 0 0;
+        color: #e5e5e5;
+      }
+      .xp-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+      .xp-btn {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 10px 16px; font-size: 13px; font-weight: 500;
+        border: 1px solid var(--mv-line); background: var(--mv-surface-2, #222);
+        color: var(--mv-text); text-decoration: none; cursor: pointer;
+      }
+      .xp-btn:hover { border-color: rgba(139, 92, 246, 0.5); }
+      .xp-btn.primary { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+      .xp-mono { font-family: ui-monospace, monospace; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <header class="mu-shell" x-data="mayaShell()" x-init="init()">
+      <div class="mu-brand">Maya <span>Unified</span></div>
+      <nav class="mu-nav">
+        <a href="/" :class="{ active: s.page === 'dashboard' }">Dashboard</a>
+        <a href="/settings" :class="{ active: s.page === 'settings' }">Settings</a>
+        <a href="/experimental" :class="{ active: s.page === 'experimental' }">Standalone</a>
+        <a href="/docs" target="_blank" rel="noopener">API</a>
+      </nav>
+      <div class="mu-status">
+        <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
+        <span class="mu-hint" x-show="s.hint()" x-text="s.hint()"></span>
+      </div>
+    </header>
+
+    <div class="xp-wrap mv-root" data-mv-theme="dark">
+      <div class="xp-hero">
+        <h1>qwen3-voice-agent (standalone)</h1>
+        <p>
+          The original qwen3 WebUI is a <strong>separate project</strong>. Maya Unified does not embed or proxy it —
+          that would attach a second UI to the same voice stack and waste VRAM.
+        </p>
+      </div>
+
+      <div class="xp-card xp-warn">
+        <h2>Important</h2>
+        <p>
+          <strong>Do not run both servers at once</strong> unless you intend to load models twice.
+          Use Maya Unified (<span class="xp-mono">launch.py</span> on port 8090) <em>or</em> the standalone qwen3 server — not both for the same session.
+        </p>
+      </div>
+
+      <div class="xp-card">
+        <h2>Run the standalone WebUI</h2>
+        <p>From the repo root, in a <em>separate</em> terminal:</p>
+        <pre>cd qwen3-voice-agent
+.venv\Scripts\python.exe server.py</pre>
+        <p style="margin-top:12px">Default URL: <span class="xp-mono">http://localhost:7861</span></p>
+        <div class="xp-actions">
+          <a class="xp-btn primary" href="http://localhost:7861" target="_blank" rel="noopener noreferrer">Open qwen3 UI (7861)</a>
+          <a class="xp-btn" href="/">Back to Unified Dashboard</a>
+        </div>
+      </div>
+
+      <div class="xp-card">
+        <h2>What lives where</h2>
+        <ul>
+          <li><strong>Maya Unified</strong> — dashboard, settings, memory/tools/EQ panels, one voice agent instance via <span class="xp-mono">/api/voice/agent/*</span>.</li>
+          <li><strong>qwen3-voice-agent</strong> — read-only upstream; run <span class="xp-mono">server.py</span> only when you want the legacy full WebUI in isolation.</li>
+          <li><strong>Shared data</strong> — agent memory/DBs are copied into <span class="xp-mono">maya-unified/data/</span> on first start; standalone qwen3 still uses its own <span class="xp-mono">qwen3-voice-agent/data/</span> unless you sync manually.</li>
+        </ul>
+      </div>
+    </div>
+
+    <script defer src="/dashboard/js/mayaShell.js"></script>
+    <script defer src="/sdk/vendor/alpine.min.js"></script>
+  </body>
+</html>

@@ -1,0 +1,86 @@
+"""Unified settings API — full schema persistence for dashboard."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Body
+
+from services.settings.catalog import (
+    CLONE_MODELS,
+    CUSTOM_TTS_MODELS,
+    LITELLM_MODELS,
+    TTS_LANGUAGES,
+    WEBLLM_MODELS,
+    fetch_openai_models,
+)
+from services.settings.store import load_settings
+from services.voice.hub import hub
+
+router = APIRouter(prefix="/api/voice/settings", tags=["voice-settings"])
+
+
+@router.get("")
+def get_settings() -> dict:
+    return {"ok": True, "settings": load_settings()}
+
+
+@router.get("/catalog")
+def settings_catalog() -> dict:
+    """UI catalogs for dropdowns (EQ presets, voices, SDK defaults)."""
+    catalog: dict = {
+        "barge_modes": ["smart", "instant", "off"],
+        "delivery_modes": ["full", "hybrid", "off"],
+        "tts_modes": ["clone", "custom"],
+        "whisper_models": ["tiny.en", "base.en", "small.en", "medium.en", "large-v3"],
+        "compute_types": ["float16", "int8", "float32"],
+        "stt_devices": ["cuda", "cpu"],
+        "speakers": ["aiden", "vivian", "serena", "ryan", "ethan", "nico"],
+        "eq_presets": [],
+        "voices": [],
+        "detection_modes": ["vad", "push_to_talk", "continuous"],
+        "wispr_models": ["wispr-flow-1", "wispr-flow-1-fast", "wispr-flow-pro"],
+        "reasoning_models": ["maya-reason-mini", "maya-reason", "maya-reason-pro"],
+        "languages": ["en", "es", "fr", "de", "ja", "pt"],
+        "llm_models": [],
+        "litellm_models": [{"id": m, "label": m} for m in LITELLM_MODELS],
+        "webllm_models": WEBLLM_MODELS,
+        "clone_models": [{"id": m, "label": m} for m in CLONE_MODELS],
+        "custom_tts_models": [{"id": m, "label": m} for m in CUSTOM_TTS_MODELS],
+        "tts_languages": TTS_LANGUAGES,
+        "personas": ["maya", "operator", "assistant", "technical", "friendly", "professional"],
+    }
+    settings = load_settings()
+    reasoning = settings.get("reasoning", {})
+    catalog["llm_models"] = fetch_openai_models(
+        str(reasoning.get("base_url", "")),
+        str(reasoning.get("api_key", "")),
+    )
+    if not catalog["llm_models"] and reasoning.get("model"):
+        mid = str(reasoning["model"])
+        catalog["llm_models"] = [{"id": mid, "label": mid}]
+    try:
+        from eq import list_eq_presets
+
+        catalog["eq_presets"] = list_eq_presets()
+    except Exception:  # noqa: BLE001
+        catalog["eq_presets"] = [{"id": "off", "label": "Off (bypass)"}]
+    try:
+        from server import _list_voices
+
+        catalog["voices"] = _list_voices()
+    except Exception:  # noqa: BLE001
+        pass
+    if hub.ready and hub.agent is not None:
+        try:
+            speakers = hub.agent.voice.list_speakers()
+            if speakers:
+                catalog["speakers"] = speakers
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "catalog": catalog}
+
+
+@router.post("")
+def patch_settings(data: dict = Body(...)) -> dict:
+    patch = data.get("settings", data) if isinstance(data, dict) else {}
+    merged = hub.apply_settings_patch(patch if isinstance(patch, dict) else {})
+    return {"ok": True, "settings": merged}

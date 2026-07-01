@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Settings — Maya Unified</title>
+    <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-settings.css" />
+  </head>
+  <body>
+    <header class="mu-shell" x-data="mayaShell()" x-init="init()">
+      <div class="mu-brand">Maya <span>Unified</span></div>
+      <nav class="mu-nav">
+        <a href="/" :class="{ active: s.page === 'dashboard' }">Dashboard</a>
+        <a href="/memory" :class="{ active: s.page === 'memory' }">Memory</a>
+        <a href="/settings" :class="{ active: s.page === 'settings' }">Settings</a>
+        <a href="/docs" target="_blank" rel="noopener">API</a>
+      </nav>
+      <div class="mu-status">
+        <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
+        <span class="mu-hint" x-show="s.hint()" x-text="s.hint()"></span>
+      </div>
+    </header>
+
+    <div class="ms-page mv-root" data-mv-theme="dark" x-data="mayaSettings()" x-init="init()">
+      <div class="ms-hero">
+        <h1>Settings</h1>
+        <p>Server config + operator kitchen sink. Persists to <span class="mv-mono">data/settings.json</span>. Memory explorer: <a href="/memory" style="color:var(--mv-accent)">Memory</a> page. Tools + EQ on the <a href="/" style="color:var(--mv-accent)">Dashboard</a>.</p>
+      </div>
+
+      <div class="ms-toolbar">
+        <input class="mv-input filter" type="search" placeholder="Filter sections…" x-model="filter" />
+        <span class="ms-toast" x-show="saved" x-transition>Saved</span>
+        <span class="ms-toast err" x-show="error" x-text="error"></span>
+        <span class="mv-desc" x-show="loading">Loading…</span>
+        <button type="button" class="mv-btn" x-show="!loading" @click="refreshCatalog()">Refresh models</button>
+      </div>
+
+      <div class="mv-shell ms-shell">
+        <nav class="mv-sidebar ms-sidebar">
+          <template x-for="group in visibleGroups" :key="group.title">
+            <div class="ms-nav-group">
+              <div class="mv-sidebar-title" x-text="group.title"></div>
+              <template x-for="sec in group.items" :key="sec.id">
+                <button type="button" class="mv-nav-item" :class="{ active: tab === sec.id }" @click="setTab(sec.id)">
+                  <span x-text="sec.label"></span>
+                  <small x-text="sec.hint"></small>
+                </button>
+              </template>
+            </div>
+          </template>
+        </nav>
+
+        <div class="mv-content ms-card-stack">
+
+          <!-- OPERATOR (kitchen sink) -->
+          <div x-show="tab === 'operator'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Operator</p>
+              <h2 class="mv-title">Voice Control Panel</h2>
+              <p class="mv-desc">maya-public Alpine SDK — device routing, vocal monitor, detection engine, Wispr-style dictation defaults.</p>
+            </div>
+            <iframe class="ms-operator-frame" src="/dashboard/operator-panel.html" title="Operator panel"></iframe>
+          </div>
+
+          <!-- AUDIO -->
+          <div x-show="tab === 'audio'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Engine</p>
+              <h2 class="mv-title">Audio</h2>
+              <p class="mv-desc">Playback volume, live EQ on TTS output, and acoustic echo cancellation for full-duplex without headphones.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Output volume</div><div class="mv-row-sub">0.0 – 2.0</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="0" max="2" step="0.05" x-model.number="s.audio.output_volume" @change="save()" />
+                  <span class="mv-num" x-text="(s.audio.output_volume).toFixed(2)"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">EQ enabled</div><div class="mv-row-sub">Real-time filter on playback</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.audio.eq_enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row" x-show="s.audio.eq_enabled">
+                <div class="lhs"><div class="mv-row-label">EQ preset</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.audio.eq_preset" @change="save()">
+                    <template x-for="p in catalog.eq_presets" :key="p.id"><option :value="p.id" x-text="p.label"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Echo cancellation (AEC)</div><div class="mv-row-sub">Recommended for speakers</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.audio.aec_enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- DETECTION -->
+          <div x-show="tab === 'detection'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Engine</p>
+              <h2 class="mv-title">Detection</h2>
+              <p class="mv-desc">When the operator is considered speaking, and how barge-in interrupts the agent.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Detection mode</div><div class="mv-row-sub">Operator UI / SDK sync</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.detection.detection_mode" @change="save()">
+                    <template x-for="m in catalog.detection_modes" :key="m"><option :value="m" x-text="m"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Barge-in</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.detection.barge_in" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Barge mode</div><div class="mv-row-sub">smart · instant · off</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.detection.barge_mode" @change="save()">
+                    <template x-for="m in catalog.barge_modes" :key="m"><option :value="m" x-text="m"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">VAD aggressiveness</div><div class="mv-row-sub">webrtcvad 0–3</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="0" max="3" step="1" x-model.number="s.detection.vad_aggressiveness" @change="save()" />
+                  <span class="mv-num" x-text="s.detection.vad_aggressiveness"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Silence before end</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="200" max="2000" step="50" x-model.number="s.detection.silence_ms" @change="save()" />
+                  <span class="mv-num" x-text="s.detection.silence_ms + 'ms'"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Min speech length</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="100" max="800" step="50" x-model.number="s.detection.min_speech_ms" @change="save()" />
+                  <span class="mv-num" x-text="s.detection.min_speech_ms + 'ms'"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">RMS threshold</div><div class="mv-row-sub">SDK gate (0–0.3)</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="0" max="0.3" step="0.005" x-model.number="s.detection.vad_threshold" @change="save()" />
+                  <span class="mv-num" x-text="(s.detection.vad_threshold).toFixed(3)"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Hangover</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="100" max="1500" step="50" x-model.number="s.detection.vad_hangover_ms" @change="save()" />
+                  <span class="mv-num" x-text="s.detection.vad_hangover_ms + 'ms'"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- VOICE -->
+          <div x-show="tab === 'voice'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Voice</p>
+              <h2 class="mv-title">Voice &amp; TTS</h2>
+              <p class="mv-desc">Clone from a reference clip or use built-in CustomVoice speakers. Restart agent after switching TTS mode.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">TTS mode</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.delivery.tts_mode" @change="save()">
+                    <template x-for="m in catalog.tts_modes" :key="m"><option :value="m" x-text="m"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.delivery.tts_mode === 'clone'">
+                <div class="lhs"><div class="mv-row-label">Reference clip</div><div class="mv-row-sub">~10–20s clean speech</div></div>
+                <div class="rhs">
+                  <select class="mv-select" style="min-width:200px" :value="voiceFileName()" @change="selectVoiceFile($event.target.value)">
+                    <template x-for="v in catalog.voices" :key="v.file">
+                      <option :value="v.file" x-text="v.name" :selected="v.file === voiceFileName() || v.name === currentVoice"></option>
+                    </template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.delivery.tts_mode === 'clone'">
+                <div class="lhs"><div class="mv-row-label">Upload clip</div></div>
+                <div class="rhs"><input type="file" accept="audio/*" @change="uploadVoice($event)" /></div>
+              </div>
+              <div class="mv-list-row" x-show="s.delivery.tts_mode === 'clone'">
+                <div class="lhs"><div class="mv-row-label">Clone model</div></div>
+                <div class="rhs">
+                  <select class="mv-select" style="min-width:280px" x-model="s.voice.clone_model" @change="save()">
+                    <template x-for="m in catalog.clone_models" :key="m.id"><option :value="m.id" x-text="m.label"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.delivery.tts_mode === 'custom'">
+                <div class="lhs"><div class="mv-row-label">Speaker</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.voice.speaker" @change="save()">
+                    <template x-for="sp in catalog.speakers" :key="sp"><option :value="sp" x-text="sp"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.delivery.tts_mode === 'custom'">
+                <div class="lhs"><div class="mv-row-label">Custom model</div></div>
+                <div class="rhs">
+                  <select class="mv-select" style="min-width:280px" x-model="s.voice.custom_model" @change="save()">
+                    <template x-for="m in catalog.custom_tts_models" :key="m.id"><option :value="m.id" x-text="m.label"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">TTS language</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.voice.language" @change="save()">
+                    <template x-for="l in catalog.tts_languages" :key="l"><option :value="l" x-text="l"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Temperature</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="0" max="1.5" step="0.05" x-model.number="s.voice.temperature" @change="save()" />
+                  <span class="mv-num" x-text="(s.voice.temperature).toFixed(2)"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">TTS device</div></div>
+                <div class="rhs"><input class="mv-input" x-model="s.voice.device" @change="save()" placeholder="cuda" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Warmup on load</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.voice.warmup" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- DELIVERY -->
+          <div x-show="tab === 'delivery'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Voice</p>
+              <h2 class="mv-title">Delivery</h2>
+              <p class="mv-desc">How replies are chunked for TTS — full reply vs per-sentence — and dynamic voice instruct from the LLM.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Delivery mode</div><div class="mv-row-sub">full · hybrid · off</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.delivery.delivery" @change="save()">
+                    <template x-for="m in catalog.delivery_modes" :key="m"><option :value="m" x-text="m"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Auto instruct</div><div class="mv-row-sub">LLM picks whisper, laugh, excited…</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.delivery.auto_instruct" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row" x-show="s.delivery.tts_mode === 'clone'">
+                <div class="lhs"><div class="mv-row-label">X-vector only</div><div class="mv-row-sub">Timbre without ICL bleed</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.delivery.xvec_only" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Base instruct</div><div class="mv-row-sub">Static voice description</div></div>
+                <div class="rhs"><textarea class="ms-textarea" x-model="s.delivery.instruct" @change="save()" placeholder="Warm, clear, conversational…"></textarea></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- EXPRESSIONS / VTS -->
+          <div x-show="tab === 'expressions'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Voice</p>
+              <h2 class="mv-title">Expressions</h2>
+              <p class="mv-desc">VTube Studio lip-sync and emotion hotkeys. VTube Studio must be running with the plugin API enabled.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">VTube Studio enabled</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.vts.enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Host</div></div>
+                <div class="rhs"><input class="mv-input" x-model="s.vts.host" @change="save()" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Port</div></div>
+                <div class="rhs"><input class="mv-input" type="number" style="width:100px" x-model.number="s.vts.port" @change="save()" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Auto expressions</div><div class="mv-row-sub">Emotion hotkeys from reply</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.vts.auto_express" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Lip-sync gain</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="1" max="12" step="0.5" x-model.number="s.vts.mouth_gain" @change="save()" />
+                  <span class="mv-num" x-text="(s.vts.mouth_gain).toFixed(1)"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Mouth smoothing</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="0" max="1" step="0.05" x-model.number="s.vts.mouth_smoothing" @change="save()" />
+                  <span class="mv-num" x-text="(s.vts.mouth_smoothing).toFixed(2)"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Mouth update rate</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="15" max="60" step="5" x-model.number="s.vts.mouth_fps" @change="save()" />
+                  <span class="mv-num" x-text="s.vts.mouth_fps + ' Hz'"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- DICTATION -->
+          <div x-show="tab === 'dictation'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Models</p>
+              <h2 class="mv-title">Dictation</h2>
+              <p class="mv-desc">Faster-Whisper STT and Wispr-style cleanup defaults.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Whisper model</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.dictation.whisper_model" @change="save()">
+                    <template x-for="m in catalog.whisper_models" :key="m"><option :value="m" x-text="m"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Language</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.dictation.language" @change="save()">
+                    <template x-for="l in catalog.languages" :key="l"><option :value="l" x-text="l"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">STT device</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.dictation.device" @change="save()">
+                    <template x-for="d in catalog.stt_devices" :key="d"><option :value="d" x-text="d"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Compute type</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.dictation.compute_type" @change="save()">
+                    <template x-for="c in catalog.compute_types" :key="c"><option :value="c" x-text="c"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Wispr model</div><div class="mv-row-sub">SDK catalog label</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.dictation.wispr_model" @change="save()">
+                    <template x-for="m in catalog.wispr_models" :key="m"><option :value="m" x-text="m"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Auto-punctuation</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.dictation.auto_punctuation" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Filler removal</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.dictation.filler_removal" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Noise suppression</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.dictation.noise_suppression" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- REASONING -->
+          <div x-show="tab === 'reasoning'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Models</p>
+              <h2 class="mv-title">Reasoning</h2>
+              <p class="mv-desc">LLM provider for voice and chat — LM Studio, LiteLLM, or browser WebLLM on the Conversation page.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Provider</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.reasoning.provider" @change="save()">
+                    <option value="lm_studio">LM Studio / OpenAI-compatible</option>
+                    <option value="litellm">LiteLLM</option>
+                    <option value="webllm">WebLLM (browser)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
+                <div class="lhs"><div class="mv-row-label">Base URL</div></div>
+                <div class="rhs"><input class="mv-input" style="width:300px" x-model="s.reasoning.base_url" @change="save()" /></div>
+              </div>
+              <div class="mv-list-row" x-show="s.reasoning.provider === 'litellm'">
+                <div class="lhs"><div class="mv-row-label">LiteLLM mode</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.reasoning.litellm.mode" @change="save()">
+                    <option value="sdk">SDK</option>
+                    <option value="proxy">Proxy</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.reasoning.provider === 'litellm'">
+                <div class="lhs"><div class="mv-row-label">LiteLLM model</div></div>
+                <div class="rhs">
+                  <select class="mv-select" style="min-width:280px" x-model="s.reasoning.litellm.model" @change="save()">
+                    <template x-for="m in catalog.litellm_models" :key="m.id"><option :value="m.id" x-text="m.label"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
+                <div class="lhs"><div class="mv-row-label">Model</div>
+                  <div class="mv-row-sub" x-show="!catalog.llm_models.length">Start LM Studio, then Refresh models</div></div>
+                <div class="rhs">
+                  <select class="mv-select" style="min-width:240px" x-model="s.reasoning.model" @change="save()">
+                    <template x-for="m in catalog.llm_models" :key="m.id"><option :value="m.id" x-text="m.label"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
+                <div class="lhs"><div class="mv-row-label">API key</div></div>
+                <div class="rhs"><input class="mv-input" type="password" style="width:200px" x-model="s.reasoning.api_key" @change="save()" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Temperature</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="0" max="1.5" step="0.05" x-model.number="s.reasoning.temperature" @change="save()" />
+                  <span class="mv-num" x-text="(s.reasoning.temperature).toFixed(2)"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Max tokens</div></div>
+                <div class="rhs"><input class="mv-input" type="number" style="width:100px" x-model.number="s.reasoning.max_tokens" @change="save()" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Top P</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="0" max="1" step="0.05" x-model.number="s.reasoning.top_p" @change="save()" />
+                  <span class="mv-num" x-text="(s.reasoning.top_p).toFixed(2)"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Disable thinking</div><div class="mv-row-sub">Strip reasoning tags from output</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.reasoning.disable_thinking" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Persona label</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.reasoning.persona" @change="save()">
+                    <template x-for="p in catalog.personas" :key="p"><option :value="p" x-text="p"></option></template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.reasoning.provider === 'webllm'">
+                <div class="lhs"><div class="mv-row-label">WebLLM enabled</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.reasoning.webllm.enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row" x-show="s.reasoning.provider === 'webllm'">
+                <div class="lhs"><div class="mv-row-label">WebLLM model</div></div>
+                <div class="rhs">
+                  <select class="mv-select" style="min-width:320px" x-model="s.reasoning.webllm.model_id" @change="save()">
+                    <template x-for="m in catalog.webllm_models" :key="m.id"><option :value="m.id" x-text="m.label"></option></template>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- PERSONALITY -->
+          <div x-show="tab === 'personality'" x-data="mayaPersonality()" x-init="init()">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Agent</p>
+              <h2 class="mv-title">Personality</h2>
+              <p class="mv-desc">Character Card V2 — import SillyTavern JSON/PNG, edit fields, or smart-generate from a description.</p>
+            </div>
+
+            <p class="ms-toast err" x-show="error" x-text="error"></p>
+            <p class="ms-toast" x-show="status" x-text="status"></p>
+
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Saved personalities</div></div>
+                <div class="rhs" style="display:flex;gap:8px;flex-wrap:wrap">
+                  <select class="mv-select" style="min-width:200px" x-model="activeId" @change="onSelectChange()" :disabled="busy || loading">
+                    <option value="" x-show="!personalities.length">No presets yet</option>
+                    <template x-for="p in personalities" :key="p.id">
+                      <option :value="p.id" x-text="p.name || p.id"></option>
+                    </template>
+                  </select>
+                  <button type="button" class="mv-btn mv-btn-danger" @click="deleteSelected()" :disabled="!activeId || busy">Delete</button>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Preset name</div></div>
+                <div class="rhs"><input class="mv-input" style="width:220px" x-model="name" placeholder="Maya, DJ mode…" /></div>
+              </div>
+              <div class="ms-btn-row">
+                <button type="button" class="mv-btn mv-btn-primary" @click="saveNew()" :disabled="busy">Save as new</button>
+                <button type="button" class="mv-btn" @click="updateSelected()" :disabled="!activeId || busy">Update selected</button>
+                <button type="button" class="mv-btn" @click="triggerImport()" :disabled="busy">Import card</button>
+                <button type="button" class="mv-btn" @click="exportSelected()" :disabled="!activeId || busy">Export JSON</button>
+                <input type="file" x-ref="importFile" accept=".json,application/json,.png,image/png" hidden @change="onImport($event)" />
+              </div>
+            </div>
+
+            <details class="ms-details" open>
+              <summary>Smart builder</summary>
+              <div class="mv-card" style="margin-top:10px">
+                <div class="mv-list-row" style="flex-direction:column;align-items:stretch">
+                  <label class="mv-row-label">Describe your character</label>
+                  <textarea class="ms-textarea" x-model="builderPrompt" placeholder="A sarcastic medieval blacksmith who loves puns…"></textarea>
+                </div>
+                <div class="ms-btn-row">
+                  <button type="button" class="mv-btn mv-btn-primary" @click="buildCard()" :disabled="busy">Generate card</button>
+                </div>
+              </div>
+            </details>
+
+            <details class="ms-details" open>
+              <summary>Character card fields</summary>
+              <div class="mv-card ms-card-grid" style="margin-top:10px">
+                <label class="ms-field"><span>Description</span><textarea class="ms-textarea" x-model="card.description"></textarea></label>
+                <label class="ms-field"><span>Personality</span><textarea class="ms-textarea" x-model="card.personality"></textarea></label>
+                <label class="ms-field"><span>Scenario</span><textarea class="ms-textarea" x-model="card.scenario"></textarea></label>
+                <label class="ms-field"><span>First message</span><textarea class="ms-textarea" x-model="card.first_mes"></textarea></label>
+                <label class="ms-field"><span>Example messages</span><textarea class="ms-textarea" x-model="card.mes_example"></textarea></label>
+                <label class="ms-field"><span>System prompt override</span><textarea class="ms-textarea" x-model="card.system_prompt"></textarea></label>
+                <label class="ms-field"><span>Post-history instructions</span><textarea class="ms-textarea" x-model="card.post_history_instructions"></textarea></label>
+                <label class="ms-field"><span>Tags</span><input class="mv-input" x-model="card.tags" placeholder="vtuber, comedy" /></label>
+              </div>
+            </details>
+
+            <details class="ms-details">
+              <summary>Creator notes (not sent to AI)</summary>
+              <p class="mv-desc ms-notes" x-text="creatorNotes"></p>
+            </details>
+
+            <details class="ms-details">
+              <summary>Compiled prompt preview</summary>
+              <textarea class="ms-textarea ms-preview" readonly x-text="promptPreview" :value="promptPreview"></textarea>
+            </details>
+          </div>
+
+          <!-- MEMORY -->
+          <div x-show="tab === 'memory'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Agent</p>
+              <h2 class="mv-title">Memory</h2>
+              <p class="mv-desc">Session recall, semantic memory, and write approval. Data lives in <span class="mv-mono">maya-unified/data/</span> (migrated from qwen3 on first start). Restart after toggling.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Memory enabled</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.memory.enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Write approval</div><div class="mv-row-sub">Confirm before saving facts</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.memory.write_approval" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Cognitive memory</div><div class="mv-row-sub">Semantic recall (embeddings)</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.memory.cognitive_enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Prefetch</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.memory.prefetch" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- TOOLS -->
+          <div x-show="tab === 'tools'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Agent</p>
+              <h2 class="mv-title">Tools</h2>
+              <p class="mv-desc">Enable tool calling. Discord/MCP tools appear after the agent reloads (automatic on save).</p>
+            </div>
+            <div class="mv-card" style="margin-bottom:16px">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Tools enabled</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.tools.enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Mode</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.tools.mode" @change="save()">
+                    <option value="auto">auto</option>
+                    <option value="manual">manual</option>
+                    <option value="off">off</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Max tool rounds</div></div>
+                <div class="rhs"><input class="mv-input" type="number" min="0" max="10" style="width:80px" x-model.number="s.tools.max_rounds" @change="save()" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">MCP enabled</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.tools.mcp_enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+            </div>
+
+          <div x-data="mayaToolsPanel()" x-init="init()">
+            <div class="ms-btn-row" style="margin-bottom:12px">
+              <button type="button" class="mv-btn" @click="refresh()">Refresh</button>
+              <span class="mv-desc" x-show="loading">Loading…</span>
+              <span class="mv-chip" x-show="!loading && enabled" style="margin-left:8px">
+                <span x-text="mode + ' · max ' + maxRounds + ' rounds'"></span>
+              </span>
+              <span class="mv-chip error" x-show="!loading && !enabled" style="margin-left:8px;color:#ff453a">Tools disabled in settings</span>
+            </div>
+
+            <p class="ms-toast err" x-show="error" x-text="error"></p>
+            <p class="mv-desc" x-show="!agentReady && !loading">Agent still loading — tool list fills in when ready.</p>
+
+            <template x-for="[group, items] in toolGroups" :key="group">
+              <div class="ms-panel-head" style="margin-top:16px">
+                <p class="mv-eyebrow" x-text="group"></p>
+                <h3 class="mv-title" style="font-size:14px" x-text="items.length + ' tool(s)'"></h3>
+              </div>
+              <ul class="ms-tool-list">
+                <template x-for="t in items" :key="t.name">
+                  <li>
+                    <span class="ms-tool-badge" x-text="t.group || 'tool'"></span>
+                    <strong x-text="t.name"></strong>
+                    <span class="ms-tool-desc" x-text="t.description || ''"></span>
+                  </li>
+                </template>
+              </ul>
+            </template>
+
+            <p class="mv-desc" x-show="!loading && !tools.length && agentReady">No tools registered.</p>
+
+            <div class="ms-panel-head" style="margin-top:20px">
+              <p class="mv-eyebrow">MCP</p>
+              <h3 class="mv-title" style="font-size:14px">MCP servers</h3>
+              <p class="mv-desc">Configure <span class="mv-mono">mcp_servers.json</span> in qwen3-voice-agent and restart.</p>
+            </div>
+            <ul class="ms-tool-list">
+              <template x-for="s in mcpServers" :key="s.name">
+                <li>
+                  <span class="ms-tool-dot" :class="s.connected ? 'on' : 'off'"></span>
+                  <strong x-text="s.name"></strong>
+                  <span class="ms-tool-desc" x-text="s.connected ? (s.tools + ' tools') : ('error: ' + (s.error || 'not connected'))"></span>
+                </li>
+              </template>
+              <li class="ms-empty" x-show="!mcpServers.length">No MCP servers configured.</li>
+            </ul>
+
+            <div class="ms-panel-head" style="margin-top:20px">
+              <p class="mv-eyebrow">Live</p>
+              <h3 class="mv-title" style="font-size:14px">Recent tool calls</h3>
+            </div>
+            <ul class="ms-tool-log">
+              <template x-for="(line, i) in toolLog" :key="i">
+                <li x-text="line"></li>
+              </template>
+              <li class="ms-empty" x-show="!toolLog.length">No tool calls yet — start a voice session on the Dashboard.</li>
+            </ul>
+          </div>
+          </div>
+
+          <!-- DISCORD -->
+          <div x-show="tab === 'discord'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Connect</p>
+              <h2 class="mv-title">Discord</h2>
+              <p class="mv-desc">Unified bot via qwen3 DiscordManager — voice join, music, auto-reply. Requires bot token; agent reloads when you save.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Discord enabled</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.discord.enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Bot token</div></div>
+                <div class="rhs"><input class="mv-input" type="password" style="width:300px" x-model="s.discord.token" @change="save()" autocomplete="off" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Guild ID</div></div>
+                <div class="rhs"><input class="mv-input" type="number" style="width:160px" x-model.number="s.discord.guild_id" @change="save()" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Auto-reply</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.discord.auto_reply" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Music volume</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="0" max="2" step="0.05" x-model.number="s.discord.music_volume" @change="save()" />
+                  <span class="mv-num" x-text="(s.discord.music_volume).toFixed(2)"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs">
+                  <div class="mv-row-label">Default voice channel</div>
+                  <div class="mv-row-hint">Auto-join before YouTube play if the bot is not already in voice.</div>
+                </div>
+                <div class="rhs"><input class="mv-input" style="width:280px" x-model="s.discord.default_voice_channel" @change="save()" placeholder="hidden channel 4 myles" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs">
+                  <div class="mv-row-label">YouTube cookies browser</div>
+                  <div class="mv-row-hint">Optional — chrome, edge, or firefox. Close the browser first on Windows.</div>
+                </div>
+                <div class="rhs">
+                  <select class="mv-input" style="width:160px" x-model="s.discord.youtube_cookies_browser" @change="save()">
+                    <option value="">None</option>
+                    <option value="chrome">Chrome</option>
+                    <option value="edge">Edge</option>
+                    <option value="firefox">Firefox</option>
+                    <option value="brave">Brave</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs">
+                  <div class="mv-row-label">YouTube cookies file</div>
+                  <div class="mv-row-hint">Preferred on Windows — export cookies.txt from a logged-in YouTube session.</div>
+                </div>
+                <div class="rhs"><input class="mv-input" style="width:320px" x-model="s.discord.youtube_cookies_file" @change="save()" placeholder="C:\path\to\cookies.txt" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Imagine / ComfyUI</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.discord.imagine_enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row" x-show="s.discord.imagine_enabled">
+                <div class="lhs"><div class="mv-row-label">ComfyUI URL</div></div>
+                <div class="rhs"><input class="mv-input" style="width:280px" x-model="s.discord.comfyui_url" @change="save()" /></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- PLATFORM -->
+          <div x-show="tab === 'platform'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Connect</p>
+              <h2 class="mv-title">Platform</h2>
+              <p class="mv-desc">Optional maya-public platform database and OpenTelemetry.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Database URL</div><div class="mv-row-sub">Postgres for arena/discover</div></div>
+                <div class="rhs"><input class="mv-input" style="width:320px" x-model="s.platform.database_url" @change="save()" placeholder="postgresql+asyncpg://…" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">OpenTelemetry</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.platform.otel_enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <script defer src="/sdk/maya-voice-sdk.js"></script>
+    <script defer src="/dashboard/js/mayaShell.js"></script>
+    <script defer src="/dashboard/js/mayaSettings.js"></script>
+    <script defer src="/dashboard/js/mayaPersonality.js"></script>
+    <script defer src="/dashboard/js/mayaToolsPanel.js"></script>
+    <script defer src="/sdk/vendor/alpine.min.js"></script>
+  </body>
+</html>

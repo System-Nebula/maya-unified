@@ -1,0 +1,157 @@
+/* Maya Unified — Settings page layout */
+.ms-page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px 20px 72px;
+}
+.ms-hero {
+  margin-bottom: 20px;
+}
+.ms-hero h1 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 6px;
+  color: var(--mv-text);
+}
+.ms-hero p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--mv-muted);
+  max-width: 640px;
+  line-height: 1.5;
+}
+.ms-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.ms-toolbar .mv-input.filter {
+  flex: 1;
+  min-width: 200px;
+  max-width: 360px;
+}
+.ms-toast {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid #2d5a3a;
+  color: #30d158;
+  background: rgba(48, 209, 88, 0.08);
+}
+.ms-toast.err {
+  border-color: #5c2d2d;
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.08);
+}
+.ms-shell.mv-shell {
+  min-height: 640px;
+}
+.ms-shell .mv-content {
+  min-width: 0;
+}
+.ms-nav-group { margin-bottom: 4px; }
+.ms-sidebar .mv-nav-item {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.ms-sidebar .mv-nav-item small {
+  font-size: 10px;
+  color: var(--mv-faint);
+  font-weight: 400;
+  line-height: 1.3;
+}
+.ms-panel-head {
+  margin-bottom: 14px;
+}
+.ms-panel-head .mv-desc {
+  margin-top: 4px;
+}
+.ms-card-stack > .mv-card + .mv-card {
+  margin-top: 12px;
+}
+.ms-textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  font-family: var(--mv-font);
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--mv-border);
+  border-radius: var(--mv-r-ctl);
+  background: var(--mv-input);
+  color: var(--mv-text);
+}
+.ms-textarea:focus {
+  outline: none;
+  border-color: var(--mv-accent);
+}
+.ms-voice-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--mv-border);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--mv-mono);
+  color: var(--mv-muted);
+}
+.ms-voice-pill.active {
+  border-color: var(--mv-accent);
+  color: var(--mv-accent);
+  background: var(--mv-accent-tint);
+}
+.ms-operator-frame {
+  display: block;
+  width: 100%;
+  min-height: 780px;
+  border: 1px solid var(--mv-border);
+  border-radius: var(--mv-r-panel);
+  background: var(--mv-bg);
+}
+.ms-btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ms-details { margin-top: 14px; }
+.ms-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mv-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 0;
+}
+.ms-card-grid { display: grid; gap: 12px; }
+.ms-field { display: flex; flex-direction: column; gap: 6px; }
+.ms-field span { font-size: 12px; color: var(--mv-muted); }
+.ms-notes { padding: 10px 12px; background: var(--mv-sidebar); border-radius: 6px; font-size: 13px; }
+.ms-preview { min-height: 120px; margin-top: 8px; font-size: 12px; color: var(--mv-muted); }
+.ms-tool-list, .ms-tool-log {
+  list-style: none; margin: 0 0 12px; padding: 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.ms-tool-list li, .ms-tool-log li {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; font-size: 13px;
+  background: var(--mv-sidebar); border: 1px solid var(--mv-border); border-radius: 6px;
+}
+.ms-tool-list li strong { flex-shrink: 0; min-width: 120px; }
+.ms-tool-desc { color: var(--mv-muted); flex: 1; line-height: 1.45; }
+.ms-tool-badge {
+  font-size: 10px; font-family: var(--mv-mono); text-transform: uppercase;
+  padding: 2px 8px; border-radius: 4px;
+  background: var(--mv-accent-tint); color: var(--mv-accent); flex-shrink: 0;
+}
+.ms-tool-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+.ms-tool-dot.on { background: #30d158; }
+.ms-tool-dot.off { background: #ff453a; }
+.ms-empty { color: var(--mv-faint); justify-content: center; border-style: dashed !important; }
+.ms-tool-log li { font-family: var(--mv-mono); font-size: 11px; color: var(--mv-muted); }
+[x-cloak] { display: none !important; }
+
+/* Prevent Alpine pre-init flash without blocking interaction after init */
+.ms-page:not([data-alpine-ready]) .mv-content > div { visibility: hidden; }
+.ms-page[data-alpine-ready] .mv-content > div { visibility: visible; }
