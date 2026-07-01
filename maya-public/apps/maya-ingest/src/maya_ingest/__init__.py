@@ -1,1 +1,0 @@
-"""Maya ingest worker (Prefect)."""
