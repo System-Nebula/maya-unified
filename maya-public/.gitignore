@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Env
+.env
+.env.local
+.envrc
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Test / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build
+build/
+dist/
+
+# Data (repo root outputs only)
+/data/
+*.db
+*.sqlite3
+infra/comfyui/.env
+infra/comfyui/cache/
+
+# ComfyUI vendor clone (build locally)
+infra/comfyui/ComfyUI/Dockerfile*
+infra/comfyui/ComfyUI/.git/
+
+# Local overrides
+local/
+
+# Standalone homepage app — its own repo (fork of jov4n/start-page); shared separately.
+apps/homepage/

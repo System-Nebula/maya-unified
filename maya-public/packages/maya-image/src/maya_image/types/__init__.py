@@ -1,0 +1,1 @@
+"""Image job types."""

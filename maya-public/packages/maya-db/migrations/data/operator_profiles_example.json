@@ -1,0 +1,83 @@
+{
+  "description": "Example operator profile for local dev and UAT. Full roster notes live in Vault (radio-station-neurofunk, radio-station-dnb-ukf).",
+  "default_operator_id": "warby",
+  "preferences": {
+    "genre_weights": {
+      "drum-and-bass": 0.8,
+      "neurofunk": 0.9
+    },
+    "metro": "minneapolis",
+    "window_default": "7d"
+  },
+  "persons": [
+    {
+      "slug": "misskatie",
+      "display_name": "MissKatie",
+      "kind": "REAL",
+      "channels": [
+        "https://www.youtube.com/@MissKatie",
+        "https://www.instagram.com/heymisskatie",
+        "https://www.tiktok.com/@heymisskatiee"
+      ],
+      "follow": {
+        "cadence": "hourly",
+        "notify_homepage": true,
+        "notify_discord": false,
+        "muted": false
+      }
+    },
+    {
+      "slug": "ukf",
+      "display_name": "UKF",
+      "kind": "REAL",
+      "realm": "drum-and-bass",
+      "channels": [
+        "https://www.youtube.com/@UKF",
+        "https://www.youtube.com/@UKFDrumandBass",
+        "https://www.youtube.com/@UKFDubstep",
+        "https://www.youtube.com/@UKFMusic",
+        "https://www.youtube.com/@UKFMixes",
+        "https://www.youtube.com/@UKFLive",
+        "https://ukf.com/read/feed/"
+      ],
+      "follow": {
+        "cadence": "daily",
+        "notify_homepage": true,
+        "notify_discord": true,
+        "muted": false
+      }
+    },
+    {
+      "slug": "ivy-lab",
+      "display_name": "Ivy Lab",
+      "kind": "REAL",
+      "realm": "drum-and-bass",
+      "channels": [],
+      "follow": {
+        "cadence": "weekly",
+        "notify_homepage": true,
+        "notify_discord": true,
+        "muted": false
+      }
+    },
+    {
+      "slug": "a-little-sound",
+      "display_name": "A Little Sound",
+      "kind": "REAL",
+      "realm": "drum-and-bass",
+      "channels": [],
+      "follow": {
+        "cadence": "weekly",
+        "notify_homepage": true,
+        "notify_discord": true,
+        "muted": false
+      }
+    }
+  ],
+  "music_crates": {
+    "neurofunk": {
+      "source_note": "Vault/radio-station-neurofunk.md",
+      "artist_slugs": ["joe-ford", "holotrope", "culprate", "phace", "noisia"]
+    }
+  }
+}
