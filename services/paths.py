@@ -1,4 +1,4 @@
-"""Resolve bundled qwen3-voice-agent + maya-public inside this repo."""
+"""Maya Unified — internal package paths (single project, no external repos)."""
 
 from __future__ import annotations
 
@@ -7,46 +7,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
-
-
-def _first_existing(*candidates: Path) -> Path:
-    for path in candidates:
-        if path.is_dir():
-            return path
-    return candidates[0]
-
-
-# Bundled in-repo (canonical). Sibling layout kept as a dev fallback only.
-VOICE_AGENT = _first_existing(
-    ROOT / "qwen3-voice-agent",
-    ROOT.parent / "qwen3-voice-agent",
-)
-MAYA_PUBLIC = _first_existing(
-    ROOT / "maya-public",
-    ROOT.parent / "maya-public",
-)
+PACKAGES_DIR = ROOT / "packages"
+VOICE_RUNTIME = PACKAGES_DIR / "voice-runtime"
+GATEWAY_SRC = ROOT / "apps" / "maya-gateway" / "src"
 
 
 def agent_data_dir() -> Path:
-    """Agent memory / DB / personalities — always maya-unified/data."""
+    """Agent memory / DB / personalities — repo-root data/."""
     return DATA_DIR
 
 
 def setup_paths() -> None:
-    """Insert qwen3-voice-agent and maya-public packages ahead of imports."""
+    """Insert voice runtime + platform packages on sys.path before imports."""
     candidates: list[Path] = []
-    if VOICE_AGENT.is_dir():
-        candidates.append(VOICE_AGENT)
-    if MAYA_PUBLIC.is_dir():
-        gw = MAYA_PUBLIC / "apps" / "maya-gateway" / "src"
-        if gw.is_dir():
-            candidates.append(gw)
-        packages = MAYA_PUBLIC / "packages"
-        if packages.is_dir():
-            for pkg in sorted(packages.iterdir()):
-                src = pkg / "src"
-                if src.is_dir():
-                    candidates.append(src)
+    if VOICE_RUNTIME.is_dir():
+        candidates.append(VOICE_RUNTIME)
+    if GATEWAY_SRC.is_dir():
+        candidates.append(GATEWAY_SRC)
+    if PACKAGES_DIR.is_dir():
+        for pkg in sorted(PACKAGES_DIR.iterdir()):
+            if pkg.name == "voice-runtime":
+                continue
+            src = pkg / "src"
+            if src.is_dir():
+                candidates.append(src)
     for path in candidates:
         s = str(path.resolve())
         if s not in sys.path:

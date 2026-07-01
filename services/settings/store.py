@@ -7,7 +7,7 @@ import os
 from copy import deepcopy
 from typing import Any
 
-from services.paths import DATA_DIR, VOICE_AGENT, agent_data_dir
+from services.paths import DATA_DIR, VOICE_RUNTIME, agent_data_dir
 from services.settings.schema import DEFAULT_SETTINGS, deep_merge
 
 
@@ -203,8 +203,8 @@ def apply_to_config(settings: dict[str, Any]) -> None:
 def seed_env_defaults() -> dict[str, Any]:
     """Merge .env / VA_* into settings on first load."""
     settings = load_settings()
-    if VOICE_AGENT.is_dir():
-        env_path = VOICE_AGENT / ".env"
+    if VOICE_RUNTIME.is_dir():
+        env_path = VOICE_RUNTIME / ".env"
         if env_path.is_file():
             for line in env_path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()

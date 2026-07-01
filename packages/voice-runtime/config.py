@@ -175,7 +175,15 @@ class TTSConfig:
     # just that reply, so the voice reacts to what it's actually saying.
     auto_instruct: bool = field(default_factory=lambda: _env_bool("VA_TTS_AUTO_INSTRUCT", True))
 
+    def resolve_ref_audio(self) -> str:
+        path = self.ref_audio
+        if os.path.isabs(path):
+            return path
+        here = os.path.dirname(os.path.abspath(__file__))
+        return os.path.normpath(os.path.join(here, path))
+
     def __post_init__(self) -> None:
+        self.ref_audio = self.resolve_ref_audio()
         # If no ref_text was given, auto-load a transcript sidecar so ICL clone mode
         # works out of the box: "<ref_audio>.txt" (e.g. voices/ref.wav -> voices/ref.txt)
         # or a "ref.txt" next to the reference clip.

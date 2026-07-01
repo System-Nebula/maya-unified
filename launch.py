@@ -10,24 +10,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from services.paths import setup_paths, VOICE_AGENT
+from services.paths import setup_paths, VOICE_RUNTIME
 
 setup_paths()
 
-# Prefer the bundled qwen3 venv when present.
-_qwen3_python = (
-    VOICE_AGENT / ".venv" / "Scripts" / "python.exe"
-    if sys.platform == "win32"
-    else VOICE_AGENT / ".venv" / "bin" / "python"
-)
-if _qwen3_python.is_file() and Path(sys.executable).resolve() != _qwen3_python.resolve():
-    print(
-        f"Tip: run with the qwen3 venv for voice deps:\n  {_qwen3_python} {Path(__file__).name}",
-        file=sys.stderr,
-    )
+if sys.platform == "win32":
+    _venv_python = ROOT / ".venv" / "Scripts" / "python.exe"
+    _legacy_venv = VOICE_RUNTIME / ".venv" / "Scripts" / "python.exe"
+else:
+    _venv_python = ROOT / ".venv" / "bin" / "python"
+    _legacy_venv = VOICE_RUNTIME / ".venv" / "bin" / "python"
 
-# Load .env from maya-unified then bundled qwen3-voice-agent
-for env_file in (ROOT / ".env", VOICE_AGENT / ".env"):
+for candidate in (_venv_python, _legacy_venv):
+    if candidate.is_file() and Path(sys.executable).resolve() != candidate.resolve():
+        print(
+            f"Tip: run with the project venv for voice deps:\n  {candidate} {Path(__file__).name}",
+            file=sys.stderr,
+        )
+        break
+
+for env_file in (ROOT / ".env", VOICE_RUNTIME / ".env"):
     if env_file.is_file():
         for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -42,15 +44,16 @@ os.environ.setdefault("PORT", "8090")
 
 
 def _check_voice_deps() -> str | None:
-    """Return a user-facing message when qwen3 runtime deps are missing."""
+    """Return a user-facing message when voice runtime deps are missing."""
     try:
         import faster_qwen3_tts  # noqa: F401
         import faster_whisper  # noqa: F401
     except ImportError as exc:
         return (
-            "Voice agent Python packages are not installed. From the repo root run:\n"
-            "  pip install -r qwen3-voice-agent/requirements.txt\n"
-            "  (install PyTorch for your GPU first — see qwen3-voice-agent/README.md)\n"
+            "Voice runtime packages are not installed. From the repo root run:\n"
+            "  setup_windows.bat   (Windows)\n"
+            "  or: pip install -r packages/voice-runtime/requirements.txt\n"
+            "  (install PyTorch for your GPU first)\n"
             f"Detail: {exc}"
         )
     return None

@@ -9,7 +9,7 @@ import queue
 from fastapi import Body, File, UploadFile
 from fastapi.responses import StreamingResponse
 
-from services.paths import MAYA_PUBLIC, VOICE_AGENT
+from services.paths import VOICE_RUNTIME
 from services.voice.hub import hub
 
 # Reuse voice file helpers from qwen3 server
@@ -20,7 +20,7 @@ from server import (  # noqa: E402
     _safe_voice_path,
 )
 
-VOICES_DIR = os.path.join(str(VOICE_AGENT), "voices") if VOICE_AGENT.is_dir() else "voices"
+VOICES_DIR = str(VOICE_RUNTIME / "voices") if VOICE_RUNTIME.is_dir() else "voices"
 
 
 def register_agent_routes(app) -> None:

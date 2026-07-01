@@ -1,4 +1,4 @@
-# Maya Unified runtime data
+# Maya Unified runtime
 .env
 data/
 __pycache__/
@@ -7,35 +7,29 @@ __pycache__/
 .flake
 .direnv
 result
+uv.lock
 
-# qwen3-voice-agent (bundled)
-qwen3-voice-agent/.venv/
-qwen3-voice-agent/__pycache__/
-qwen3-voice-agent/*.pyc
-qwen3-voice-agent/output/
-qwen3-voice-agent/voices/*.wav
-qwen3-voice-agent/voices/*.flac
-qwen3-voice-agent/voices/*.mp3
-qwen3-voice-agent/voices/*.ogg
-qwen3-voice-agent/voices/*.m4a
-qwen3-voice-agent/voices/upload_*
-qwen3-voice-agent/vts_token.json
-qwen3-voice-agent/vts_map.json
-qwen3-voice-agent/data/
-qwen3-voice-agent/mcp_servers.json
-qwen3-voice-agent/.env
-qwen3-voice-agent/_probe.py
-qwen3-voice-agent/_thread_test.py
-qwen3-voice-agent/*.zip
+# Voice runtime (packages/voice-runtime)
+packages/voice-runtime/.venv/
+packages/voice-runtime/__pycache__/
+packages/voice-runtime/output/
+packages/voice-runtime/voices/*.wav
+packages/voice-runtime/voices/*.flac
+packages/voice-runtime/voices/*.mp3
+packages/voice-runtime/voices/*.ogg
+packages/voice-runtime/voices/*.m4a
+packages/voice-runtime/voices/upload_*
+packages/voice-runtime/vts_token.json
+packages/voice-runtime/vts_map.json
+packages/voice-runtime/data/
+packages/voice-runtime/mcp_servers.json
+packages/voice-runtime/.env
 
-# maya-public (bundled)
-maya-public/.venv/
-maya-public/__pycache__/
-maya-public/.env
-maya-public/.env.local
-maya-public/.envrc
-maya-public/data/
-maya-public/*.db
-maya-public/*.sqlite3
-maya-public/local/
-maya-public/apps/homepage/
+# Platform apps
+apps/*/.venv/
+apps/*/__pycache__/
+infra/comfyui/.env
+infra/comfyui/cache/
+local/
+*.db
+*.sqlite3

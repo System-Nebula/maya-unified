@@ -1,4 +1,4 @@
-"""Maya Unified gateway — maya-public platform + qwen3 voice agent."""
+"""Maya Unified gateway — voice agent + platform APIs."""
 
 from __future__ import annotations
 
@@ -7,11 +7,10 @@ import os
 import sys
 from pathlib import Path
 
-# Path setup must run before any qwen3 / maya-public imports
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
-from services.paths import MAYA_PUBLIC, setup_paths  # noqa: E402
+from services.paths import GATEWAY_SRC, setup_paths  # noqa: E402
 
 setup_paths()
 
@@ -27,23 +26,23 @@ log = logging.getLogger("maya-unified.gateway")
 
 app = FastAPI(
     title="Maya Unified",
-    description="Gateway + Voice Control Panel + qwen3 voice agent",
+    description="Maya voice agent + platform gateway + dashboard",
     version="0.1.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
-# --- maya-public voice SDK routes (settings/defaults, demo turn) ----------------
+# --- voice SDK routes (settings/defaults, demo turn) ----------------------------
 try:
     from maya_gateway.routes.voice import router as mp_voice_router
 
     app.include_router(mp_voice_router)
-    log.info("mounted maya-public /api/voice routes")
+    log.info("mounted voice SDK /api/voice routes")
 except Exception as exc:  # noqa: BLE001
-    log.warning("maya-public voice routes unavailable: %s", exc)
+    log.warning("voice SDK routes unavailable: %s", exc)
 
-# --- maya-public platform routes (optional — need uv sync in maya-public) -------
+# --- platform routes (optional — uv sync for full stack) ------------------------
 def _mount_platform_routes() -> None:
     try:
         from maya_gateway.routes import (
@@ -76,9 +75,9 @@ def _mount_platform_routes() -> None:
             research,
         ):
             app.include_router(r.router)
-        log.info("mounted maya-public platform routes")
+        log.info("mounted platform routes")
     except Exception as exc:  # noqa: BLE001
-        log.warning("platform routes unavailable (run uv sync in maya-public): %s", exc)
+        log.warning("platform routes unavailable (run uv sync): %s", exc)
 
 
 _mount_platform_routes()
@@ -86,10 +85,8 @@ _mount_platform_routes()
 app.include_router(settings_router)
 register_agent_routes(app)
 
-# --- static: maya-public voice SDK --------------------------------------------
-_sdk_dir = (
-    MAYA_PUBLIC / "apps" / "maya-gateway" / "src" / "maya_gateway" / "static" / "sdk"
-)
+# --- static: voice SDK ----------------------------------------------------------
+_sdk_dir = GATEWAY_SRC / "maya_gateway" / "static" / "sdk"
 _dashboard_dir = _ROOT / "apps" / "dashboard"
 
 if _sdk_dir.is_dir():
@@ -120,7 +117,7 @@ def panel_redirect():
 
 @app.get("/experimental")
 def experimental_standalone_info():
-    """How to run qwen3-voice-agent separately — not embedded in unified."""
+    """Legacy standalone voice WebUI — not used by the unified dashboard."""
     page = _dashboard_dir / "experimental.html"
     if page.is_file():
         return FileResponse(page)

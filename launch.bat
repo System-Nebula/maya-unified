@@ -1,10 +1,10 @@
 @echo off
-REM Launch Maya Unified using the bundled qwen3-voice-agent venv.
+REM Launch Maya Unified using the project venv.
 set ROOT=%~dp0
-set PY=%ROOT%qwen3-voice-agent\.venv\Scripts\python.exe
+set PY=%ROOT%.venv\Scripts\python.exe
+if not exist "%PY%" set PY=%ROOT%packages\voice-runtime\.venv\Scripts\python.exe
 if not exist "%PY%" (
-  echo Missing %PY%
-  echo Create it: cd qwen3-voice-agent ^&^& python -m venv .venv ^&^& pip install -r requirements.txt
+  echo Missing venv. Run setup_windows.bat from the repo root.
   exit /b 1
 )
 "%PY%" "%ROOT%launch.py" %*

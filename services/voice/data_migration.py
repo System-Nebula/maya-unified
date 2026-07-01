@@ -1,4 +1,4 @@
-"""One-time migration: qwen3-voice-agent/data → maya-unified/data."""
+"""One-time migration: packages/voice-runtime/data → data/."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from services.paths import DATA_DIR, VOICE_AGENT
+from services.paths import DATA_DIR, VOICE_RUNTIME
 
 log = logging.getLogger("maya-unified.migration")
 
@@ -17,7 +17,7 @@ SKIP_FILES = frozenset({"settings.json"})
 
 
 def _qwen3_data_dir() -> Path | None:
-    src = VOICE_AGENT / "data"
+    src = VOICE_RUNTIME / "data"
     return src if src.is_dir() else None
 
 

@@ -1,7 +1,7 @@
 [project]
 name = "maya-unified"
 version = "0.1.0"
-description = "Unified Maya gateway + qwen3 voice agent launcher"
+description = "Maya — voice agent, platform gateway, and unified dashboard"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
@@ -16,6 +16,27 @@ dependencies = [
     "rapidfuzz>=3.6",
     "feedparser>=6.0",
     "langgraph>=0.2",
+    "faster-qwen3-tts",
+    "faster-whisper",
+    "sounddevice",
+    "soundfile",
+    "webrtcvad-wheels",
+    "websocket-client",
+    "discord.py[voice]>=2.3.2",
+    "yt-dlp>=2024.1.0",
+    "ddgs>=6.0.0",
+    "fastembed",
+    "numpy",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp"]
+otel = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+    "opentelemetry-instrumentation-logging>=0.48b0",
 ]
 
 [project.scripts]
@@ -27,3 +48,32 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["apps", "services"]
+
+[tool.uv.workspace]
+members = [
+    "packages/*",
+    "apps/maya-gateway",
+    "apps/maya-bot",
+    "apps/discord-shim",
+    "apps/maya-ingest",
+]
+exclude = [
+    "packages/voice-runtime",
+    "apps/homepage",
+    "packages/maya-audio",
+    "packages/maya-llm",
+    "packages/maya-voice",
+    "packages/maya-voice-stack",
+]
+
+[tool.uv.sources]
+maya-contracts = { workspace = true }
+arena-core = { workspace = true }
+fal-client = { workspace = true }
+obs-client = { workspace = true }
+maya-db = { workspace = true }
+maya-feeds = { workspace = true }
+maya-graph = { workspace = true }
+maya-research = { workspace = true }
+maya-image = { workspace = true }
+maya-spider = { workspace = true }

@@ -10,7 +10,7 @@ import urllib.request
 from server import Hub
 
 from services.llm.provider import create_llm_client, swap_agent_llm
-from services.paths import DATA_DIR, VOICE_AGENT
+from services.paths import DATA_DIR, VOICE_RUNTIME
 from services.voice.data_migration import migrate_qwen3_data_to_unified
 from services.settings.store import apply_to_config, load_settings, save_settings
 
@@ -123,8 +123,6 @@ class VoiceHub(Hub):
             migrate_qwen3_data_to_unified()
             os.makedirs(DATA_DIR, exist_ok=True)
             os.environ["VA_DATA_DIR"] = str(DATA_DIR)
-            if VOICE_AGENT.is_dir():
-                os.chdir(str(VOICE_AGENT))
 
             from agent import VoiceAgent
 
