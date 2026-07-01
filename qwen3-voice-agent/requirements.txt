@@ -1,0 +1,56 @@
+# Qwen3 streaming voice agent dependencies.
+#
+# IMPORTANT: install PyTorch SEPARATELY first, matching your GPU/driver CUDA.
+# RTX 50xx / Blackwell needs CUDA 12.8 wheels:
+#     pip install "torch>=2.7.0" torchaudio --index-url https://download.pytorch.org/whl/cu128
+# Older CUDA 12.4 hosts:
+#     pip install "torch==2.5.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cu124
+
+# Streaming TTS engine (pulls in transformers, huggingface_hub, etc.)
+faster-qwen3-tts
+
+# Speech-to-text
+faster-whisper
+
+# LLM client (LM Studio is OpenAI-compatible)
+openai
+
+# Web UI (server.py) - control panel + live transcript over SSE
+fastapi
+uvicorn
+
+# Audio I/O + file writing
+sounddevice
+soundfile
+
+# Voice-activity detection. webrtcvad-wheels ships prebuilt Windows wheels so no
+# C compiler is required (unlike the original 'webrtcvad' package).
+webrtcvad-wheels
+
+# Optional: VTuber support. Talks to VTube Studio's WebSocket API for live
+# expressions + lip-sync. Only needed if you enable VTuber mode.
+websocket-client
+
+# Tools / MCP: connect external Model Context Protocol stdio servers as tools.
+# Only needed if you configure mcp_servers.json; safe to omit otherwise.
+mcp
+
+# Memory: local CPU embeddings for the cognitive (semantic) memory layer.
+# Only needed if VA_COGNITIVE_MEMORY is on (default). Lazy-loads on first use.
+fastembed
+
+# Discord voice + YouTube playback tools (optional; set VA_DISCORD_TOKEN).
+discord.py[voice]>=2.3.2
+yt-dlp>=2024.1.0
+
+# Web search + weather tools (optional; VA_WEB_TOOLS_ENABLED=1 by default).
+ddgs>=6.0.0
+
+# OpenTelemetry — structured logs, traces, metrics (VA_OTEL_ENABLED=1).
+opentelemetry-api>=1.27.0
+opentelemetry-sdk>=1.27.0
+opentelemetry-exporter-otlp-proto-grpc>=1.27.0
+opentelemetry-exporter-otlp-proto-http>=1.27.0
+opentelemetry-instrumentation-logging>=0.48b0
+
+numpy

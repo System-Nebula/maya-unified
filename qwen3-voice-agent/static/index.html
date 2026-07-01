@@ -1,0 +1,1938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Voice Agent</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --sidebar: #111111;
+    --surface: #1a1a1a;
+    --surface-2: #222222;
+    --surface-3: #2a2a2a;
+    --line: rgba(255,255,255,0.08);
+    --line-soft: rgba(255,255,255,0.05);
+    --text: #f5f5f5;
+    --muted: #9ca3af;
+    --faint: #6b7280;
+    --purple: #8b5cf6;
+    --purple-dim: rgba(139,92,246,0.15);
+    --purple-glow: rgba(139,92,246,0.35);
+    --green: #22c55e;
+    --red: #ef4444;
+    --amber: #f59e0b;
+    --radius: 0px;
+    --sidebar-w: 240px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- Shell: sidebar + main ---------- */
+  .shell { display: flex; min-height: 100vh; }
+
+  .sidebar {
+    width: var(--sidebar-w); flex-shrink: 0;
+    background: var(--sidebar);
+    border-right: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    position: sticky; top: 0; height: 100vh;
+  }
+  .sidebar-brand {
+    display: flex; align-items: center; gap: 10px;
+    padding: 20px 18px 16px;
+    font-weight: 700; font-size: 15px; letter-spacing: -0.2px;
+  }
+  .sidebar-brand .logo {
+    width: 28px; height: 28px; border-radius: 0;
+    background: var(--purple);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 20px var(--purple-glow);
+  }
+  .sidebar-brand .logo svg { width: 16px; height: 16px; color: #fff; }
+
+  .sidebar-nav { flex: 1; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; padding: 10px 12px; border: none; border-radius: 0;
+    background: transparent; color: var(--muted);
+    font-size: 13.5px; font-weight: 500; font-family: inherit;
+    cursor: pointer; text-align: left;
+    transition: background 0.15s, color 0.15s;
+  }
+  .nav-item svg { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.7; }
+  .nav-item:hover { background: var(--surface); color: var(--text); }
+  .nav-item.active { background: var(--purple-dim); color: var(--text); }
+  .nav-item.active svg { opacity: 1; color: var(--purple); }
+
+  .sidebar-foot {
+    padding: 14px 18px; border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--faint);
+  }
+
+  .main-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 28px; border-bottom: 1px solid var(--line);
+    background: var(--bg);
+  }
+  .breadcrumb { font-size: 14px; font-weight: 600; color: var(--text); }
+  .topbar-actions { display: flex; align-items: center; gap: 12px; }
+
+  .content { flex: 1; padding: 24px 28px 48px; max-width: 1200px; }
+
+  .page-header { margin-bottom: 24px; }
+  .page-header h1 { margin: 0 0 4px; font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
+  .page-header .subtitle { margin: 0; color: var(--muted); font-size: 14px; }
+
+  .page { display: none; flex-direction: column; gap: 16px; }
+  .page.active { display: flex; }
+
+  /* ---------- Status pill ---------- */
+  .status {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 14px; border-radius: 0;
+    background: var(--surface); color: var(--muted);
+    font-size: 12px; font-weight: 600;
+    border: 1px solid var(--line);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 0; background: var(--faint); }
+  .status.idle .dot { background: var(--faint); }
+  .status.listening .dot, .status.hearing .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .status.speaking .dot { background: var(--purple); box-shadow: 0 0 8px var(--purple); }
+  .status.thinking .dot, .status.transcribing .dot, .status.loading .dot { background: var(--amber); }
+  .status.error .dot { background: var(--red); }
+
+  /* ---------- Cards ---------- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid var(--line-soft);
+  }
+  .card-head h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+  .card-head .meta { font-size: 12px; color: var(--faint); }
+  .card-body { padding: 18px; }
+
+  .grid-2 { display: grid; grid-template-columns: 280px 1fr; gap: 16px; align-items: stretch; }
+  @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  /* ---------- Mic ---------- */
+  .control { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 24px 16px 20px; }
+  .mic-wrap { position: relative; width: 130px; height: 130px; }
+  .ring { position: absolute; inset: 0; border-radius: 0; border: 1px solid var(--line); }
+  .pulse { position: absolute; inset: 0; border-radius: 0; background: var(--purple); opacity: 0; }
+  .listening .pulse { animation: pulse 1.8s ease-out infinite; background: var(--green); }
+  .speaking  .pulse { animation: pulse 1.2s ease-out infinite; background: var(--purple); }
+  .hearing   .pulse { animation: pulse 1.0s ease-out infinite; background: var(--green); }
+  .thinking  .pulse, .transcribing .pulse { animation: pulse 1.6s ease-out infinite; background: var(--amber); }
+  @keyframes pulse { 0% { opacity: 0.3; transform: scale(1); } 100% { opacity: 0; transform: scale(1.6); } }
+
+  button.mic {
+    position: absolute; inset: 14px; border: none; border-radius: 0;
+    background: var(--purple); color: white; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 8px 32px var(--purple-glow);
+    transition: transform 0.12s, filter 0.2s;
+  }
+  button.mic:hover:not(:disabled) { filter: brightness(1.1); transform: scale(1.03); }
+  button.mic:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+  button.mic.active { background: var(--red); box-shadow: 0 8px 32px rgba(239,68,68,0.35); }
+  button.mic svg { width: 44px; height: 44px; }
+  .hint { color: var(--muted); font-size: 12px; min-height: 16px; text-align: center; }
+
+  /* ---------- EQ (FabFilter-style) ---------- */
+  .eq-card { overflow: hidden; }
+  .eq-card .card-body { padding: 0; }
+  .eq-toolbar {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid var(--line-soft);
+    background: linear-gradient(180deg, var(--purple-dim), transparent);
+  }
+  .eq-toolbar select {
+    min-width: 200px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 0;
+    padding: 8px 12px; font-size: 13px; font-weight: 600; font-family: inherit;
+  }
+  .eq-toolbar select:focus { outline: none; border-color: var(--purple); }
+  .eq-power {
+    width: 34px; height: 34px; border-radius: 0; border: 1px solid var(--line);
+    background: var(--surface-2); color: var(--faint); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .eq-power.on { color: var(--green); border-color: rgba(34,197,94,0.4); }
+  .eq-stage { position: relative; height: 260px; background: #050505; }
+  .eq-stage canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  .eq-band-panel {
+    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; border-radius: 0;
+    background: rgba(17,17,17,0.95); border: 1px solid var(--line);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 2;
+  }
+  .eq-band-panel[hidden] { display: none; }
+  .eq-band-panel select, .eq-knob input {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 0; font-family: inherit;
+  }
+  .eq-knobs { display: flex; gap: 10px; }
+  .eq-knob { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .eq-knob span { font-size: 9px; font-weight: 700; color: var(--faint); letter-spacing: 0.5px; }
+  .eq-knob input { width: 60px; text-align: center; padding: 5px; font-size: 12px; }
+
+  /* ---------- Conversation ---------- */
+  .log {
+    height: clamp(240px, 40vh, 480px); overflow-y: auto;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .log::-webkit-scrollbar { width: 6px; }
+  .log::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 0; }
+  .log:empty::after {
+    content: "Start a conversation — click the mic above.";
+    color: var(--faint); font-size: 13px; margin: auto; text-align: center;
+  }
+  .msg { display: flex; flex-direction: column; max-width: 82%; }
+  .msg .who { font-size: 10px; color: var(--faint); margin: 0 8px 3px; font-weight: 600; }
+  .msg .bubble { padding: 10px 14px; border-radius: 0; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; align-items: flex-end; }
+  .msg.user .bubble { background: var(--purple); color: #fff; }
+  .msg.ai { align-self: flex-start; }
+  .msg.ai .bubble { background: var(--surface-2); border: 1px solid var(--line); }
+  .msg.ai.cut .bubble { opacity: 0.5; }
+
+  /* ---------- Voice / VTS / Settings ---------- */
+  .voicebar { display: flex; gap: 10px; align-items: center; }
+  select.voiceselect, textarea, select.input, input.input {
+    width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 0;
+    padding: 10px 12px; font-size: 13px; font-family: inherit;
+  }
+  select.voiceselect { flex: 1; cursor: pointer; }
+  select:focus, textarea:focus, input.input:focus { outline: none; border-color: var(--purple); }
+  textarea { min-height: 88px; resize: vertical; line-height: 1.45; }
+  audio.voicepreview { width: 100%; height: 36px; margin-top: 12px; }
+  audio.voicepreview[hidden] { display: none; }
+  .voicename { display: block; color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+  .vts-info { color: var(--muted); font-size: 12px; margin-top: 10px; line-height: 1.45; }
+  .vts-expr { font-size: 12px; margin-top: 8px; }
+  .vts-expr[hidden] { display: none; }
+  .vts-expr .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 0;
+    background: var(--purple-dim); color: var(--purple); font-weight: 600; text-transform: capitalize;
+  }
+  .vts-map { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .vts-map[hidden] { display: none; }
+  .vts-row { display: grid; grid-template-columns: 72px 1fr auto; gap: 8px; align-items: center; margin-top: 6px; }
+  .vts-emo { font-size: 12px; font-weight: 600; }
+  .vts-row select { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 0; padding: 6px 8px; font-size: 12px; }
+
+  .conn { font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+  .conn::before { content: ""; width: 6px; height: 6px; border-radius: 0; background: var(--faint); }
+  .conn.ok { color: var(--green); } .conn.ok::before { background: var(--green); }
+  .conn.wait { color: var(--amber); } .conn.wait::before { background: var(--amber); }
+  .conn.off { color: var(--faint); }
+
+  .group { padding: 16px 0; border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 12px; }
+  .group:first-child { border-top: none; padding-top: 0; }
+  .group-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--faint); }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field > label { font-size: 12px; font-weight: 600; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row .field { flex: 1 1 140px; }
+  .toggle { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; cursor: pointer; line-height: 1.4; }
+  .toggle input { accent-color: var(--purple); width: 16px; height: 16px; margin-top: 2px; }
+  .toggle .t-sub { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+  details.sub { border: 1px solid var(--line); border-radius: 0; background: var(--bg); overflow: hidden; }
+  details.sub > summary { list-style: none; cursor: pointer; padding: 10px 12px; font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; }
+  details.sub > summary::-webkit-details-marker { display: none; }
+  details.sub .sub-body { padding: 0 12px 12px; }
+  .desc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .desc-grid input { width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 0; padding: 7px 9px; font-size: 12px; color: var(--text); }
+  @media (max-width: 560px) { .desc-grid { grid-template-columns: 1fr; } }
+
+  button.ghost {
+    background: transparent; color: var(--text);
+    border: 1px solid var(--line); border-radius: 0;
+    padding: 9px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button.ghost:hover:not(:disabled) { border-color: var(--purple); color: var(--purple); }
+  button.ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary {
+    background: var(--purple); color: #fff; border: none; border-radius: 0;
+    padding: 10px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+  button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-mini {
+    padding: 5px 10px; font-size: 11px; font-weight: 600; border-radius: 0;
+    border: 1px solid var(--line); background: var(--surface-2); color: var(--text); cursor: pointer;
+  }
+  .btn-mini:hover { border-color: var(--purple); color: var(--purple); }
+  .actions { display: flex; align-items: center; gap: 10px; }
+  .persona-bar { display: flex; gap: 8px; align-items: stretch; }
+  .persona-bar select { flex: 1; min-width: 0; }
+  .persona-bar .btn-mini { flex-shrink: 0; align-self: stretch; padding: 0 12px; }
+  .persona-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .persona-actions .primary,
+  .persona-actions .ghost { padding: 8px 14px; font-size: 12px; }
+  .btn-mini.danger:hover { border-color: #f87171; color: #f87171; background: rgba(248, 113, 113, 0.08); }
+  .card-fields { display: flex; flex-direction: column; gap: 12px; }
+  .card-fields textarea { min-height: 64px; resize: vertical; }
+  .card-hint { font-size: 11px; color: var(--muted); margin: 0 0 8px; line-height: 1.45; }
+  .creator-notes { font-size: 12px; color: var(--muted); white-space: pre-wrap; line-height: 1.5; }
+  .saved { font-size: 12px; color: var(--green); font-weight: 600; opacity: 0; transition: opacity 0.2s; }
+  .saved.show { opacity: 1; }
+
+  @media (max-width: 768px) {
+    .shell { flex-direction: column; }
+    .sidebar { width: 100%; height: auto; position: relative; flex-direction: row; flex-wrap: wrap; }
+    .sidebar-nav { flex-direction: row; flex-wrap: wrap; padding: 0 10px 10px; }
+    .sidebar-foot { display: none; }
+    .content { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+        </svg>
+      </span>
+      voice agent
+    </div>
+    <nav class="sidebar-nav">
+      <button type="button" class="nav-item active" data-page="talk">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9.5L12 4l9 5.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5z"/></svg>
+        Home
+      </button>
+      <button type="button" class="nav-item" data-page="voice">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+        Voice
+      </button>
+      <button type="button" class="nav-item" data-page="avatar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
+        Avatar
+      </button>
+      <button type="button" class="nav-item" data-page="memory">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 0-7 7c0 3 2 4 2 6v3a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-3c0-2 2-3 2-6a7 7 0 0 0-7-7z"/><path d="M9 22h6"/></svg>
+        Memory
+      </button>
+      <button type="button" class="nav-item" data-page="tools">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.7 2.7-2-2 2.7-2.7z"/></svg>
+        Tools
+      </button>
+      <button type="button" class="nav-item" data-page="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        Settings
+      </button>
+    </nav>
+    <div class="sidebar-foot">Local · streaming TTS</div>
+  </aside>
+
+  <div class="main-wrap">
+    <header class="topbar">
+      <div class="breadcrumb" id="pageTitle">Home</div>
+      <div class="topbar-actions">
+        <div class="status idle" id="status"><span class="dot"></span><span id="statusText">Loading model&hellip;</span></div>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="page-header">
+        <h1 id="pageHeading">Hello!</h1>
+        <p class="subtitle" id="pageSubtitle">Real-time voice agent with live EQ and VTuber support.</p>
+      </div>
+
+      <!-- HOME: mic + EQ + conversation -->
+      <div id="page-talk" class="page active">
+        <div class="grid-2">
+          <section class="card">
+            <div class="card-head"><h2>Talk</h2></div>
+            <div class="card-body" style="padding:0">
+              <div class="control">
+                <div class="stage" id="stage">
+                  <div class="mic-wrap">
+                    <div class="ring"></div>
+                    <div class="pulse"></div>
+                    <button class="mic" id="micBtn" disabled aria-label="Start talking">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                        <line x1="12" y1="19" x2="12" y2="23"></line>
+                        <line x1="8" y1="23" x2="16" y2="23"></line>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="hint" id="hint"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card eq-card">
+            <div class="card-head">
+              <h2>Output EQ</h2>
+              <span class="meta">Drag nodes · live playback</span>
+            </div>
+            <div class="card-body">
+              <div class="eq-toolbar">
+                <select id="eqPreset" disabled><option value="off">Off (bypass)</option></select>
+                <button type="button" class="eq-power on" id="eqPower" disabled title="EQ on/off">&#9679;</button>
+              </div>
+              <div class="eq-stage">
+                <canvas id="eqCanvas"></canvas>
+                <div class="eq-band-panel" id="eqBandPanel" hidden>
+                  <select id="eqBandType">
+                    <option value="peak">Bell</option>
+                    <option value="low_shelf">Low shelf</option>
+                    <option value="high_shelf">High shelf</option>
+                    <option value="highpass">High pass</option>
+                    <option value="lowpass">Low pass</option>
+                  </select>
+                  <div class="eq-knobs">
+                    <label class="eq-knob"><span>FREQ</span><input type="number" id="eqFreq" min="20" max="20000" step="1" /></label>
+                    <label class="eq-knob"><span>GAIN</span><input type="number" id="eqGain" min="-12" max="12" step="0.1" /></label>
+                    <label class="eq-knob"><span>Q</span><input type="number" id="eqQ" min="0.1" max="18" step="0.01" /></label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <section class="card">
+          <div class="card-head"><h2>Conversation</h2></div>
+          <div class="card-body"><div class="log" id="log"></div></div>
+        </section>
+      </div>
+
+      <!-- VOICE -->
+      <div id="page-voice" class="page">
+        <section class="card">
+          <div class="card-head"><h2>Voice clone</h2></div>
+          <div class="card-body">
+            <div class="voicebar">
+              <select class="voiceselect" id="voiceSelect" disabled><option value="">Loading voices&hellip;</option></select>
+              <input type="file" id="voiceFile" accept=".wav,.flac,.ogg,.mp3,.m4a,audio/*" hidden />
+              <button class="ghost" id="uploadBtn" disabled>Upload</button>
+            </div>
+            <audio class="voicepreview" id="voicePreview" controls preload="none" hidden></audio>
+            <span class="voicename" id="voiceName"></span>
+          </div>
+        </section>
+      </div>
+
+      <!-- AVATAR -->
+      <div id="page-avatar" class="page">
+        <section class="card">
+          <div class="card-head"><h2>VTuber</h2><span class="conn off" id="vtsConn">Off</span></div>
+          <div class="card-body">
+            <label class="toggle">
+              <input type="checkbox" id="vtsEnabled" disabled />
+              <span>Enable VTube Studio<span class="t-sub">Expressions &amp; lip-sync on port 8001.</span></span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="autoExpress" disabled />
+              <span>Auto expressions<span class="t-sub">Emote per reply from detected emotion.</span></span>
+            </label>
+            <div class="vts-info" id="vtsInfo">Disabled.</div>
+            <div class="vts-expr" id="vtsExpr" hidden>Expression: <span class="pill" id="vtsExprName"></span></div>
+            <div class="vts-map" id="vtsMap" hidden>
+              <div class="group-title">Emotion &rarr; action</div>
+              <div id="vtsMapRows"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- SETTINGS -->
+      <div id="page-settings" class="page">
+        <section class="card">
+          <div class="card-head"><h2>Personality &amp; speech</h2></div>
+          <div class="card-body">
+            <div class="group">
+              <div class="group-title">Personality</div>
+              <div class="field">
+                <label for="personalitySelect">Saved personalities</label>
+                <div class="persona-bar">
+                  <select class="input" id="personalitySelect" disabled>
+                    <option value="">Loading&hellip;</option>
+                  </select>
+                  <button type="button" class="btn-mini danger" id="personalityDeleteBtn" disabled title="Delete selected preset">Delete</button>
+                </div>
+              </div>
+              <div class="field">
+                <label for="personalityName">Preset name</label>
+                <input class="input" id="personalityName" placeholder="e.g. Maya, DJ mode, Serious" disabled />
+              </div>
+              <div class="persona-actions">
+                <button type="button" class="primary" id="personalitySaveNewBtn" disabled>Save as new</button>
+                <button type="button" class="ghost" id="personalityUpdateBtn" disabled>Update selected</button>
+                <button type="button" class="ghost" id="personalityImportBtn" disabled>Import card</button>
+                <button type="button" class="ghost" id="personalityExportBtn" disabled>Export card</button>
+                <input type="file" id="personalityImportFile" accept=".json,application/json,.png,image/png" hidden />
+              </div>
+              <p class="card-hint">Character Card V2 fields (SillyTavern-compatible). Use <code>{{char}}</code> and <code>{{user}}</code> in text. Import <code>.json</code> or SillyTavern <code>.png</code> cards; export <code>.json</code>.</p>
+              <details class="sub" open>
+                <summary>Smart builder</summary>
+                <div class="sub-body">
+                  <div class="field">
+                    <label for="characterBuilderPrompt">Describe your character</label>
+                    <textarea id="characterBuilderPrompt" disabled placeholder="A sarcastic medieval blacksmith who loves puns and speaks in short bursts…"></textarea>
+                  </div>
+                  <div class="persona-actions">
+                    <button type="button" class="primary" id="characterBuilderBtn" disabled>Generate card</button>
+                  </div>
+                  <p class="card-hint" id="characterBuilderStatus">Describe a character in plain language — the LLM fills in the card fields below. Review, edit, then Save as new.</p>
+                </div>
+              </details>
+              <details class="sub" open>
+                <summary>Character card fields</summary>
+                <div class="sub-body card-fields">
+                  <div class="field">
+                    <label for="cardDescription">Description</label>
+                    <textarea id="cardDescription" disabled placeholder="Who they are, appearance, background…"></textarea>
+                  </div>
+                  <div class="field">
+                    <label for="cardPersonality">Personality</label>
+                    <textarea id="cardPersonality" disabled placeholder="Traits, tone, demeanor…"></textarea>
+                  </div>
+                  <div class="field">
+                    <label for="cardScenario">Scenario</label>
+                    <textarea id="cardScenario" disabled placeholder="Current setting or context…"></textarea>
+                  </div>
+                  <div class="field">
+                    <label for="cardFirstMes">First message</label>
+                    <textarea id="cardFirstMes" disabled placeholder="How they would greet {{user}}…"></textarea>
+                  </div>
+                  <div class="field">
+                    <label for="cardMesExample">Example messages</label>
+                    <textarea id="cardMesExample" disabled placeholder="<START>&#10;{{user}}: …&#10;{{char}}: …"></textarea>
+                  </div>
+                  <div class="field">
+                    <label for="cardSystemPrompt">System prompt override</label>
+                    <textarea id="cardSystemPrompt" disabled placeholder="Optional. Replaces default layout. {{original}} keeps voice rules."></textarea>
+                  </div>
+                  <div class="field">
+                    <label for="cardPostHistory">Post-history instructions</label>
+                    <textarea id="cardPostHistory" disabled placeholder="Reinforcement after chat history…"></textarea>
+                  </div>
+                  <div class="field">
+                    <label for="cardTags">Tags</label>
+                    <input class="input" id="cardTags" disabled placeholder="vtuber, comedy, discord" />
+                  </div>
+                </div>
+              </details>
+              <details class="sub">
+                <summary>Creator notes (not sent to the AI)</summary>
+                <div class="sub-body"><p class="creator-notes" id="creatorNotes">—</p></div>
+              </details>
+              <details class="sub">
+                <summary>Compiled prompt preview</summary>
+                <div class="sub-body">
+                  <textarea id="systemPrompt" readonly placeholder="Compiled from card fields…"></textarea>
+                </div>
+              </details>
+            </div>
+            <div class="group">
+              <div class="group-title">Speech &amp; interruption</div>
+              <div class="row">
+                <div class="field">
+                  <label for="delivery">Speech delivery</label>
+                  <select class="input" id="delivery">
+                    <option value="full">Full reply, one take</option>
+                    <option value="hybrid">Hybrid</option>
+                    <option value="off">Per sentence</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="bargeMode">Barge-in</label>
+                  <select class="input" id="bargeMode">
+                    <option value="smart">Smart</option>
+                    <option value="instant">Instant</option>
+                    <option value="off">Off</option>
+                  </select>
+                </div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="autoInstruct" disabled />
+                <span>Adapt voice delivery per reply</span>
+              </label>
+              <label class="toggle">
+                <input type="checkbox" id="xvecOnly" disabled />
+                <span>X-vector clone only</span>
+              </label>
+            </div>
+            <div class="group">
+              <div class="group-title">Volume</div>
+              <div class="row">
+                <div class="field">
+                  <label for="agentVolume">Agent voice <span id="agentVolumeVal">100%</span></label>
+                  <input type="range" id="agentVolume" min="0" max="200" value="100" disabled />
+                </div>
+                <div class="field">
+                  <label for="discordVolume">Discord music <span id="discordVolumeVal">85%</span></label>
+                  <input type="range" id="discordVolume" min="0" max="200" value="85" disabled />
+                </div>
+              </div>
+            </div>
+            <div class="group">
+              <div class="group-title">Voice description</div>
+              <details class="sub">
+                <summary>Build a description</summary>
+                <div class="sub-body">
+                  <div class="desc-grid">
+                    <input data-k="gender" placeholder="gender" />
+                    <input data-k="age" placeholder="age" />
+                    <input data-k="accent" placeholder="accent" />
+                    <input data-k="pitch" placeholder="pitch" />
+                    <input data-k="speed" placeholder="speed" />
+                    <input data-k="volume" placeholder="volume" />
+                    <input data-k="clarity" placeholder="clarity" />
+                    <input data-k="fluency" placeholder="fluency" />
+                    <input data-k="texture" placeholder="texture" />
+                    <input data-k="emotion" placeholder="emotion" />
+                    <input data-k="tone" placeholder="tone" />
+                    <input data-k="personality" placeholder="personality" />
+                  </div>
+                </div>
+              </details>
+              <textarea id="voiceDesc" placeholder="pitch: Slightly high. speed: Conversational."></textarea>
+            </div>
+            <div class="actions">
+              <button class="primary" id="saveBtn" disabled>Save settings</button>
+              <span class="saved" id="savedMsg">Saved</span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- MEMORY: curated memory, semantic store, sessions, approvals -->
+      <div id="page-memory" class="page">
+        <div class="grid-2">
+          <section class="card">
+            <div class="card-head"><h2>User profile</h2><span class="meta" id="userUsage"></span></div>
+            <div class="card-body">
+              <ul class="mem-list" id="userList"><li class="mem-empty">No entries yet.</li></ul>
+              <div class="mem-add">
+                <input class="input" id="userAdd" placeholder="Add a fact about the user&hellip;" />
+                <button class="primary" id="userAddBtn">Add</button>
+              </div>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Agent notes</h2><span class="meta" id="memUsage"></span></div>
+            <div class="card-body">
+              <ul class="mem-list" id="memList"><li class="mem-empty">No entries yet.</li></ul>
+              <div class="mem-add">
+                <input class="input" id="memAdd" placeholder="Add a note the agent should remember&hellip;" />
+                <button class="primary" id="memAddBtn">Add</button>
+              </div>
+            </div>
+          </section>
+        </div>
+        <section class="card" id="pendingCard" hidden>
+          <div class="card-head"><h2>Pending approvals</h2><span class="meta">Review what the agent wants to save</span></div>
+          <div class="card-body"><ul class="mem-list" id="pendingList"></ul></div>
+        </section>
+        <div class="grid-2">
+          <section class="card">
+            <div class="card-head"><h2>Semantic memory</h2><span class="meta" id="cogMeta"></span></div>
+            <div class="card-body">
+              <p class="muted" id="cogStatus">Semantic recall is off.</p>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Skills</h2><span class="meta">Procedures the agent writes</span></div>
+            <div class="card-body">
+              <p class="muted" id="skillsHint">Skills are markdown procedures in <code>data/skills/</code>. The agent can create them with the skill tool.</p>
+              <ul class="mem-list" id="skillsList"><li class="mem-empty">No skills yet.</li></ul>
+              <pre class="db-detail" id="skillDetail" hidden></pre>
+            </div>
+          </section>
+        </div>
+        <section class="card">
+          <div class="card-head">
+            <h2>Explore databases</h2>
+            <span class="meta" id="dbExploreMeta">state.db · cognitive.db</span>
+          </div>
+          <div class="card-body">
+            <div class="db-toolbar">
+              <select class="input" id="dbSelect" style="width:auto;min-width:140px">
+                <option value="state">state.db (sessions)</option>
+                <option value="cognitive">cognitive.db (semantic)</option>
+              </select>
+              <select class="input" id="dbSessionFilter" style="width:auto;min-width:180px" hidden>
+                <option value="">All sessions</option>
+              </select>
+              <input class="input" id="dbScopeFilter" placeholder="Scope filter (e.g. global)" style="width:160px" hidden />
+              <button class="primary" id="dbRefreshBtn" type="button">Refresh</button>
+              <span class="meta" id="dbPageMeta"></span>
+            </div>
+            <div class="db-table-wrap">
+              <table class="db-table" id="dbTable">
+                <thead id="dbTableHead"></thead>
+                <tbody id="dbTableBody"></tbody>
+              </table>
+            </div>
+            <div class="db-pager">
+              <button type="button" id="dbPrevBtn">Previous</button>
+              <button type="button" id="dbNextBtn">Next</button>
+            </div>
+          </div>
+        </section>
+        <div class="grid-2">
+          <section class="card">
+            <div class="card-head"><h2>Settings</h2></div>
+            <div class="card-body">
+              <label class="toggle">
+                <input type="checkbox" id="writeApproval" disabled />
+                <span>Require approval before saving memory</span>
+              </label>
+              <div class="field" style="margin-top:12px">
+                <label for="sessionSearch">Search past conversations</label>
+                <div class="mem-add">
+                  <input class="input" id="sessionSearch" placeholder="e.g. what did we talk about&hellip;" />
+                  <button class="primary" id="sessionSearchBtn">Search</button>
+                </div>
+              </div>
+              <ul class="mem-list" id="sessionResults"></ul>
+            </div>
+          </section>
+        </div>
+      </div>
+      <div id="page-tools" class="page">
+        <section class="card">
+          <div class="card-head"><h2>Tool runtime</h2><span class="meta" id="toolMeta"></span></div>
+          <div class="card-body">
+            <p class="muted" id="toolStatus">Loading&hellip;</p>
+            <ul class="tool-list" id="toolList"></ul>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>MCP servers</h2><span class="meta">Configured in mcp_servers.json</span></div>
+          <div class="card-body">
+            <ul class="tool-list" id="mcpList"><li class="mem-empty">No MCP servers configured.</li></ul>
+            <p class="muted" style="margin-top:10px">Copy <code>mcp_servers.json.example</code> to <code>mcp_servers.json</code>, enable a server, and restart.</p>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Recent tool calls</h2></div>
+          <div class="card-body"><ul class="tool-log" id="toolLog"><li class="mem-empty">No tool calls yet.</li></ul></div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .mem-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .mem-list li { background: var(--surface); border: 1px solid var(--line); border-radius: 0;
+    padding: 10px 12px; font-size: 13px; line-height: 1.5; display: flex; gap: 10px; align-items: flex-start; }
+  .mem-list li.mem-empty { color: var(--muted); justify-content: center; border-style: dashed; }
+  .mem-list li .mem-text { flex: 1; word-break: break-word; }
+  .mem-list li button { background: transparent; border: none; color: var(--muted); cursor: pointer;
+    font-size: 16px; line-height: 1; padding: 2px 4px; border-radius: 0; }
+  .mem-list li button:hover { color: #f87171; background: rgba(248,113,113,0.12); }
+  .mem-add { display: flex; gap: 8px; margin-top: 12px; }
+  .mem-add .input { flex: 1; }
+  .pending-actions button { font-size: 12px; padding: 4px 10px; border-radius: 0; border: 1px solid var(--line);
+    background: var(--surface); color: var(--text); cursor: pointer; margin-left: 6px; }
+  .pending-actions .approve { border-color: var(--purple); color: var(--purple); }
+  .tool-list, .tool-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .tool-list li, .tool-log li { background: var(--surface); border: 1px solid var(--line); border-radius: 0;
+    padding: 9px 12px; font-size: 13px; display: flex; gap: 10px; align-items: center; }
+  .tool-list li.mem-empty, .tool-log li.mem-empty { color: var(--muted); justify-content: center; border-style: dashed; }
+  .tool-badge { font-size: 11px; padding: 2px 8px; border-radius: 0; background: var(--purple-dim);
+    color: var(--purple); flex-shrink: 0; }
+  .tool-list li .tool-desc { color: var(--muted); flex: 1; }
+  .tool-dot { width: 8px; height: 8px; border-radius: 0; flex-shrink: 0; }
+  .tool-dot.on { background: #34d399; } .tool-dot.off { background: #f87171; }
+  .muted { color: var(--muted); font-size: 13px; }
+  input.input, .mem-add input {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 0;
+    padding: 10px 12px; font-size: 13px; font-family: inherit;
+  }
+  input.input:focus, .mem-add input:focus { outline: none; border-color: var(--purple); }
+  .db-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .db-table-wrap { overflow-x: auto; border: 1px solid var(--line); max-height: 360px; overflow-y: auto; }
+  .db-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .db-table th, .db-table td { border-bottom: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  .db-table th { position: sticky; top: 0; background: var(--surface); color: var(--muted); font-weight: 600; }
+  .db-table td.content-cell { max-width: 420px; word-break: break-word; white-space: pre-wrap; }
+  .db-pager { display: flex; gap: 8px; margin-top: 10px; }
+  .db-pager button { padding: 6px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; }
+  .db-detail { margin-top: 10px; padding: 10px; background: var(--bg); border: 1px solid var(--line);
+    font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
+  .skill-row { cursor: pointer; }
+  .skill-row:hover { border-color: var(--purple); }
+</style>
+
+<script src="/static/eq-ui.js"></script>
+<script>
+  const micBtn = document.getElementById("micBtn");
+  const stage = document.getElementById("stage");
+  const statusEl = document.getElementById("status");
+  const statusText = document.getElementById("statusText");
+  const hint = document.getElementById("hint");
+  const log = document.getElementById("log");
+  const uploadBtn = document.getElementById("uploadBtn");
+  const voiceFile = document.getElementById("voiceFile");
+  const voiceName = document.getElementById("voiceName");
+  const voiceSelect = document.getElementById("voiceSelect");
+  const voicePreview = document.getElementById("voicePreview");
+  const systemPrompt = document.getElementById("systemPrompt");
+  const personalitySelect = document.getElementById("personalitySelect");
+  const personalityName = document.getElementById("personalityName");
+  const personalitySaveNewBtn = document.getElementById("personalitySaveNewBtn");
+  const personalityUpdateBtn = document.getElementById("personalityUpdateBtn");
+  const personalityDeleteBtn = document.getElementById("personalityDeleteBtn");
+  const personalityImportBtn = document.getElementById("personalityImportBtn");
+  const personalityExportBtn = document.getElementById("personalityExportBtn");
+  const personalityImportFile = document.getElementById("personalityImportFile");
+  const characterBuilderPrompt = document.getElementById("characterBuilderPrompt");
+  const characterBuilderBtn = document.getElementById("characterBuilderBtn");
+  const characterBuilderStatus = document.getElementById("characterBuilderStatus");
+  const cardDescription = document.getElementById("cardDescription");
+  const cardPersonality = document.getElementById("cardPersonality");
+  const cardScenario = document.getElementById("cardScenario");
+  const cardFirstMes = document.getElementById("cardFirstMes");
+  const cardMesExample = document.getElementById("cardMesExample");
+  const cardSystemPrompt = document.getElementById("cardSystemPrompt");
+  const cardPostHistory = document.getElementById("cardPostHistory");
+  const cardTags = document.getElementById("cardTags");
+  const creatorNotes = document.getElementById("creatorNotes");
+  const cardFieldEls = [
+    cardDescription, cardPersonality, cardScenario, cardFirstMes,
+    cardMesExample, cardSystemPrompt, cardPostHistory, cardTags,
+  ];
+  let personalityFill = false;
+  const delivery = document.getElementById("delivery");
+  const bargeMode = document.getElementById("bargeMode");
+  const agentVolume = document.getElementById("agentVolume");
+  const agentVolumeVal = document.getElementById("agentVolumeVal");
+  const discordVolume = document.getElementById("discordVolume");
+  const discordVolumeVal = document.getElementById("discordVolumeVal");
+  const saveBtn = document.getElementById("saveBtn");
+  const savedMsg = document.getElementById("savedMsg");
+  const voiceDesc = document.getElementById("voiceDesc");
+  const descInputs = document.querySelectorAll(".desc-grid input");
+  const autoInstruct = document.getElementById("autoInstruct");
+  const xvecOnly = document.getElementById("xvecOnly");
+  const vtsEnabled = document.getElementById("vtsEnabled");
+  const autoExpress = document.getElementById("autoExpress");
+  const eqPreset = document.getElementById("eqPreset");
+  const eqPower = document.getElementById("eqPower");
+  const eqCanvas = document.getElementById("eqCanvas");
+  const eqBandPanel = document.getElementById("eqBandPanel");
+  const eqBandType = document.getElementById("eqBandType");
+  const eqFreq = document.getElementById("eqFreq");
+  const eqGain = document.getElementById("eqGain");
+  const eqQ = document.getElementById("eqQ");
+  const vtsConn = document.getElementById("vtsConn");
+  const vtsInfo = document.getElementById("vtsInfo");
+  const vtsExpr = document.getElementById("vtsExpr");
+  const vtsExprName = document.getElementById("vtsExprName");
+  const vtsMap = document.getElementById("vtsMap");
+  const vtsMapRows = document.getElementById("vtsMapRows");
+  const EMOTION_LABELS = { happy: "Happy", sad: "Sad", angry: "Angry", surprised: "Surprised", thinking: "Thinking", neutral: "Neutral" };
+
+  const eqViz = new EqVisualizer(eqCanvas, {
+    onChange: (payload) => {
+      if (!eqPreset.querySelector('option[value="custom"]')) {
+        const o = document.createElement("option");
+        o.value = "custom"; o.textContent = "Custom";
+        eqPreset.appendChild(o);
+      }
+      eqPreset.value = "custom";
+      postConfig({ eq_preset: "custom", eq_bands: payload.bands });
+    },
+    onSelect: (idx, band) => syncEqBandPanel(idx, band),
+  });
+
+  let ready = false;
+  let running = false;
+  let lastAiMsg = null;
+  let configLoaded = false;
+  let voicesLoaded = false;
+  let eqEnabledState = true;
+
+  const STATUS_LABEL = {
+    idle: "Idle", loading: "Loading model…", listening: "Listening…",
+    hearing: "Hearing you…", transcribing: "Transcribing…",
+    thinking: "Thinking…", speaking: "Speaking…", error: "Error",
+  };
+
+  function setStatus(value) {
+    const known = STATUS_LABEL[value] ? value : "idle";
+    stage.className = "stage " + (running ? value : "idle");
+    statusEl.className = "status " + known;
+    statusText.textContent = STATUS_LABEL[value] || value;
+  }
+
+  function setReady(v) {
+    ready = v;
+    micBtn.disabled = !v;
+    uploadBtn.disabled = !v;
+    saveBtn.disabled = !v;
+    delivery.disabled = !v;
+    bargeMode.disabled = !v;
+    agentVolume.disabled = !v;
+    discordVolume.disabled = !v;
+    autoInstruct.disabled = !v;
+    xvecOnly.disabled = !v;
+    voiceSelect.disabled = !v;
+    vtsEnabled.disabled = !v;
+    autoExpress.disabled = !v;
+    eqPreset.disabled = !v;
+    eqPower.disabled = !v;
+    eqBandType.disabled = !v;
+    eqFreq.disabled = !v;
+    eqGain.disabled = !v;
+    eqQ.disabled = !v;
+    personalitySelect.disabled = !v;
+    personalityName.disabled = !v;
+    personalitySaveNewBtn.disabled = !v;
+    personalityUpdateBtn.disabled = !v;
+    personalityDeleteBtn.disabled = !v;
+    personalityImportBtn.disabled = !v;
+    personalityExportBtn.disabled = !v;
+    characterBuilderPrompt.disabled = !v;
+    characterBuilderBtn.disabled = !v;
+    cardFieldEls.forEach((el) => { if (el) el.disabled = !v; });
+    if (v && !running) { setStatus("idle"); hint.textContent = "Click to start talking."; }
+    if (v && !configLoaded) loadConfig();
+    if (v && !voicesLoaded) loadVoices();
+    if (v) refreshVts();
+  }
+
+  function renderVts(s) {
+    if (!s) return;
+    if (typeof s.enabled === "boolean") vtsEnabled.checked = s.enabled;
+    if (!s.enabled) {
+      vtsConn.className = "conn off"; vtsConn.textContent = "Off";
+      vtsInfo.textContent = "Disabled. Enable to drive a VTube Studio model.";
+      vtsExpr.hidden = true;
+      vtsMap.hidden = true;
+      return;
+    }
+    if (s.authenticated) {
+      vtsConn.className = "conn ok"; vtsConn.textContent = "Connected";
+      const actions = s.actions || [];
+      const mapped = (s.emotions && s.emotions.length) ? s.emotions.length : 0;
+      vtsInfo.textContent = actions.length + " action" + (actions.length === 1 ? "" : "s") +
+        " available · " + mapped + " emotion" + (mapped === 1 ? "" : "s") + " mapped";
+      renderVtsMap(s);
+      vtsMap.hidden = false;
+    } else if (s.connected) {
+      vtsConn.className = "conn wait"; vtsConn.textContent = "Authorizing";
+      vtsInfo.textContent = "Connected — approve the plugin request in VTube Studio.";
+      vtsMap.hidden = true;
+    } else {
+      vtsConn.className = "conn wait"; vtsConn.textContent = "Connecting";
+      vtsInfo.textContent = "Waiting for VTube Studio (turn the plugin API on, port " + (s.port || 8001) + ").";
+      vtsMap.hidden = true;
+    }
+  }
+
+  function renderVtsMap(s) {
+    const emotions = s.emotions_list || Object.keys(EMOTION_LABELS);
+    const actions = s.actions || [];
+    const map = s.map || {};
+    vtsMapRows.innerHTML = "";
+    emotions.forEach((emo) => {
+      const row = document.createElement("div");
+      row.className = "vts-row";
+
+      const label = document.createElement("span");
+      label.className = "vts-emo";
+      label.textContent = EMOTION_LABELS[emo] || emo;
+
+      const sel = document.createElement("select");
+      const none = document.createElement("option");
+      none.value = ""; none.textContent = "— none —";
+      sel.appendChild(none);
+      actions.forEach((a) => {
+        const o = document.createElement("option");
+        o.value = a; o.textContent = a;
+        if ((map[emo] || "") === a) o.selected = true;
+        sel.appendChild(o);
+      });
+      sel.addEventListener("change", () => saveVtsMap());
+
+      const test = document.createElement("button");
+      test.type = "button"; test.className = "btn-mini"; test.textContent = "Test";
+      test.addEventListener("click", () => testVtsAction(sel.value));
+
+      row.appendChild(label); row.appendChild(sel); row.appendChild(test);
+      row.dataset.emotion = emo;
+      vtsMapRows.appendChild(row);
+    });
+  }
+
+  async function saveVtsMap() {
+    const map = {};
+    vtsMapRows.querySelectorAll(".vts-row").forEach((row) => {
+      const sel = row.querySelector("select");
+      map[row.dataset.emotion] = sel ? sel.value : "";
+    });
+    try {
+      const r = await fetch("/vts-map", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ map }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d && d.ok) renderVts(d);
+    } catch (err) { /* ignore */ }
+  }
+
+  async function testVtsAction(name) {
+    if (!name) return;
+    try {
+      await fetch("/vts-test", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: name }),
+      });
+    } catch (err) { /* ignore */ }
+  }
+
+  async function refreshVts() {
+    try {
+      const r = await fetch("/vts-status");
+      const d = await r.json().catch(() => ({}));
+      if (d && d.ok) renderVts(d);
+    } catch (err) { /* ignore */ }
+  }
+
+  function setPreview(file) {
+    if (file) {
+      voicePreview.src = "/voice-audio/" + encodeURIComponent(file);
+      voicePreview.hidden = false;
+    } else {
+      voicePreview.removeAttribute("src");
+      voicePreview.hidden = true;
+    }
+  }
+
+  async function loadVoices(selectFile) {
+    try {
+      const r = await fetch("/voices");
+      const d = await r.json().catch(() => ({}));
+      if (!d || !d.ok) return;
+      voicesLoaded = true;
+      const want = selectFile || d.current;
+      voiceSelect.innerHTML = "";
+      if (!d.voices.length) {
+        const o = document.createElement("option");
+        o.value = ""; o.textContent = "No voices in folder";
+        voiceSelect.appendChild(o);
+        setPreview(null);
+        return;
+      }
+      d.voices.forEach((v) => {
+        const o = document.createElement("option");
+        o.value = v.file; o.textContent = v.name;
+        if (v.file === want) o.selected = true;
+        voiceSelect.appendChild(o);
+      });
+      if (voiceSelect.value) setPreview(voiceSelect.value);
+    } catch (err) { /* ignore */ }
+  }
+
+  async function loadConfig() {
+    try {
+      const r = await fetch("/config");
+      const d = await r.json().catch(() => ({}));
+      if (!d || !d.ok) return;
+      configLoaded = true;
+      if (typeof d.system_prompt === "string")
+        systemPrompt.value = d.system_prompt;
+      loadPersonalityDetail(d.personalities);
+      if (d.delivery) delivery.value = d.delivery;
+      if (d.barge_mode) bargeMode.value = d.barge_mode;
+      if (typeof d.output_volume_percent === "number") {
+        agentVolume.value = d.output_volume_percent;
+        agentVolumeVal.textContent = `${d.output_volume_percent}%`;
+      }
+      if (typeof d.discord_music_volume_percent === "number") {
+        discordVolume.value = d.discord_music_volume_percent;
+        discordVolumeVal.textContent = `${d.discord_music_volume_percent}%`;
+      }
+      if (typeof d.instruct === "string" && document.activeElement !== voiceDesc)
+        voiceDesc.value = d.instruct;
+      if (typeof d.auto_instruct === "boolean") autoInstruct.checked = d.auto_instruct;
+      if (typeof d.auto_express === "boolean") autoExpress.checked = d.auto_express;
+      if (typeof d.xvec_only === "boolean") xvecOnly.checked = d.xvec_only;
+      if (typeof d.vts_enabled === "boolean") vtsEnabled.checked = d.vts_enabled;
+      if (typeof d.memory_write_approval === "boolean") {
+        writeApproval.checked = d.memory_write_approval;
+        writeApproval.disabled = !d.memory_enabled;
+      }
+      if (Array.isArray(d.eq_presets)) populateEqPresets(d.eq_presets, d.eq_preset);
+      if (d.eq_catalog && eqViz) eqViz.setCatalog(d.eq_catalog);
+      eqEnabledState = d.eq_enabled !== false;
+      eqPower.classList.toggle("on", eqEnabledState);
+      if (eqViz) {
+        eqViz.setEnabled(eqEnabledState);
+        eqViz.setPreset(d.eq_preset || "off", d.eq_bands);
+      }
+    } catch (err) { /* ignore */ }
+  }
+
+  function populateEqPresets(presets, selected) {
+    const cur = selected || eqPreset.value;
+    eqPreset.innerHTML = "";
+    presets.forEach((p) => {
+      const o = document.createElement("option");
+      o.value = p.id; o.textContent = p.label;
+      if (p.id === cur) o.selected = true;
+      eqPreset.appendChild(o);
+    });
+    if (cur === "custom" && !presets.some((p) => p.id === "custom")) {
+      const o = document.createElement("option");
+      o.value = "custom"; o.textContent = "Custom"; o.selected = true;
+      eqPreset.appendChild(o);
+    }
+  }
+
+  function selectEqPreset(id) {
+    if (!id) return;
+    if (id === "custom" && !eqPreset.querySelector('option[value="custom"]')) {
+      const o = document.createElement("option");
+      o.value = "custom"; o.textContent = "Custom";
+      eqPreset.appendChild(o);
+    }
+    if (eqPreset.querySelector('option[value="' + id + '"]')) eqPreset.value = id;
+  }
+
+  function applyEqFromConfig(d) {
+    if (!eqViz || !d) return;
+    if (d.eq_catalog) eqViz.setCatalog(d.eq_catalog);
+    // Only rebuild the dropdown when the full preset list is present; SSE
+    // "settings" events omit it, so just update the selected value instead
+    // (otherwise the list would collapse to only "Custom").
+    if (Array.isArray(d.eq_presets) && d.eq_presets.length) {
+      populateEqPresets(d.eq_presets, d.eq_preset);
+    } else {
+      selectEqPreset(d.eq_preset);
+    }
+    if (d.eq_preset) {
+      eqViz.setPreset(d.eq_preset, d.eq_bands);
+    }
+    if (typeof d.eq_enabled === "boolean") {
+      eqEnabledState = d.eq_enabled;
+      eqPower.classList.toggle("on", eqEnabledState);
+      eqViz.setEnabled(eqEnabledState);
+    }
+  }
+
+  function syncEqBandPanel(idx, band) {
+    if (!band) { eqBandPanel.hidden = true; return; }
+    eqBandPanel.hidden = false;
+    eqBandType.value = band.type;
+    eqFreq.value = Math.round(band.freq);
+    eqGain.value = Number(band.gain_db || 0).toFixed(1);
+    eqQ.value = Number(band.q || 0.71).toFixed(2);
+    const hpLp = band.type === "highpass" || band.type === "lowpass";
+    eqGain.disabled = hpLp || !ready;
+  }
+
+  function buildDesc() {
+    const lines = [];
+    descInputs.forEach((inp) => {
+      const v = inp.value.trim();
+      if (v) lines.push(inp.dataset.k + ": " + (/[.!?]$/.test(v) ? v : v + "."));
+    });
+    voiceDesc.value = lines.join("\n");
+  }
+  descInputs.forEach((inp) => inp.addEventListener("input", buildDesc));
+
+  function collectCard() {
+    const tags = (cardTags.value || "").split(",").map((s) => s.trim()).filter(Boolean);
+    return {
+      name: (personalityName.value || "").trim(),
+      description: cardDescription.value || "",
+      personality: cardPersonality.value || "",
+      scenario: cardScenario.value || "",
+      first_mes: cardFirstMes.value || "",
+      mes_example: cardMesExample.value || "",
+      system_prompt: cardSystemPrompt.value || "",
+      post_history_instructions: cardPostHistory.value || "",
+      tags,
+      alternate_greetings: [],
+      creator_notes: creatorNotes.textContent === "—" ? "" : (creatorNotes.textContent || ""),
+      creator: "",
+      character_version: "1.0",
+      extensions: {},
+      character_book: null,
+    };
+  }
+
+  function fillCardUI(card, notes, prompt) {
+    const c = card || {};
+    cardDescription.value = c.description || "";
+    cardPersonality.value = c.personality || "";
+    cardScenario.value = c.scenario || "";
+    cardFirstMes.value = c.first_mes || "";
+    cardMesExample.value = c.mes_example || "";
+    cardSystemPrompt.value = c.system_prompt || "";
+    cardPostHistory.value = c.post_history_instructions || "";
+    cardTags.value = Array.isArray(c.tags) ? c.tags.join(", ") : "";
+    creatorNotes.textContent = (notes || c.creator_notes || "").trim() || "—";
+    if (typeof prompt === "string") systemPrompt.value = prompt;
+    else if (c.name && !cardSystemPrompt.value) personalityName.value = c.name;
+    if (c.name) personalityName.value = c.name;
+  }
+
+  async function loadPersonalityDetail(listing) {
+    try {
+      const r = await fetch("/personalities");
+      const d = await r.json().catch(() => ({}));
+      if (!d || !d.ok) return;
+      if (listing) renderPersonalities(listing);
+      else if (d.personalities) renderPersonalities(d);
+      if (d.card) fillCardUI(d.card, d.creator_notes, d.system_prompt || systemPrompt.value);
+    } catch { /* ignore */ }
+  }
+
+  function applyPersonalityResponse(d) {
+    if (!d) return;
+    if (typeof d.prompt === "string" || typeof d.system_prompt === "string")
+      systemPrompt.value = d.prompt || d.system_prompt || "";
+    if (d.card) fillCardUI(d.card, d.creator_notes, systemPrompt.value);
+    if (d.personalities) renderPersonalities(d);
+  }
+
+  function renderPersonalities(data) {
+    if (!data) return;
+    personalityFill = true;
+    const active = data.active || "";
+    const items = data.personalities || [];
+    personalitySelect.innerHTML = "";
+    if (!items.length) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = "No saved presets yet";
+      personalitySelect.appendChild(o);
+    } else {
+      items.forEach((p) => {
+        const o = document.createElement("option");
+        o.value = p.id;
+        o.textContent = p.name || p.id;
+        if (p.id === active) o.selected = true;
+        personalitySelect.appendChild(o);
+      });
+      const activeItem = items.find((p) => p.id === active);
+      if (activeItem && document.activeElement !== personalityName)
+        personalityName.value = activeItem.name || "";
+    }
+    personalityFill = false;
+  }
+
+  personalitySelect.addEventListener("change", async () => {
+    if (personalityFill || !ready) return;
+    const id = personalitySelect.value;
+    if (!id) return;
+    const d = await postJson("/personalities/activate", { id });
+    applyPersonalityResponse(d);
+    if (d && d.ok) flashSaved();
+  });
+
+  personalitySaveNewBtn.addEventListener("click", async () => {
+    const name = (personalityName.value || "").trim();
+    if (!name) { personalityName.focus(); return; }
+    const d = await postJson("/personalities/save", { name, card: collectCard(), activate: true });
+    applyPersonalityResponse(d);
+    if (d && d.ok) flashSaved();
+  });
+
+  personalityUpdateBtn.addEventListener("click", async () => {
+    const id = personalitySelect.value;
+    if (!id) return;
+    const name = (personalityName.value || "").trim() ||
+      personalitySelect.selectedOptions[0]?.textContent || id;
+    const d = await postJson("/personalities/save", {
+      id, name, card: collectCard(), activate: true,
+    });
+    applyPersonalityResponse(d);
+    if (d && d.ok) flashSaved();
+  });
+
+  personalityDeleteBtn.addEventListener("click", async () => {
+    const id = personalitySelect.value;
+    if (!id || !confirm("Delete this personality preset?")) return;
+    const d = await postJson("/personalities/delete", { id });
+    applyPersonalityResponse(d);
+    if (d && d.ok) flashSaved();
+  });
+
+  personalityImportBtn.addEventListener("click", () => personalityImportFile.click());
+  characterBuilderBtn.addEventListener("click", async () => {
+    const prompt = (characterBuilderPrompt.value || "").trim();
+    if (!prompt) {
+      characterBuilderPrompt.focus();
+      return;
+    }
+    const prevLabel = characterBuilderBtn.textContent;
+    characterBuilderBtn.disabled = true;
+    characterBuilderBtn.textContent = "Generating…";
+    characterBuilderStatus.textContent = "Calling the LLM…";
+    try {
+      const d = await postJson("/personalities/build", { prompt });
+      if (!d || !d.ok) {
+        characterBuilderStatus.textContent = "Generation failed: " + ((d && d.error) || "unknown error");
+        return;
+      }
+      if (typeof d.system_prompt === "string") systemPrompt.value = d.system_prompt;
+      if (d.card) fillCardUI(d.card, d.creator_notes, d.system_prompt || systemPrompt.value);
+      characterBuilderStatus.textContent = "Generated — review the fields below, edit if needed, then Save as new.";
+      document.querySelector(".card-fields")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch {
+      characterBuilderStatus.textContent = "Generation failed — is the LLM server running?";
+    } finally {
+      characterBuilderBtn.disabled = !ready;
+      characterBuilderBtn.textContent = prevLabel;
+    }
+  });
+  personalityImportFile.addEventListener("change", async () => {
+    const file = personalityImportFile.files && personalityImportFile.files[0];
+    personalityImportFile.value = "";
+    if (!file) return;
+    const isPng = /\.png$/i.test(file.name) || file.type === "image/png";
+    try {
+      let d;
+      if (isPng) {
+        const fd = new FormData();
+        fd.append("file", file);
+        const r = await fetch("/personalities/import-png", { method: "POST", body: fd });
+        d = await r.json();
+      } else {
+        const raw = JSON.parse(await file.text());
+        d = await postJson("/personalities/import", raw);
+      }
+      applyPersonalityResponse(d);
+      if (d && d.ok) flashSaved();
+      else if (d && d.error) alert("Import failed: " + d.error);
+    } catch {
+      alert("Could not import that file — expected Character Card V2 JSON or SillyTavern PNG.");
+    }
+  });
+
+  personalityExportBtn.addEventListener("click", async () => {
+    const id = personalitySelect.value;
+    if (!id) return;
+    try {
+      const r = await fetch("/personalities/export?id=" + encodeURIComponent(id));
+      const d = await r.json();
+      if (!d || !d.ok || !d.export) return;
+      const blob = new Blob([JSON.stringify(d.export, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = (d.export.data?.name || id).replace(/[^\w.-]+/g, "_") + ".json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch { /* ignore */ }
+  });
+
+  function flashSaved() {
+    savedMsg.classList.add("show");
+    setTimeout(() => savedMsg.classList.remove("show"), 1400);
+  }
+
+  async function postConfig(payload) {
+    try {
+      const r = await fetch("/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d && d.ok) flashSaved();
+      return d;
+    } catch (err) { return null; }
+  }
+
+  saveBtn.addEventListener("click", async () => {
+    if (!ready) return;
+    saveBtn.disabled = true;
+    await postConfig({
+      delivery: delivery.value,
+      barge_mode: bargeMode.value,
+      instruct: voiceDesc.value,
+    });
+    saveBtn.disabled = !ready;
+  });
+
+  delivery.addEventListener("change", () => postConfig({ delivery: delivery.value }));
+  bargeMode.addEventListener("change", () => postConfig({ barge_mode: bargeMode.value }));
+  agentVolume.addEventListener("input", () => {
+    agentVolumeVal.textContent = `${agentVolume.value}%`;
+  });
+  agentVolume.addEventListener("change", () => {
+    postConfig({ output_volume: Number(agentVolume.value) / 100 });
+  });
+  discordVolume.addEventListener("input", () => {
+    discordVolumeVal.textContent = `${discordVolume.value}%`;
+  });
+  discordVolume.addEventListener("change", () => {
+    postConfig({ discord_music_volume: Number(discordVolume.value) / 100 });
+  });
+  autoInstruct.addEventListener("change", () => postConfig({ auto_instruct: autoInstruct.checked }));
+  autoExpress.addEventListener("change", () => postConfig({ auto_express: autoExpress.checked }));
+  xvecOnly.addEventListener("change", () => postConfig({ xvec_only: xvecOnly.checked }));
+  eqPower.addEventListener("click", async () => {
+    eqEnabledState = !eqEnabledState;
+    eqPower.classList.toggle("on", eqEnabledState);
+    if (eqViz) eqViz.setEnabled(eqEnabledState);
+    const d = await postConfig({ eq_enabled: eqEnabledState });
+    if (d) applyEqFromConfig(d);
+  });
+  eqPreset.addEventListener("change", async () => {
+    if (eqPreset.value === "custom") return;
+    const d = await postConfig({ eq_preset: eqPreset.value });
+    if (d) applyEqFromConfig(d);
+    eqBandPanel.hidden = true;
+  });
+  eqBandType.addEventListener("change", () => {
+    if (eqViz) eqViz.updateBandParam("type", eqBandType.value);
+  });
+  eqFreq.addEventListener("change", () => {
+    if (eqViz) eqViz.updateBandParam("freq", parseFloat(eqFreq.value));
+  });
+  eqGain.addEventListener("change", () => {
+    if (eqViz) eqViz.updateBandParam("gain_db", parseFloat(eqGain.value));
+  });
+  eqQ.addEventListener("change", () => {
+    if (eqViz) eqViz.updateBandParam("q", parseFloat(eqQ.value));
+  });
+  document.querySelectorAll(".nav-item").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".page").forEach((p) => p.classList.remove("active"));
+      btn.classList.add("active");
+      const page = btn.dataset.page;
+      document.getElementById("page-" + page).classList.add("active");
+      const titles = { talk: "Home", voice: "Voice", avatar: "Avatar", memory: "Memory", tools: "Tools", settings: "Settings" };
+      const headings = { talk: "Hello!", voice: "Voice", avatar: "Avatar", memory: "Memory", tools: "Tools", settings: "Settings" };
+      const subs = {
+        talk: "Real-time voice agent with live EQ and VTuber support.",
+        voice: "Choose or upload a voice to clone.",
+        avatar: "VTube Studio expressions and lip-sync.",
+        memory: "What the agent remembers about you and itself.",
+        tools: "Built-in tools and connected MCP servers.",
+        settings: "Personality, speech delivery, and voice description.",
+      };
+      document.getElementById("pageTitle").textContent = titles[page] || page;
+      document.getElementById("pageHeading").textContent = headings[page] || page;
+      document.getElementById("pageSubtitle").textContent = subs[page] || "";
+      if (page === "memory") refreshMemory();
+      if (page === "settings") loadPersonalityDetail();
+      if (page === "tools") refreshTools();
+      if (eqViz) setTimeout(() => eqViz.resize(), 50);
+    });
+  });
+  vtsEnabled.addEventListener("change", async () => {
+    await postConfig({ vts_enabled: vtsEnabled.checked });
+    refreshVts();
+    if (vtsEnabled.checked) setTimeout(refreshVts, 1500);
+  });
+
+  function addMessage(role, text) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg " + role;
+    const who = document.createElement("div");
+    who.className = "who";
+    who.textContent = role === "user" ? "You" : "Agent";
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.textContent = text;
+    wrap.appendChild(who); wrap.appendChild(bubble);
+    log.appendChild(wrap);
+    log.scrollTop = log.scrollHeight;
+    return wrap;
+  }
+
+  async function start() {
+    const r = await fetch("/start", { method: "POST" });
+    const d = await r.json().catch(() => ({}));
+    if (d && d.ok) {
+      running = true;
+      micBtn.classList.add("active");
+      micBtn.setAttribute("aria-label", "Stop");
+      hint.textContent = "Talk now. Click again to stop.";
+    }
+  }
+
+  async function stop() {
+    await fetch("/stop", { method: "POST" });
+    running = false;
+    micBtn.classList.remove("active");
+    micBtn.setAttribute("aria-label", "Start talking");
+    setStatus("idle");
+    hint.textContent = "Click to start talking.";
+  }
+
+  micBtn.addEventListener("click", () => {
+    if (!ready) return;
+    running ? stop() : start();
+  });
+
+  voiceSelect.addEventListener("change", async () => {
+    const file = voiceSelect.value;
+    if (!file || !ready) return;
+    setPreview(file);
+    voiceName.textContent = "Switching voice\u2026";
+    voiceSelect.disabled = true;
+    try {
+      const r = await fetch("/select-voice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file }),
+      });
+      const d = await r.json().catch(() => ({}));
+      voiceName.textContent = d && d.ok ? "Voice: " + d.name : "Failed: " + ((d && d.error) || "error");
+    } catch (err) {
+      voiceName.textContent = "Failed to switch voice.";
+    } finally {
+      voiceSelect.disabled = !ready;
+    }
+  });
+
+  uploadBtn.addEventListener("click", () => { if (ready) voiceFile.click(); });
+
+  voiceFile.addEventListener("change", async () => {
+    const f = voiceFile.files[0];
+    if (!f) return;
+    uploadBtn.disabled = true;
+    const original = uploadBtn.textContent;
+    uploadBtn.textContent = "Uploading…";
+    voiceName.textContent = "";
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      const r = await fetch("/upload-voice", { method: "POST", body: fd });
+      const d = await r.json().catch(() => ({}));
+      if (d && d.ok) {
+        await loadVoices(d.name);
+        setPreview(d.name);
+        voiceName.textContent = "Cloning: " + d.name + (d.duration ? " (" + d.duration + "s)" : "");
+      } else {
+        voiceName.textContent = "Upload failed: " + ((d && d.error) || "unknown error");
+      }
+    } catch (err) {
+      voiceName.textContent = "Upload failed.";
+    } finally {
+      uploadBtn.textContent = original;
+      uploadBtn.disabled = !ready;
+      voiceFile.value = "";
+    }
+  });
+
+  let specTimer = null;
+  function startSpectrumPoll() {
+    if (specTimer) return;
+    // Poll for the whole "speaking" status. Audio often starts a moment after
+    // the status fires (TTS generates first), so an empty frame just clears the
+    // curve — it must NOT stop the timer, or we'd never catch playback.
+    specTimer = setInterval(async () => {
+      try {
+        const r = await fetch("/spectrum");
+        const d = await r.json();
+        if (!eqViz) return;
+        eqViz.setSpectrumFrame(Array.isArray(d.bands) ? d.bands : []);
+      } catch (e) { /* transient; keep polling */ }
+    }, 60);
+  }
+  function stopSpectrumPoll() {
+    if (specTimer) { clearInterval(specTimer); specTimer = null; }
+    if (eqViz) eqViz.setSpectrumFrame([]);
+  }
+
+  // ----- Memory + Tools pages --------------------------------------------
+  const writeApproval = document.getElementById("writeApproval");
+
+  function currentPage() {
+    const active = document.querySelector(".nav-item.active");
+    return active ? active.dataset.page : "talk";
+  }
+
+  function renderMemList(el, entries, target) {
+    el.innerHTML = "";
+    if (!entries || !entries.length) {
+      el.innerHTML = '<li class="mem-empty">No entries yet.</li>';
+      return;
+    }
+    entries.forEach((text) => {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.className = "mem-text";
+      span.textContent = text;
+      const del = document.createElement("button");
+      del.textContent = "\u00d7";
+      del.title = "Remove";
+      del.onclick = async () => {
+        await fetch("/memory-edit", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "remove", target, old_text: text }) });
+        refreshMemory();
+      };
+      li.appendChild(span); li.appendChild(del);
+      el.appendChild(li);
+    });
+  }
+
+  function renderPending(items) {
+    const card = document.getElementById("pendingCard");
+    const list = document.getElementById("pendingList");
+    if (!items || !items.length) { card.hidden = true; return; }
+    card.hidden = false;
+    list.innerHTML = "";
+    items.forEach((it) => {
+      const p = it.payload || {};
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.className = "mem-text";
+      span.textContent = "[" + (p.target || "memory") + "/" + (p.action || "add") + "] " + (p.content || p.old_text || "");
+      const actions = document.createElement("span");
+      actions.className = "pending-actions";
+      const ok = document.createElement("button"); ok.className = "approve"; ok.textContent = "Approve";
+      ok.onclick = async () => { await postJson("/memory-approve", { id: it.id }); refreshMemory(); };
+      const no = document.createElement("button"); no.textContent = "Reject";
+      no.onclick = async () => { await postJson("/memory-reject", { id: it.id }); refreshMemory(); };
+      actions.appendChild(ok); actions.appendChild(no);
+      li.appendChild(span); li.appendChild(actions);
+      list.appendChild(li);
+    });
+  }
+
+  async function postJson(url, body) {
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}) });
+      return await r.json();
+    } catch { return null; }
+  }
+
+  async function refreshMemory() {
+    let d;
+    try { d = await (await fetch("/memory")).json(); } catch { return; }
+    if (!d || !d.enabled) {
+      document.getElementById("cogStatus").textContent = "Memory is disabled.";
+      return;
+    }
+    const c = d.curated || {};
+    renderMemList(document.getElementById("userList"), c.user, "user");
+    renderMemList(document.getElementById("memList"), c.memory, "memory");
+    document.getElementById("userUsage").textContent = c.user_usage || "";
+    document.getElementById("memUsage").textContent = c.memory_usage || "";
+    renderPending(d.pending);
+    if (typeof d.write_approval === "boolean") { writeApproval.checked = d.write_approval; writeApproval.disabled = false; }
+    const cog = d.cognitive || {};
+    document.getElementById("cogMeta").textContent = cog.model || "";
+    document.getElementById("cogStatus").textContent = cog.total
+      ? (cog.total + " memories stored" + (cog.loaded ? " · model loaded" : " · model lazy-loads on use"))
+      : "No semantic memories yet.";
+    renderSkills(d.skills || []);
+    populateSessionFilter(d.sessions || []);
+    if (currentPage() === "memory") refreshDbExplore(false);
+  }
+
+  function renderSkills(skills) {
+    const list = document.getElementById("skillsList");
+    const detail = document.getElementById("skillDetail");
+    list.innerHTML = "";
+    detail.hidden = true;
+    detail.textContent = "";
+    if (!skills.length) {
+      list.innerHTML = '<li class="mem-empty">No skills yet — the agent can write them via the skill tool.</li>';
+      return;
+    }
+    skills.forEach((s) => {
+      const li = document.createElement("li");
+      li.className = "skill-row";
+      const text = document.createElement("span");
+      text.className = "mem-text";
+      text.innerHTML = "<strong>" + escapeHtml(s.name) + "</strong>" +
+        (s.description ? " — " + escapeHtml(s.description) : "");
+      li.appendChild(text);
+      li.onclick = async () => {
+        const r = await fetch("/memory-skill?name=" + encodeURIComponent(s.name));
+        const data = await r.json().catch(() => ({}));
+        if (data && data.ok) {
+          detail.hidden = false;
+          detail.textContent = data.content || "";
+        }
+      };
+      list.appendChild(li);
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function formatTs(ts) {
+    if (!ts) return "";
+    try { return new Date(ts * 1000).toLocaleString(); } catch { return String(ts); }
+  }
+
+  const dbExplore = { db: "state", offset: 0, limit: 40, sessionId: "", scope: "" };
+
+  function populateSessionFilter(sessions) {
+    const sel = document.getElementById("dbSessionFilter");
+    const current = sel.value;
+    sel.innerHTML = '<option value="">All sessions</option>';
+    sessions.forEach((s) => {
+      const opt = document.createElement("option");
+      opt.value = s.session_id;
+      opt.textContent = s.session_id + " (" + s.messages + " msgs)";
+      sel.appendChild(opt);
+    });
+    if ([...sel.options].some((o) => o.value === current)) sel.value = current;
+  }
+
+  async function refreshDbExplore(resetOffset) {
+    if (resetOffset) dbExplore.offset = 0;
+    const params = new URLSearchParams({
+      db: dbExplore.db,
+      limit: String(dbExplore.limit),
+      offset: String(dbExplore.offset),
+    });
+    if (dbExplore.db === "state" && dbExplore.sessionId) params.set("session_id", dbExplore.sessionId);
+    if (dbExplore.db === "cognitive" && dbExplore.scope) params.set("scope", dbExplore.scope);
+    let data;
+    try { data = await (await fetch("/memory-explore?" + params)).json(); } catch { return; }
+    if (!data || !data.ok) return;
+    const head = document.getElementById("dbTableHead");
+    const body = document.getElementById("dbTableBody");
+    const pageMeta = document.getElementById("dbPageMeta");
+    body.innerHTML = "";
+    if (data.db === "state") {
+      head.innerHTML = "<tr><th>ID</th><th>Time</th><th>Session</th><th>Role</th><th>Content</th></tr>";
+      const rows = data.messages || [];
+      if (!rows.length) body.innerHTML = '<tr><td colspan="5" class="muted">No messages in state.db yet.</td></tr>';
+      rows.forEach((m) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td>" + m.id + "</td><td>" + escapeHtml(formatTs(m.ts)) + "</td><td>" +
+          escapeHtml(m.session_id) + "</td><td>" + escapeHtml(m.role) + '</td><td class="content-cell">' +
+          escapeHtml(m.content) + "</td>";
+        body.appendChild(tr);
+      });
+      const total = data.total || 0;
+      const end = Math.min(total, dbExplore.offset + rows.length);
+      pageMeta.textContent = total ? (dbExplore.offset + 1) + "–" + end + " of " + total : "0 rows";
+    } else {
+      head.innerHTML = "<tr><th>ID</th><th>Time</th><th>Scope</th><th>Imp.</th><th>Content</th></tr>";
+      const rows = data.entries || [];
+      if (!rows.length) body.innerHTML = '<tr><td colspan="5" class="muted">No entries in cognitive.db yet.</td></tr>';
+      rows.forEach((e) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td>" + e.id + "</td><td>" + escapeHtml(formatTs(e.ts)) + "</td><td>" +
+          escapeHtml(e.scope) + "</td><td>" + Number(e.importance).toFixed(2) + '</td><td class="content-cell">' +
+          escapeHtml(e.content) + (e.superseded ? " (superseded)" : "") + "</td>";
+        body.appendChild(tr);
+      });
+      const total = data.total || 0;
+      const end = Math.min(total, dbExplore.offset + rows.length);
+      pageMeta.textContent = total ? (dbExplore.offset + 1) + "–" + end + " of " + total : "0 rows";
+    }
+    document.getElementById("dbPrevBtn").disabled = dbExplore.offset <= 0;
+    document.getElementById("dbNextBtn").disabled =
+      dbExplore.offset + dbExplore.limit >= (data.total || 0);
+  }
+
+  document.getElementById("dbSelect").addEventListener("change", (e) => {
+    dbExplore.db = e.target.value;
+    dbExplore.offset = 0;
+    const isState = dbExplore.db === "state";
+    document.getElementById("dbSessionFilter").hidden = !isState;
+    document.getElementById("dbScopeFilter").hidden = isState;
+    refreshDbExplore(true);
+  });
+  document.getElementById("dbSessionFilter").addEventListener("change", (e) => {
+    dbExplore.sessionId = e.target.value;
+    refreshDbExplore(true);
+  });
+  document.getElementById("dbScopeFilter").addEventListener("change", (e) => {
+    dbExplore.scope = e.target.value.trim();
+    refreshDbExplore(true);
+  });
+  document.getElementById("dbRefreshBtn").addEventListener("click", () => refreshDbExplore(false));
+  document.getElementById("dbPrevBtn").addEventListener("click", () => {
+    dbExplore.offset = Math.max(0, dbExplore.offset - dbExplore.limit);
+    refreshDbExplore(false);
+  });
+  document.getElementById("dbNextBtn").addEventListener("click", () => {
+    dbExplore.offset += dbExplore.limit;
+    refreshDbExplore(false);
+  });
+
+  async function addMemoryEntry(target, inputEl) {
+    const val = (inputEl.value || "").trim();
+    if (!val) return;
+    await postJson("/memory-edit", { action: "add", target, content: val });
+    inputEl.value = "";
+    refreshMemory();
+  }
+  document.getElementById("userAddBtn").onclick = () => addMemoryEntry("user", document.getElementById("userAdd"));
+  document.getElementById("memAddBtn").onclick = () => addMemoryEntry("memory", document.getElementById("memAdd"));
+  writeApproval.addEventListener("change", () => postConfig({ memory_write_approval: writeApproval.checked }));
+
+  document.getElementById("sessionSearchBtn").onclick = async () => {
+    const q = (document.getElementById("sessionSearch").value || "").trim();
+    const out = document.getElementById("sessionResults");
+    if (!q) { out.innerHTML = ""; return; }
+    const sr = await postJson("/session-search", { query: q });
+    out.innerHTML = "";
+    const results = (sr && sr.results) || [];
+    if (!results.length) { out.innerHTML = '<li class="mem-empty">No matches.</li>'; return; }
+    results.forEach((r) => {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.className = "mem-text";
+      span.textContent = (r.role === "user" ? "You: " : "Agent: ") + r.content;
+      li.appendChild(span);
+      out.appendChild(li);
+    });
+  };
+
+  async function refreshTools() {
+    let d;
+    try { d = await (await fetch("/tools-status")).json(); } catch { return; }
+    document.getElementById("toolMeta").textContent = d.enabled ? ("mode: " + (d.mode || "auto") + " · max " + (d.max_rounds || 3) + " rounds") : "";
+    document.getElementById("toolStatus").textContent = d.enabled
+      ? ((d.tools || []).length + " tools available.")
+      : "Tools are disabled.";
+    const tl = document.getElementById("toolList");
+    tl.innerHTML = "";
+    (d.tools || []).forEach((t) => {
+      const li = document.createElement("li");
+      const badge = document.createElement("span"); badge.className = "tool-badge"; badge.textContent = t.group || "tool";
+      const name = document.createElement("strong"); name.textContent = t.name;
+      const desc = document.createElement("span"); desc.className = "tool-desc"; desc.textContent = t.description || "";
+      li.appendChild(badge); li.appendChild(name); li.appendChild(desc);
+      tl.appendChild(li);
+    });
+    if (!(d.tools || []).length) tl.innerHTML = '<li class="mem-empty">No tools registered.</li>';
+    const ml = document.getElementById("mcpList");
+    const servers = (d.mcp && d.mcp.servers) || {};
+    const names = Object.keys(servers);
+    ml.innerHTML = "";
+    if (!names.length) { ml.innerHTML = '<li class="mem-empty">No MCP servers configured.</li>'; return; }
+    names.forEach((n) => {
+      const s = servers[n];
+      const li = document.createElement("li");
+      const dot = document.createElement("span"); dot.className = "tool-dot " + (s.connected ? "on" : "off");
+      const name = document.createElement("strong"); name.textContent = n;
+      const desc = document.createElement("span"); desc.className = "tool-desc";
+      desc.textContent = s.connected ? (s.tools + " tools") : ("error: " + (s.error || "not connected"));
+      li.appendChild(dot); li.appendChild(name); li.appendChild(desc);
+      ml.appendChild(li);
+    });
+  }
+
+  const toolLogItems = [];
+  function pushToolLog(tool, state, args, result) {
+    const ts = new Date().toLocaleTimeString();
+    let line = ts + "  " + tool + "  " + state;
+    if (state === "running" && args) line += "  " + JSON.stringify(args).slice(0, 80);
+    toolLogItems.unshift(line);
+    if (toolLogItems.length > 30) toolLogItems.pop();
+    const el = document.getElementById("toolLog");
+    if (!el) return;
+    el.innerHTML = "";
+    toolLogItems.forEach((l) => {
+      const li = document.createElement("li");
+      const span = document.createElement("span"); span.className = "mem-text"; span.textContent = l;
+      li.appendChild(span); el.appendChild(li);
+    });
+  }
+
+  const es = new EventSource("/events");
+  es.onmessage = (e) => {
+    let ev;
+    try { ev = JSON.parse(e.data); } catch { return; }
+    switch (ev.type) {
+      case "ready": setReady(!!ev.value); break;
+      case "status":
+        if (running || ev.value === "idle" || ev.value === "loading") setStatus(ev.value);
+        if (eqViz) eqViz.setSpeaking(ev.value === "speaking");
+        if (ev.value === "speaking") startSpectrumPoll(); else stopSpectrumPoll();
+        break;
+      case "user": lastAiMsg = null; addMessage("user", ev.text); break;
+      case "ai":
+        if (!lastAiMsg) lastAiMsg = addMessage("ai", ev.text);
+        else lastAiMsg.querySelector(".bubble").textContent += " " + ev.text;
+        log.scrollTop = log.scrollHeight;
+        break;
+      case "barge_in": if (lastAiMsg) lastAiMsg.classList.add("cut"); break;
+      case "settings":
+        if (typeof ev.system_prompt === "string") systemPrompt.value = ev.system_prompt;
+        if (ev.card) fillCardUI(ev.card, ev.creator_notes, ev.system_prompt);
+        if (ev.delivery) delivery.value = ev.delivery;
+        if (ev.barge_mode) bargeMode.value = ev.barge_mode;
+        if (typeof ev.instruct === "string" && document.activeElement !== voiceDesc)
+          voiceDesc.value = ev.instruct;
+        if (typeof ev.auto_instruct === "boolean") autoInstruct.checked = ev.auto_instruct;
+        if (typeof ev.auto_express === "boolean") autoExpress.checked = ev.auto_express;
+        if (typeof ev.xvec_only === "boolean") xvecOnly.checked = ev.xvec_only;
+        if (ev.eq_preset || ev.eq_bands) applyEqFromConfig(ev);
+        if (typeof ev.eq_enabled === "boolean") {
+          eqEnabledState = ev.eq_enabled;
+          eqPower.classList.toggle("on", eqEnabledState);
+          if (eqViz) eqViz.setEnabled(eqEnabledState);
+        }
+        if (typeof ev.memory_write_approval === "boolean") writeApproval.checked = ev.memory_write_approval;
+        if (typeof ev.output_volume_percent === "number") {
+          agentVolume.value = ev.output_volume_percent;
+          agentVolumeVal.textContent = `${ev.output_volume_percent}%`;
+        }
+        if (typeof ev.discord_music_volume_percent === "number") {
+          discordVolume.value = ev.discord_music_volume_percent;
+          discordVolumeVal.textContent = `${ev.discord_music_volume_percent}%`;
+        }
+        break;
+      case "tool_start": pushToolLog(ev.tool, "running", ev.args); break;
+      case "tool_end": pushToolLog(ev.tool, "done", null, ev.result); break;
+      case "memory_updated":
+      case "skill_updated":
+        if (currentPage() === "memory") refreshMemory();
+        break;
+      case "memory_pending":
+        if (currentPage() === "memory") refreshMemory();
+        break;
+      case "delivery":
+        if (lastAiMsg && ev.cue) lastAiMsg.querySelector(".who").textContent = "Agent · " + ev.cue;
+        break;
+      case "voice":
+        voiceName.textContent = "Voice: " + ev.name;
+        if ([...voiceSelect.options].some((o) => o.value === ev.name)) voiceSelect.value = ev.name;
+        setPreview(ev.name);
+        break;
+      case "vts": renderVts(ev); break;
+      case "expression":
+        if (ev.emotion) { vtsExpr.hidden = false; vtsExprName.textContent = ev.emotion; }
+        break;
+      case "error": setStatus("error"); hint.textContent = ev.text || "Something went wrong."; break;
+    }
+  };
+  es.onerror = () => { /* EventSource auto-reconnects */ };
+</script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+output/
+
+# Voice clips are local — add your own reference WAVs after clone.
+voices/*.wav
+voices/*.flac
+voices/*.mp3
+voices/*.ogg
+voices/*.m4a
+voices/*.txt
+voices/upload_*
+!voices/.gitkeep
+!voices/ref.txt
+
+# VTube Studio auth — generated on first connect, never commit.
+vts_token.json
+vts_map.json
+
+# Persistent memory + state (curated notes, session DB, embeddings, skills).
+data/
+
+# Local MCP server config (may reference private paths / credentials).
+mcp_servers.json
+
+# Secrets — never commit.
+.env
+
+# Scratch / debug
+_probe.py
+_thread_test.py
+*.zip

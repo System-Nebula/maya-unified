@@ -1,4 +1,4 @@
-"""Add sibling repos to sys.path without modifying them."""
+"""Resolve bundled qwen3-voice-agent + maya-public inside this repo."""
 
 from __future__ import annotations
 
@@ -6,9 +6,25 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VOICE_AGENT = ROOT.parent / "qwen3-voice-agent"
-MAYA_PUBLIC = ROOT.parent / "maya-public"
 DATA_DIR = ROOT / "data"
+
+
+def _first_existing(*candidates: Path) -> Path:
+    for path in candidates:
+        if path.is_dir():
+            return path
+    return candidates[0]
+
+
+# Bundled in-repo (canonical). Sibling layout kept as a dev fallback only.
+VOICE_AGENT = _first_existing(
+    ROOT / "qwen3-voice-agent",
+    ROOT.parent / "qwen3-voice-agent",
+)
+MAYA_PUBLIC = _first_existing(
+    ROOT / "maya-public",
+    ROOT.parent / "maya-public",
+)
 
 
 def agent_data_dir() -> Path:

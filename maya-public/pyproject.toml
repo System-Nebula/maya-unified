@@ -1,0 +1,28 @@
+[project]
+name = "maya-public"
+version = "0.1.0"
+description = "Public-facing Maya services — arena, feed, image generation contracts"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*", "apps/*"]
+exclude = [
+    "apps/homepage",
+    "packages/maya-audio",
+    "packages/maya-llm",
+    "packages/maya-voice",
+    "packages/maya-voice-stack",
+]
+
+[tool.uv.sources]
+maya-contracts = { workspace = true }
+arena-core = { workspace = true }
+fal-client = { workspace = true }
+obs-client = { workspace = true }
+maya-db = { workspace = true }
+maya-feeds = { workspace = true }
+maya-graph = { workspace = true }
+maya-research = { workspace = true }
+maya-image = { workspace = true }
+maya-spider = { workspace = true }

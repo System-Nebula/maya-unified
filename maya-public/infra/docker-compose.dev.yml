@@ -1,0 +1,24 @@
+# Public-stack dev compose.
+# Postgres is provided by the shared dev.postgres container (started by
+# ~/Workspace/src/crawler/docker-compose.yml). Connect over the external `dev` network.
+# The local `migrate` step is removed — schema is owned by lib/db in ~/Workspace
+# after the topology reconciliation (W3, plan postgresql-infrastructure-audit-audit-abundant-breeze.md).
+# Arena schema migrated to the public-package design via lib/db migration 20260524_200000.
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: apps/maya-gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://maya:maya@dev.postgres:5432/maya
+      ENV: development
+      PORT: "8080"
+    networks: [dev]
+
+networks:
+  dev:
+    external: true
+    name: dev

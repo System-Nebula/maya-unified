@@ -30,10 +30,10 @@
 
           shellHook = ''
             echo "Maya Unified dev shell"
-            echo "  1. cd ../qwen3-voice-agent && python -m venv .venv && source .venv/bin/activate"
+            echo "  1. cd qwen3-voice-agent && python -m venv .venv && source .venv/bin/activate"
             echo "  2. pip install torch torchaudio -f https://download.pytorch.org/whl/cu124"
             echo "  3. pip install -r requirements.txt"
-            echo "  4. cd ../maya-unified && pip install -e . && ./launch.sh"
+            echo "  4. cd .. && pip install -e . && ./launch.sh"
           '';
         };
       });

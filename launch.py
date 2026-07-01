@@ -14,16 +14,20 @@ from services.paths import setup_paths, VOICE_AGENT
 
 setup_paths()
 
-# Prefer the qwen3-voice-agent venv when present (same env that runs server.py today).
-_qwen3_python = VOICE_AGENT / ".venv" / "Scripts" / "python.exe"
+# Prefer the bundled qwen3 venv when present.
+_qwen3_python = (
+    VOICE_AGENT / ".venv" / "Scripts" / "python.exe"
+    if sys.platform == "win32"
+    else VOICE_AGENT / ".venv" / "bin" / "python"
+)
 if _qwen3_python.is_file() and Path(sys.executable).resolve() != _qwen3_python.resolve():
     print(
         f"Tip: run with the qwen3 venv for voice deps:\n  {_qwen3_python} {Path(__file__).name}",
         file=sys.stderr,
     )
 
-# Load .env from maya-unified then qwen3-voice-agent
-for env_file in (ROOT / ".env", ROOT.parent / "qwen3-voice-agent" / ".env"):
+# Load .env from maya-unified then bundled qwen3-voice-agent
+for env_file in (ROOT / ".env", VOICE_AGENT / ".env"):
     if env_file.is_file():
         for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
