@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Room — Maya Unified</title>
+    <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-dashboard.css" />
+  </head>
+  <body>
+    <div class="md-page mv-root" data-mv-theme="dark" x-data="mayaRoom()" x-init="init()">
+      <div class="md-hero">
+        <h1 x-text="room.name || 'Voice room'"></h1>
+        <p class="md-sub" x-text="room.description || slug"></p>
+        <p x-show="!room.available" style="color:var(--mv-danger);">This room is not available.</p>
+      </div>
+
+      <div class="mv-card" x-show="!joined && room.available" style="padding:16px;margin-bottom:16px;">
+        <label>Display name<input class="mv-input" x-model="displayName" style="width:100%;margin-top:4px;" /></label>
+        <button class="mv-btn mv-btn-primary" style="margin-top:12px;" @click="join()">Join room</button>
+      </div>
+
+      <template x-if="joined">
+        <div>
+          <div class="mv-card" style="padding:16px;margin-bottom:16px;max-height:360px;overflow:auto;">
+            <template x-for="msg in messages" :key="msg.id">
+              <div style="margin-bottom:8px;">
+                <span style="font-size:11px;color:var(--mv-muted);" x-text="msg.role"></span>
+                <div x-text="msg.content"></div>
+              </div>
+            </template>
+          </div>
+          <div class="mv-card" style="padding:16px;display:flex;gap:8px;flex-wrap:wrap;">
+            <input class="mv-input" style="flex:1;min-width:200px;" x-model="draft" @keydown.enter.prevent="send()" placeholder="Message Maya…" />
+            <button class="mv-btn mv-btn-primary" @click="send()" :disabled="sending">Send</button>
+            <button class="mv-btn" @click="requestSpeak()" x-text="queuePos ? `Queue #${queuePos}` : 'Request to speak'"></button>
+            <button class="mv-btn" x-show="isActiveSpeaker" @click="releaseSpeak()">Done speaking</button>
+          </div>
+        </div>
+      </template>
+      <p x-show="error" x-text="error" style="color:var(--mv-danger);padding:16px;"></p>
+    </div>
+
+    <script src="/dashboard/vendor/alpine.min.js" defer></script>
+    <script src="/dashboard/js/mayaRoom.js" defer></script>
+  </body>
+</html>

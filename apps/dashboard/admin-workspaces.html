@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin — Workspaces — Maya Unified</title>
+    <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-profile.css" />
+  </head>
+  <body>
+    <header class="mu-shell" x-data="mayaShell()" x-init="init()">
+      <div class="mu-brand">Maya <span>Unified</span></div>
+      <nav class="mu-nav">
+        <a href="/">Dashboard</a>
+        <a href="/memory">Memory</a>
+        <a href="/docs" target="_blank" rel="noopener">API</a>
+      </nav>
+      <div class="mu-status">
+        <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
+      </div>
+      <div class="mu-user" x-show="currentUser" x-data="{ open: false }" @click.away="open = false">
+        <button class="mu-user-btn" @click="open = !open" id="user-menu-btn">
+          <span class="mu-avatar-dot" :style="`background:${currentUser?.avatar_color}`"></span>
+          <span x-text="currentUser?.display_name || currentUser?.username"></span>
+          <span class="mu-chevron">▾</span>
+        </button>
+        <div class="mu-dropdown" x-show="open" x-cloak>
+          <a href="/settings" class="mu-dd-item" :class="{ active: s.page === 'settings' }">Settings</a>
+          <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'" :class="{ active: s.page === 'admin' }">Admin — Users</a>
+          <a href="/admin/workspaces" class="mu-dd-item" x-show="currentUser?.role === 'admin'">Admin — Workspaces</a>
+          <div class="mu-dd-sep"></div>
+          <button class="mu-dd-item mu-dd-signout" id="signout-btn" @click="signOut()">Sign out</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="mp-page mv-root" data-mv-theme="dark" x-data="mayaAdminWorkspaces()" x-init="init()">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+        <div>
+          <h1 style="font-size:20px;font-weight:600;margin:0 0 4px;">Workspaces</h1>
+          <p style="margin:0;font-size:13px;color:var(--mv-muted)">Review and manage operator histories, personalities, and bans.</p>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <a href="/admin/users" class="mv-btn" style="text-decoration:none;">Users</a>
+          <a href="/memory" class="mv-btn" style="text-decoration:none;">Memory explorer</a>
+        </div>
+      </div>
+
+      <div x-show="pageError" x-text="pageError"
+           style="background:rgba(255,69,58,0.1);border:1px solid rgba(255,69,58,0.25);border-radius:6px;padding:10px 14px;font-size:13px;color:#ff453a;margin-bottom:14px;">
+      </div>
+
+      <div class="mp-section" style="margin-bottom:14px;">
+        <label class="mp-label" for="ws-select">Operator workspace</label>
+        <select id="ws-select" class="mv-select" x-model="selectedId" @change="onSelectChange()" style="max-width:420px;">
+          <template x-for="ws in workspaces" :key="ws.id">
+            <option :value="ws.id" x-text="ws.display_name + ' (@' + ws.username + ')' + (ws.is_banned ? ' [banned]' : '')"></option>
+          </template>
+        </select>
+        <template x-if="selectedWorkspace()">
+          <div style="margin-top:10px;font-size:12px;color:var(--mv-muted);display:flex;gap:14px;flex-wrap:wrap;">
+            <span x-text="(selectedWorkspace().message_count || 0) + ' messages'"></span>
+            <span x-text="(selectedWorkspace().personality_count || 0) + ' personalities'"></span>
+            <span x-show="selectedWorkspace().flagged_personality_count" x-text="(selectedWorkspace().flagged_personality_count || 0) + ' flagged'"></span>
+            <button class="mv-btn" style="font-size:11px;padding:3px 10px;" @click="toggleBan(selectedWorkspace())"
+              x-text="selectedWorkspace().is_banned ? 'Unban' : 'Ban'"></button>
+          </div>
+        </template>
+      </div>
+
+      <div class="mp-section" style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <h2 style="font-size:15px;margin:0;">Conversation history</h2>
+          <button class="mv-btn mv-btn-danger" style="font-size:11px;" @click="clearHistory()" :disabled="loading">Clear all</button>
+        </div>
+        <div class="mp-table-wrap">
+          <table class="mp-table">
+            <thead>
+              <tr><th>Time</th><th>Role</th><th>Content</th></tr>
+            </thead>
+            <tbody>
+              <template x-for="m in conversation.messages || []" :key="m.id">
+                <tr>
+                  <td style="font-size:11px;color:var(--mv-muted);white-space:nowrap;" x-text="formatTs(m.ts)"></td>
+                  <td><span class="mp-role-badge" x-text="m.role"></span></td>
+                  <td style="font-size:12px;max-width:520px;word-break:break-word;" x-text="m.content"></td>
+                </tr>
+              </template>
+              <tr x-show="!(conversation.messages || []).length">
+                <td colspan="3" style="text-align:center;color:var(--mv-faint);font-style:italic;">No messages.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button class="mv-btn" @click="convPrev()" :disabled="!convHasPrev">Previous</button>
+          <button class="mv-btn" @click="convNext()" :disabled="!convHasNext">Next</button>
+        </div>
+      </div>
+
+      <div class="mp-section">
+        <h2 style="font-size:15px;margin:0 0 10px;">Personalities</h2>
+        <div class="mp-table-wrap">
+          <table class="mp-table">
+            <thead>
+              <tr><th>Name</th><th>Slug</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody>
+              <template x-for="p in personalityList()" :key="p.slug">
+                <tr>
+                  <td x-text="p.name"></td>
+                  <td class="mv-mono" style="font-size:11px;" x-text="p.slug"></td>
+                  <td>
+                    <span x-show="p.flagged" style="color:#ff9f0a;font-size:11px;">flagged</span>
+                    <span x-show="personalities.active === p.slug" style="color:#30d158;font-size:11px;margin-left:6px;">active</span>
+                  </td>
+                  <td style="text-align:right;white-space:nowrap;">
+                    <button class="mv-btn" style="font-size:11px;padding:3px 10px;" @click="toggleFlag(p.slug, !p.flagged)"
+                      x-text="p.flagged ? 'Unflag' : 'Flag'"></button>
+                    <button class="mv-btn mv-btn-danger" style="font-size:11px;padding:3px 10px;margin-left:6px;"
+                      @click="deletePersonality(p.slug)">Delete</button>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="!personalityList().length">
+                <td colspan="4" style="text-align:center;color:var(--mv-faint);font-style:italic;">No personalities.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script defer src="/dashboard/js/mayaConversation.js"></script>
+    <script defer src="/dashboard/js/mayaShell.js"></script>
+    <script defer src="/dashboard/js/mayaAdminWorkspaces.js"></script>
+    <script defer src="/sdk/vendor/alpine.min.js"></script>
+  </body>
+</html>

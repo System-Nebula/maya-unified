@@ -429,7 +429,9 @@ class VoiceAgent:
         except Exception as exc:  # noqa: BLE001
             log.warning("discord auto-connect failed: %s", exc)
 
-    def _build_messages(self, user_text: str) -> list[dict]:
+    def _build_messages(
+        self, user_text: str, *, history_override: list[dict] | None = None
+    ) -> list[dict]:
         """Assemble the LLM message list: system (+frozen memory +tool guide),
         recent history, then the user turn with any prefetched memories."""
         if self.memory is not None:
@@ -441,7 +443,10 @@ class VoiceAgent:
             system = f"{system}\n\n{TOOL_GUIDE}"
         messages: list[dict] = [{"role": "system", "content": system}]
 
-        if self.memory is not None:
+        if history_override is not None:
+            keep = CONFIG.llm.history_turns * 2
+            messages.extend(history_override[-keep:])
+        elif self.memory is not None:
             messages.extend(self.memory.recent_history())
         else:
             keep = CONFIG.llm.history_turns * 2

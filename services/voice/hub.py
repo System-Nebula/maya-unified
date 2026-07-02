@@ -1,21 +1,40 @@
-"""Voice agent hub — extends qwen3 Hub with unified settings + LLM providers."""
+"""Voice agent hub — per-operator context, voice lease, room support."""
 
 from __future__ import annotations
 
 import os
+import queue
 import threading
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
+from typing import Any
 
 from server import Hub
 
 from services.llm.provider import create_llm_client, is_webllm_provider, swap_agent_llm
+from services.operator_voice.paths import operator_data_dir as op_data_dir
 from services.paths import DATA_DIR, VOICE_RUNTIME
 from services.voice.data_migration import migrate_qwen3_data_to_unified
-from services.settings.store import apply_to_config, load_settings, save_settings
+from services.settings.store import apply_to_config, load_settings as load_global_settings, save_settings as save_global_settings
 
-# Settings sections that register tools at VoiceAgent init — require reload.
 _RELOAD_SECTIONS = frozenset({"discord", "tools", "memory", "runtime"})
+_inference_lock = threading.Lock()
+
+
+@dataclass
+class VoiceLease:
+    kind: str  # "operator" | "room"
+    context_id: str
+    speaker_id: str | None = None
+    speaker_name: str | None = None
+
+
+@dataclass
+class _Subscriber:
+    q: queue.Queue
+    operator_id: str | None = None
+    room_id: str | None = None
 
 
 def _nested_get(data: dict, *keys: str):
@@ -36,7 +55,6 @@ def _section_changed(previous: dict, merged: dict, section: str) -> bool:
 
 
 def _build_live_diff(previous: dict, merged: dict) -> dict:
-    """Map settings diff → qwen3 hub.set_config keys (only changed values)."""
     live: dict = {}
     if _nested_changed(previous, merged, "audio", "eq_preset"):
         preset = _nested_get(merged, "audio", "eq_preset")
@@ -68,7 +86,6 @@ def _build_live_diff(previous: dict, merged: dict) -> dict:
 
 
 def _ping_llm(base_url: str, api_key: str, timeout: float = 2.5) -> tuple[bool, str]:
-    """Return (ok, error_message) for an OpenAI-compatible /v1/models probe."""
     base = (base_url or "").rstrip("/")
     if not base:
         return False, "LLM base URL is empty — set it in Settings → Reasoning"
@@ -82,7 +99,7 @@ def _ping_llm(base_url: str, api_key: str, timeout: float = 2.5) -> tuple[bool, 
             if resp.status != 200:
                 return False, f"LLM server returned HTTP {resp.status}"
             return True, ""
-    except urllib.error.URLError as exc:
+    except urllib.error.URLError:
         return False, (
             f"Cannot reach LLM at {base}. "
             "Start LM Studio and load a model, or update Settings → Reasoning."
@@ -93,16 +110,144 @@ def _ping_llm(base_url: str, api_key: str, timeout: float = 2.5) -> tuple[bool, 
 
 class VoiceHub(Hub):
     last_error: str = ""
+    voice_lease: VoiceLease | None = None
+    _active_operator_id: str | None = None
+    _active_room_id: str | None = None
+    _scoped_subscribers: set[_Subscriber]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._scoped_subscribers = set()
+
+    # ----- SSE with operator/room scoping -----------------------------------
+
+    def subscribe(self, operator_id: str | None = None, room_id: str | None = None) -> queue.Queue:
+        q: queue.Queue = queue.Queue()
+        sub = _Subscriber(q=q, operator_id=operator_id, room_id=room_id)
+        with self._lock:
+            self._scoped_subscribers.add(sub)
+            self._subscribers.add(q)
+        q.put({"type": "status", "value": self.status})
+        q.put({"type": "ready", "value": self.ready})
+        return q
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        with self._lock:
+            self._subscribers.discard(q)
+            self._scoped_subscribers = {s for s in self._scoped_subscribers if s.q is not q}
+        super().unsubscribe(q)
+
+    def broadcast(self, event: dict, *, operator_id: str | None = None, room_id: str | None = None) -> None:
+        if event.get("type") == "status":
+            self.status = event.get("value", self.status)
+        ev_op = operator_id or event.get("operator_id")
+        ev_room = room_id or event.get("room_id")
+        if ev_op and "operator_id" not in event:
+            event = {**event, "operator_id": ev_op}
+        if ev_room and "room_id" not in event:
+            event = {**event, "room_id": ev_room}
+        with self._lock:
+            subs = list(self._scoped_subscribers)
+        global_types = frozenset({"ready", "status", "error"})
+        for sub in subs:
+            if ev_room:
+                if sub.room_id and sub.room_id != ev_room:
+                    continue
+            elif ev_op:
+                if sub.operator_id and sub.operator_id != ev_op:
+                    if sub.room_id:
+                        continue
+                    if event.get("type") not in global_types:
+                        continue
+            sub.q.put(event)
+
+    def lease_status(self) -> dict[str, Any]:
+        if self.voice_lease is None:
+            return {"voice_available": True, "voice_owner": None}
+        return {
+            "voice_available": False,
+            "voice_owner": {
+                "kind": self.voice_lease.kind,
+                "context_id": self.voice_lease.context_id,
+                "speaker_id": self.voice_lease.speaker_id,
+                "speaker_name": self.voice_lease.speaker_name,
+            },
+        }
+
+    def _acquire_lease(self, lease: VoiceLease) -> dict:
+        if self.voice_lease and (
+            self.voice_lease.kind != lease.kind or self.voice_lease.context_id != lease.context_id
+        ):
+            return {
+                "ok": False,
+                "error": "voice_in_use",
+                "owner": {
+                    "kind": self.voice_lease.kind,
+                    "context_id": self.voice_lease.context_id,
+                    "speaker_name": self.voice_lease.speaker_name,
+                },
+            }
+        self.voice_lease = lease
+        return {"ok": True}
+
+    def _release_lease(self, *, kind: str, context_id: str, speaker_id: str | None = None) -> dict:
+        if self.voice_lease is None:
+            return {"ok": True}
+        if self.voice_lease.kind != kind or self.voice_lease.context_id != context_id:
+            return {"ok": False, "error": "not_voice_owner"}
+        if speaker_id and self.voice_lease.speaker_id and self.voice_lease.speaker_id != speaker_id:
+            return {"ok": False, "error": "not_voice_owner"}
+        self.voice_lease = None
+        return {"ok": True}
+
+    # ----- Operator / room context ------------------------------------------
+
+    def apply_operator_context(self, operator_id: str) -> None:
+        from services.operator_voice import context as op_ctx
+
+        op_ctx.sync_operator_files(operator_id)
+        data_dir = op_data_dir(operator_id)
+        os.environ["VA_DATA_DIR"] = str(data_dir)
+        settings = op_ctx.load_settings(operator_id)
+        apply_to_config(settings, operator_id=operator_id)
+        self._active_operator_id = str(operator_id)
+        self._active_room_id = None
+        pers = op_ctx.load_personalities(operator_id)
+        active = str(pers.get("active") or "")
+        if active and self.ready and self.agent is not None:
+            try:
+                self.agent.activate_personality(active)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def apply_room_context(self, room_id: str, snapshot: dict[str, Any]) -> None:
+        from services.operator_voice.paths import room_data_dir
+
+        data_dir = room_data_dir(room_id)
+        os.environ["VA_DATA_DIR"] = str(data_dir)
+        settings = snapshot.get("settings") or {}
+        if settings:
+            apply_to_config(settings)
+        personality = snapshot.get("personality") or {}
+        entry = personality.get("entry") or {}
+        prompt = entry.get("prompt") or entry.get("card", {}).get("system_prompt")
+        if prompt and self.ready and self.agent is not None:
+            from config import CONFIG
+
+            CONFIG.llm.system_prompt = str(prompt)
+        self._active_room_id = str(room_id)
+
+    # ----- Lifecycle --------------------------------------------------------
 
     def unload_agent(self) -> None:
-        """Stop session and drop the agent so load_agent can run again."""
         try:
-            self.stop()
+            self.stop(operator_id=self._active_operator_id or "")
         except Exception:  # noqa: BLE001
             pass
         self.agent = None
         self.ready = False
         self.status = "idle"
+        self.voice_lease = None
         self.broadcast({"type": "ready", "value": False})
 
     def request_agent_reload(self) -> None:
@@ -115,19 +260,19 @@ class VoiceHub(Hub):
             return
         try:
             self.last_error = ""
-            settings = load_settings()
+            migrate_qwen3_data_to_unified()
+            os.makedirs(DATA_DIR, exist_ok=True)
+            settings = load_global_settings()
             apply_to_config(settings)
             from services.discord.unified_bot import apply_discord_env
 
             apply_discord_env(settings)
-            migrate_qwen3_data_to_unified()
-            os.makedirs(DATA_DIR, exist_ok=True)
             os.environ["VA_DATA_DIR"] = str(DATA_DIR)
 
             from agent import VoiceAgent
 
             self.broadcast({"type": "status", "value": "loading"})
-            agent = VoiceAgent(mode="vad", on_event=self.broadcast)
+            agent = VoiceAgent(mode="vad", on_event=self._agent_event)
             swap_agent_llm(agent)
             self.agent = agent
             from services.discord.patch_agent import patch_voice_agent
@@ -139,63 +284,89 @@ class VoiceHub(Hub):
             self.ready = True
             self.broadcast({"type": "ready", "value": True})
             self.broadcast({"type": "status", "value": "idle"})
-            self.broadcast({"type": "settings", "unified": load_settings()})
         except Exception as exc:  # noqa: BLE001
             self.ready = False
             self.last_error = str(exc)
             self.broadcast({"type": "error", "text": f"Failed to load agent: {exc}"})
             self.broadcast({"type": "status", "value": "error"})
 
-    def apply_settings_patch(self, patch: dict) -> dict:
-        previous = load_settings()
-        merged = save_settings(patch if isinstance(patch, dict) else {})
+    def _agent_event(self, event: dict) -> None:
+        op = self._active_operator_id
+        room = self._active_room_id
+        self.broadcast(event, operator_id=op, room_id=room)
+
+    def apply_settings_patch(self, patch: dict, operator_id: str | None = None) -> dict:
+        from services.operator_voice import context as op_ctx
+
+        if operator_id:
+            self.apply_operator_context(operator_id)
+            previous = op_ctx.load_settings(operator_id)
+            merged = op_ctx.save_settings(operator_id, patch if isinstance(patch, dict) else {})
+        else:
+            previous = load_global_settings()
+            merged = save_global_settings(patch if isinstance(patch, dict) else {})
         if merged == previous:
             return merged
 
-        apply_to_config(merged)
+        apply_to_config(merged, operator_id=operator_id)
         from services.discord.unified_bot import apply_discord_env
 
         apply_discord_env(merged)
-        needs_reload = any(_section_changed(previous, merged, section) for section in _RELOAD_SECTIONS)
+        needs_reload = any(_section_changed(previous, merged, s) for s in _RELOAD_SECTIONS)
         if needs_reload and (self.ready or self.agent is not None):
             self.request_agent_reload()
-            self.broadcast({"type": "settings", "unified": merged})
+            self.broadcast({"type": "settings", "unified": merged}, operator_id=operator_id)
             return merged
         if self.ready and self.agent is not None:
+            if operator_id:
+                self.apply_operator_context(operator_id)
             if _section_changed(previous, merged, "reasoning"):
-                old_provider = str(_nested_get(previous, "reasoning", "provider") or "").lower()
-                new_provider = str(_nested_get(merged, "reasoning", "provider") or "").lower()
-                if old_provider == "webllm" and new_provider != "webllm":
-                    from services.llm import webllm_broker
-
-                    webllm_broker.request_browser_unload()
                 swap_agent_llm(self.agent)
             live = _build_live_diff(previous, merged)
             if live:
                 self.set_config(live)
-            if (
-                _section_changed(previous, merged, "voice")
-                or _nested_changed(previous, merged, "delivery", "xvec_only")
-            ):
-                self.agent._ensure_icl_ref_text()
             new_pid = str(_nested_get(merged, "personality", "active_id") or "")
             old_pid = str(_nested_get(previous, "personality", "active_id") or "")
             if new_pid and new_pid != old_pid:
                 self.activate_personality(new_pid)
-        self.broadcast({"type": "settings", "unified": merged})
+        self.broadcast({"type": "settings", "unified": merged}, operator_id=operator_id)
         return merged
 
-    def get_config(self) -> dict:
+    def get_config(self, operator_id: str | None = None) -> dict:
         out = super().get_config()
-        out["unified_settings"] = load_settings()
+        if operator_id:
+            from services.operator_voice import context as op_ctx
+
+            out["unified_settings"] = op_ctx.load_settings(operator_id)
+        else:
+            out["unified_settings"] = load_global_settings()
         if self.last_error:
             out["agent_error"] = self.last_error
+        out.update(self.lease_status())
         return out
 
-    def conversation_state(self) -> dict:
-        """Transcript + live voice session flags for dashboard persistence."""
+    def conversation_state(self, operator_id: str | None = None) -> dict:
+        if operator_id:
+            from services.operator_voice import context as op_ctx
+
+            turns = op_ctx.get_conversation(operator_id)
+            session_running = bool(
+                self.voice_lease
+                and self.voice_lease.kind == "operator"
+                and self.voice_lease.context_id == str(operator_id)
+                and self.ready
+                and self.agent
+                and self.agent.is_session_running()
+            )
+            return {
+                "ok": True,
+                "session_running": session_running,
+                "status": self.status,
+                "turns": turns,
+                **self.lease_status(),
+            }
         if not self.ready or self.agent is None:
-            return {"ok": True, "session_running": False, "status": self.status, "turns": []}
+            return {"ok": True, "session_running": False, "status": self.status, "turns": [], **self.lease_status()}
         turns: list[dict] = []
         for msg in self.agent.history:
             role = msg.get("role")
@@ -211,12 +382,18 @@ class VoiceHub(Hub):
             "session_running": self.agent.is_session_running(),
             "status": self.status,
             "turns": turns,
+            **self.lease_status(),
         }
 
-    def llm_status(self) -> dict:
+    def llm_status(self, operator_id: str | None = None) -> dict:
         from config import CONFIG
 
-        settings = load_settings()
+        if operator_id:
+            from services.operator_voice import context as op_ctx
+
+            settings = op_ctx.load_settings(operator_id)
+        else:
+            settings = load_global_settings()
         reasoning = settings.get("reasoning", {})
         provider = str(reasoning.get("provider", "lm_studio"))
         if is_webllm_provider():
@@ -229,11 +406,7 @@ class VoiceHub(Hub):
                 "provider": "webllm",
                 "base_url": None,
                 "model": str(webllm.get("model_id") or ""),
-                "error": (
-                    None
-                    if ready
-                    else "Keep this dashboard open in Chrome/Edge — WebLLM loads in the browser."
-                ),
+                "error": None if ready else "Keep this dashboard open — WebLLM loads in the browser.",
             }
         ok, err = _ping_llm(CONFIG.llm.base_url, CONFIG.llm.api_key)
         return {
@@ -244,8 +417,7 @@ class VoiceHub(Hub):
             "error": err or None,
         }
 
-    def chat_text(self, text: str) -> dict:
-        """Text-only turn via server LLM (no TTS) for Conversation panel."""
+    def chat_text(self, text: str, operator_id: str | None = None) -> dict:
         if not self.ready or self.agent is None:
             return {"ok": False, "error": self.last_error or "agent not ready"}
         text = (text or "").strip()
@@ -253,42 +425,80 @@ class VoiceHub(Hub):
             return {"ok": False, "error": "empty message"}
         from config import CONFIG
 
+        history_override = None
+        if operator_id:
+            self.apply_operator_context(operator_id)
+            from services.operator_voice import context as op_ctx
+
+            history_override = op_ctx.get_history_messages(operator_id)
         if not is_webllm_provider():
             llm_ok, llm_err = _ping_llm(CONFIG.llm.base_url, CONFIG.llm.api_key)
             if not llm_ok:
                 return {"ok": False, "error": llm_err}
         try:
-            self.broadcast({"type": "status", "value": "thinking"})
-            self.broadcast({"type": "user", "text": text})
-            messages = self.agent._build_messages(text)  # noqa: SLF001
+            self.broadcast({"type": "status", "value": "thinking"}, operator_id=operator_id)
+            self.broadcast({"type": "user", "text": text}, operator_id=operator_id)
+            messages = self.agent._build_messages(text, history_override=history_override)  # noqa: SLF001
             parts: list[str] = []
-            for chunk in self.agent.llm.stream_messages(messages):
-                parts.append(chunk)
-                self.broadcast({"type": "ai", "text": chunk})
+            with _inference_lock:
+                for chunk in self.agent.llm.stream_messages(messages):
+                    parts.append(chunk)
+                    self.broadcast({"type": "ai", "text": chunk}, operator_id=operator_id)
             reply = "".join(parts).strip()
             if reply:
-                self.agent.history.append({"role": "user", "content": text})
-                self.agent.history.append({"role": "assistant", "content": reply})
-            self.broadcast({"type": "status", "value": "idle"})
+                if operator_id:
+                    from services.operator_voice import context as op_ctx
+
+                    op_ctx.append_turn(operator_id, "user", text)
+                    op_ctx.append_turn(operator_id, "assistant", reply)
+                else:
+                    self.agent.history.append({"role": "user", "content": text})
+                    self.agent.history.append({"role": "assistant", "content": reply})
+            self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
             return {"ok": True, "text": reply}
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            if is_webllm_provider():
-                if "timeout" in msg.lower():
-                    msg = "WebLLM timed out — is this browser tab open and the model loaded?"
-            elif "connection" in msg.lower() or "connect" in msg.lower():
-                msg = (
-                    f"LLM connection failed ({CONFIG.llm.base_url}). "
-                    "Is LM Studio running with a model loaded?"
-                )
-            self.broadcast({"type": "status", "value": "idle"})
-            self.broadcast({"type": "error", "text": msg})
+            self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
+            self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
             return {"ok": False, "error": msg}
 
-    def speak_text(self, text: str, *, instruct: str | None = None) -> dict:
-        """Synthesize and play text directly (no LLM). For TTS preview / paralinguistic tags."""
+    def chat_in_room(
+        self,
+        room_id: str,
+        text: str,
+        *,
+        member_name: str,
+        history: list[dict],
+        snapshot: dict[str, Any],
+    ) -> dict:
         if not self.ready or self.agent is None:
             return {"ok": False, "error": self.last_error or "agent not ready"}
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "error": "empty message"}
+        self.apply_room_context(room_id, snapshot)
+        user_line = f"{member_name}: {text}"
+        try:
+            self.broadcast({"type": "status", "value": "thinking"}, room_id=room_id)
+            self.broadcast({"type": "user", "text": user_line}, room_id=room_id)
+            messages = self.agent._build_messages(user_line, history_override=history)  # noqa: SLF001
+            parts: list[str] = []
+            with _inference_lock:
+                for chunk in self.agent.llm.stream_messages(messages):
+                    parts.append(chunk)
+                    self.broadcast({"type": "ai", "text": chunk}, room_id=room_id)
+            reply = "".join(parts).strip()
+            self.broadcast({"type": "status", "value": "idle"}, room_id=room_id)
+            return {"ok": True, "text": reply}
+        except Exception as exc:  # noqa: BLE001
+            self.broadcast({"type": "status", "value": "idle"}, room_id=room_id)
+            return {"ok": False, "error": str(exc)}
+
+    def speak_text(self, text: str, *, instruct: str | None = None, operator_id: str | None = None) -> dict:
+        if not self.ready or self.agent is None:
+            return {"ok": False, "error": self.last_error or "agent not ready"}
+        if operator_id:
+            self.apply_operator_context(operator_id)
         text = (text or "").strip()
         if not text:
             return {"ok": False, "error": "empty text"}
@@ -296,15 +506,87 @@ class VoiceHub(Hub):
 
         def _run() -> None:
             try:
-                self.agent.speak_preview(text, instruct=instruct)
+                with _inference_lock:
+                    self.agent.speak_preview(text, instruct=instruct)
             except Exception as exc:  # noqa: BLE001
                 msg = str(exc)
-                self.broadcast({"type": "status", "value": "idle"})
-                self.broadcast({"type": "tts_error", "text": msg})
-                self.broadcast({"type": "error", "text": msg})
+                self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
+                self.broadcast({"type": "tts_error", "text": msg}, operator_id=operator_id)
 
         threading.Thread(target=_run, daemon=True, name="tts-preview").start()
         return {"ok": True}
+
+    def start(self, operator_id: str | None = None) -> dict:
+        if not self.ready or self.agent is None:
+            return {"ok": False, "error": "agent not ready"}
+        if not operator_id:
+            self.agent.start_session()
+            return {"ok": True}
+        lease = VoiceLease(kind="operator", context_id=str(operator_id), speaker_id=str(operator_id))
+        denied = self._acquire_lease(lease)
+        if not denied.get("ok"):
+            return {
+                "ok": False,
+                "error": denied.get("error", "voice_in_use"),
+                "owner": denied.get("owner"),
+            }
+        self.apply_operator_context(operator_id)
+        self.agent.start_session()
+        return {"ok": True}
+
+    def stop(self, operator_id: str | None = None) -> dict:
+        if operator_id:
+            self._release_lease(kind="operator", context_id=str(operator_id), speaker_id=str(operator_id))
+        if self.agent is not None:
+            self.agent.stop_session()
+        return {"ok": True}
+
+    def start_room_voice(self, room_id: str, member_id: str, member_name: str, snapshot: dict) -> dict:
+        if not self.ready or self.agent is None:
+            return {"ok": False, "error": "agent not ready"}
+        lease = VoiceLease(
+            kind="room",
+            context_id=str(room_id),
+            speaker_id=str(member_id),
+            speaker_name=member_name,
+        )
+        denied = self._acquire_lease(lease)
+        if not denied.get("ok"):
+            return {
+                "ok": False,
+                "error": denied.get("error", "voice_in_use"),
+                "owner": denied.get("owner"),
+            }
+        self.apply_room_context(room_id, snapshot)
+        self.agent.start_session()
+        self.broadcast({"type": "queue_granted", "member_id": member_id}, room_id=room_id)
+        return {"ok": True}
+
+    def stop_room_voice(self, room_id: str, member_id: str) -> dict:
+        self._release_lease(kind="room", context_id=str(room_id), speaker_id=str(member_id))
+        if self.agent is not None:
+            self.agent.stop_session()
+        self.broadcast({"type": "queue_released", "member_id": member_id}, room_id=room_id)
+        return {"ok": True}
+
+    def load_settings_for_operator(self, operator_id: str) -> dict:
+        from services.operator_voice import context as op_ctx
+
+        return op_ctx.load_settings(operator_id)
+
+    def list_personalities_for_operator(self, operator_id: str) -> dict:
+        self.apply_operator_context(operator_id)
+        return self.list_personalities()
+
+    def activate_personality_for_operator(self, operator_id: str, personality_id: str) -> dict:
+        self.apply_operator_context(operator_id)
+        result = self.activate_personality(personality_id)
+        from services.operator_voice import context as op_ctx
+
+        pers = op_ctx.load_personalities(operator_id)
+        op_ctx.save_personalities(operator_id, active=personality_id, personalities=pers.get("personalities"))
+        op_ctx.save_settings(operator_id, {"personality": {"active_id": personality_id}})
+        return result
 
 
 hub = VoiceHub()

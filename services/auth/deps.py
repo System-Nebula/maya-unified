@@ -53,6 +53,8 @@ async def require_operator(
 ) -> OperatorUser:
     if op is None:
         raise HTTPException(status_code=401, detail="not authenticated")
+    if getattr(op, "is_banned", False):
+        raise HTTPException(status_code=403, detail="account banned")
     return op
 
 

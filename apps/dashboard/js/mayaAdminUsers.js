@@ -95,6 +95,19 @@ function mayaAdminUsers() {
       }
     },
 
+    async toggleBan(op) {
+      const ban = !op.is_banned;
+      const action = ban ? 'ban' : 'unban';
+      if (!confirm(`${ban ? 'Ban' : 'Unban'} ${op.display_name}?`)) return;
+      const res = await fetch(`/api/admin/operators/${op.id}/${action}`, { method: 'POST' });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        this.pageError = d.detail || `${action} failed.`;
+        return;
+      }
+      await this.loadOperators();
+    },
+
     async doDelete() {
       if (!this.deleteTarget) return;
       this.modalSaving = true;

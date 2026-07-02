@@ -67,6 +67,7 @@ async def me(
         "display_name": op.display_name,
         "role": op.role,
         "avatar_color": op.avatar_color,
+        "is_banned": bool(getattr(op, "is_banned", False)),
     }
 
 
@@ -86,8 +87,14 @@ async def login(
     op = await get_by_username(session, username)
     if op is None or not verify_password(op.password_hash, password):
         raise HTTPException(status_code=401, detail="invalid username or password")
+    if getattr(op, "is_banned", False):
+        raise HTTPException(status_code=403, detail="account banned")
 
     await touch_last_login(session, op.id)
+    from services.operator_voice.context import ensure_operator_seeded
+
+    await ensure_operator_seeded(session, op.id)
+    await session.commit()
     token = sign_operator_session(str(op.id))
 
     response.set_cookie(
@@ -125,6 +132,7 @@ def _op_dict(op) -> dict:
         "display_name": op.display_name,
         "role": op.role,
         "avatar_color": op.avatar_color,
+        "is_banned": bool(getattr(op, "is_banned", False)),
         "created_at": op.created_at.isoformat() if op.created_at else None,
         "last_login": op.last_login.isoformat() if op.last_login else None,
     }
@@ -192,6 +200,10 @@ async def create_op(
         role=role,
         avatar_color=body.get("avatar_color"),
     )
+    from services.operator_voice.context import ensure_operator_seeded
+
+    await ensure_operator_seeded(session, op.id)
+    await session.commit()
     return {"ok": True, "operator": _op_dict(op)}
 
 
@@ -221,6 +233,8 @@ async def patch_op(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    banned = body.get("is_banned") if is_admin else None
+
     try:
         op = await update_operator(
             session,
@@ -230,9 +244,14 @@ async def patch_op(
             avatar_color=body.get("avatar_color"),
             password=body.get("password"),
         )
+        if banned is not None and is_admin:
+            from services.auth.operator_store import set_operator_banned
+
+            op = await set_operator_banned(session, operator_id, banned=bool(banned))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    await session.commit()
     return {"ok": True, "operator": _op_dict(op)}
 
 
@@ -249,4 +268,5 @@ async def delete_op(
         await delete_operator(session, operator_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await session.commit()
     return {"ok": True}

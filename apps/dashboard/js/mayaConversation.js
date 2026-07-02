@@ -1,10 +1,13 @@
-/** Conversation state — shared across dashboard pages + sessionStorage. */
-const MAYA_CONV_STORAGE_KEY = "maya.conversation.v1";
+/** Conversation state — shared across dashboard pages + sessionStorage (per operator). */
+function _storageKey() {
+  const uid = window._mayaCurrentUser?.id || "anonymous";
+  return `maya.conversation.v1.${uid}`;
+}
 
 function _persistConversation(store) {
   try {
     sessionStorage.setItem(
-      MAYA_CONV_STORAGE_KEY,
+      _storageKey(),
       JSON.stringify({
         turns: store.turns,
         statusLabel: store.statusLabel,
@@ -16,7 +19,7 @@ function _persistConversation(store) {
 
 function _restoreConversation(store) {
   try {
-    const raw = sessionStorage.getItem(MAYA_CONV_STORAGE_KEY);
+    const raw = sessionStorage.getItem(_storageKey());
     if (!raw) return;
     const data = JSON.parse(raw);
     if (Array.isArray(data.turns)) store.turns = data.turns;
@@ -154,6 +157,10 @@ document.addEventListener("alpine:init", () => {
       if (data.ok) {
         this.sessionOn = true;
         window.dispatchEvent(new CustomEvent("maya-session-start"));
+      } else if (data.error === "voice_in_use") {
+        const who = data.owner?.speaker_name || data.owner?.context_id || "another user";
+        this.turns.push({ role: "system", text: `Voice is in use by ${who}. Try again when they finish.` });
+        this.persist();
       } else {
         this.turns.push({ role: "system", text: data.error || "Could not start session" });
         this.persist();

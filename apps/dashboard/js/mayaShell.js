@@ -32,6 +32,8 @@ document.addEventListener("alpine:init", () => {
     llmModel: "",
     llmProvider: "",
     webllmBridgeStatus: "",
+    voiceAvailable: true,
+    voiceOwnerName: "",
     page: "",
     loadStarted: 0,
 
@@ -104,6 +106,7 @@ document.addEventListener("alpine:init", () => {
       else if (path.startsWith("/settings")) this.s.page = "settings";
       else if (path.startsWith("/memory")) this.s.page = "memory";
       else if (path.startsWith("/admin")) this.s.page = "admin";
+      else if (path.startsWith("/rooms")) this.s.page = "rooms";
       else if (path.startsWith("/experimental")) this.s.page = "experimental";
       this.s.loadStarted = Date.now();
       if (window.mayaConversationStore) window.mayaConversationStore.ensureHydrated();
@@ -124,6 +127,7 @@ document.addEventListener("alpine:init", () => {
         if (data.authenticated) {
           this.currentUser = data;
           window._mayaCurrentUser = data;
+          if (window.mayaConversationStore) window.mayaConversationStore.ensureHydrated();
         }
       } catch (_) {}
     },
@@ -195,6 +199,9 @@ document.addEventListener("alpine:init", () => {
         this.s.llmError = d.llm_error || "";
         this.s.llmModel = d.llm_model || "";
         this.s.llmProvider = d.llm_provider || "";
+        this.s.voiceAvailable = d.voice_available !== false;
+        const owner = d.voice_owner;
+        this.s.voiceOwnerName = owner?.speaker_name || owner?.context_id || "";
         this.refreshBridgeStatus();
         if (d.error) this.s.error = d.error;
       } catch (_) {}

@@ -29,6 +29,7 @@
         <div class="mu-dropdown" x-show="open" x-cloak>
           <a href="/settings" class="mu-dd-item" :class="{ active: s.page === 'settings' }">Settings</a>
           <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'" :class="{ active: s.page === 'admin' }">Admin — Users</a>
+          <a href="/admin/workspaces" class="mu-dd-item" x-show="currentUser?.role === 'admin'">Admin — Workspaces</a>
           <div class="mu-dd-sep"></div>
           <button class="mu-dd-item mu-dd-signout" id="signout-btn"
             @click="signOut()">Sign out</button>
@@ -43,7 +44,10 @@
           <h1 style="font-size:20px;font-weight:600;margin:0 0 4px;">Users</h1>
           <p style="margin:0;font-size:13px;color:var(--mv-muted)">Manage operator accounts.</p>
         </div>
-        <button class="mv-btn" @click="showCreate = true" id="create-user-btn">+ New Operator</button>
+        <div style="display:flex;gap:8px;">
+          <a href="/admin/workspaces" class="mv-btn" style="text-decoration:none;">Workspaces</a>
+          <button class="mv-btn" @click="showCreate = true" id="create-user-btn">+ New Operator</button>
+        </div>
       </div>
 
       <!-- Error banner -->
@@ -59,6 +63,7 @@
               <tr>
                 <th>User</th>
                 <th>Role</th>
+                <th>Status</th>
                 <th>Last Login</th>
                 <th>Since</th>
                 <th></th>
@@ -66,7 +71,7 @@
             </thead>
             <tbody>
               <template x-if="operators.length === 0">
-                <tr><td colspan="5" style="text-align:center;color:var(--mv-faint);font-style:italic;">No operators yet.</td></tr>
+                <tr><td colspan="6" style="text-align:center;color:var(--mv-faint);font-style:italic;">No operators yet.</td></tr>
               </template>
               <template x-for="op in operators" :key="op.id">
                 <tr>
@@ -80,11 +85,19 @@
                     </div>
                   </td>
                   <td><span class="mp-role-badge" :class="op.role" x-text="op.role"></span></td>
+                  <td style="font-size:12px;">
+                    <span x-show="op.is_banned" style="color:#ff453a;">banned</span>
+                    <span x-show="!op.is_banned" style="color:var(--mv-muted);">active</span>
+                  </td>
                   <td style="font-size:12px;color:var(--mv-muted)" x-text="op.last_login ? reltime(op.last_login) : '—'"></td>
                   <td style="font-size:12px;color:var(--mv-muted)" x-text="op.created_at ? datestr(op.created_at) : '—'"></td>
                   <td style="text-align:right;white-space:nowrap;">
                     <button class="mv-btn" style="font-size:11px;padding:4px 10px;"
                       @click="openEdit(op)">Edit</button>
+                    <button class="mv-btn" style="font-size:11px;padding:4px 10px;margin-left:6px;"
+                      @click="toggleBan(op)"
+                      :disabled="op.id === currentUserId"
+                      x-text="op.is_banned ? 'Unban' : 'Ban'"></button>
                     <button class="mv-btn mv-btn-danger" style="font-size:11px;padding:4px 10px;margin-left:6px;"
                       @click="confirmDelete(op)"
                       :disabled="op.id === currentUserId">Delete</button>

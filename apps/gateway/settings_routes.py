@@ -1,9 +1,10 @@
-"""Unified settings API — full schema persistence for dashboard."""
+"""Unified settings API — per-operator persistence."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Request
 
+from services.operator_voice import context as op_ctx
 from services.settings.catalog import (
     CLONE_MODELS,
     CUSTOM_TTS_MODELS,
@@ -12,20 +13,27 @@ from services.settings.catalog import (
     WEBLLM_MODELS,
     fetch_openai_models,
 )
-from services.settings.store import load_settings
+from services.settings.store import load_settings as load_global_settings
 from services.voice.hub import hub
 
 router = APIRouter(prefix="/api/voice/settings", tags=["voice-settings"])
 
 
+def _operator_id(request: Request) -> str:
+    op = getattr(request.state, "operator", None)
+    return str(op.id) if op else ""
+
+
 @router.get("")
-def get_settings() -> dict:
-    return {"ok": True, "settings": load_settings()}
+def get_settings(request: Request) -> dict:
+    oid = _operator_id(request)
+    if oid:
+        return {"ok": True, "settings": op_ctx.load_settings(oid)}
+    return {"ok": True, "settings": load_global_settings()}
 
 
 @router.get("/catalog")
-def settings_catalog() -> dict:
-    """UI catalogs for dropdowns (EQ presets, voices, SDK defaults)."""
+def settings_catalog(request: Request) -> dict:
     catalog: dict = {
         "barge_modes": ["smart", "instant", "off"],
         "delivery_modes": ["full", "hybrid", "off"],
@@ -48,7 +56,8 @@ def settings_catalog() -> dict:
         "tts_languages": TTS_LANGUAGES,
         "personas": ["maya", "operator", "assistant", "technical", "friendly", "professional"],
     }
-    settings = load_settings()
+    oid = _operator_id(request)
+    settings = op_ctx.load_settings(oid) if oid else load_global_settings()
     reasoning = settings.get("reasoning", {})
     catalog["llm_models"] = fetch_openai_models(
         str(reasoning.get("base_url", "")),
@@ -80,7 +89,8 @@ def settings_catalog() -> dict:
 
 
 @router.post("")
-def patch_settings(data: dict = Body(...)) -> dict:
+def patch_settings(request: Request, data: dict = Body(...)) -> dict:
     patch = data.get("settings", data) if isinstance(data, dict) else {}
-    merged = hub.apply_settings_patch(patch if isinstance(patch, dict) else {})
+    oid = _operator_id(request)
+    merged = hub.apply_settings_patch(patch if isinstance(patch, dict) else {}, operator_id=oid or None)
     return {"ok": True, "settings": merged}

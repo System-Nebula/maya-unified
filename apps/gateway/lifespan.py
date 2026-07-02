@@ -25,6 +25,10 @@ async def _seed_operator_account() -> None:
     try:
         async for session in get_db_session():
             await seed_default_operator_if_needed(session)
+            from services.operator_voice.context import import_legacy_global_to_admin
+
+            await import_legacy_global_to_admin(session)
+            await session.commit()
     except Exception as exc:  # noqa: BLE001
         log.warning("operator seed skipped: %s", exc)
 

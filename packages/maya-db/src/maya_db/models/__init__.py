@@ -1,6 +1,18 @@
 """Database models."""
 
 from maya_db.models.operator import OperatorUser
+from maya_db.models.operator_voice import (
+    OperatorConversationMessage,
+    OperatorConversationSession,
+    OperatorPersonalities,
+    OperatorVoiceSettings,
+)
+from maya_db.models.voice_room import (
+    VoiceRoom,
+    VoiceRoomMember,
+    VoiceRoomMessage,
+    VoiceRoomVoiceQueue,
+)
 from maya_db.models.arena import (
     ArenaArtifact,
     ArenaBattle,
@@ -45,6 +57,14 @@ from maya_db.models.research import (
 
 __all__ = [
     "OperatorUser",
+    "OperatorVoiceSettings",
+    "OperatorPersonalities",
+    "OperatorConversationSession",
+    "OperatorConversationMessage",
+    "VoiceRoom",
+    "VoiceRoomMember",
+    "VoiceRoomMessage",
+    "VoiceRoomVoiceQueue",
     "ArenaArtifact",
     "ArenaBattle",
     "ArenaCandidate",

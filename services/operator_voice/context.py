@@ -1,0 +1,181 @@
+"""High-level per-operator voice context — seeding, sync to filesystem."""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from copy import deepcopy
+from typing import Any
+
+from maya_db import get_async_session
+from sqlalchemy import select
+
+from services.auth.operator_store import list_operators
+from services.operator_voice import store as op_store
+from services.operator_voice.paths import (
+    load_legacy_global_personalities,
+    load_legacy_global_settings,
+    seed_operator_dirs,
+    sync_personalities_file,
+    sync_settings_file,
+)
+from services.settings.schema import DEFAULT_SETTINGS, deep_merge
+
+log = logging.getLogger("maya-unified.operator_voice")
+
+__all__ = [
+    "ensure_operator_seeded",
+    "import_legacy_global_to_admin",
+    "load_settings",
+    "save_settings",
+    "load_personalities",
+    "save_personalities",
+    "append_turn",
+    "get_conversation",
+    "get_history_messages",
+    "sync_operator_files",
+]
+
+
+async def _with_session(fn):
+    async for session in get_async_session():
+        result = await fn(session)
+        await session.commit()
+        return result
+    return None
+
+
+def load_settings(operator_id: str | uuid.UUID) -> dict[str, Any]:
+    from services.async_bridge import run_sync
+
+    async def _go(session):
+        return await op_store.get_or_create_settings(session, operator_id)
+
+    return run_sync(_with_session(_go))
+
+
+def save_settings(operator_id: str | uuid.UUID, patch: dict[str, Any]) -> dict[str, Any]:
+    from services.async_bridge import run_sync
+
+    async def _go(session):
+        merged = await op_store.save_settings(session, operator_id, patch)
+        sync_settings_file(operator_id, merged)
+        return merged
+
+    return run_sync(_with_session(_go))
+
+
+def load_personalities(operator_id: str | uuid.UUID) -> dict[str, Any]:
+    from services.async_bridge import run_sync
+
+    async def _go(session):
+        return await op_store.get_or_create_personalities(session, operator_id)
+
+    return run_sync(_with_session(_go))
+
+
+def save_personalities(
+    operator_id: str | uuid.UUID,
+    *,
+    active: str | None = None,
+    personalities: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from services.async_bridge import run_sync
+
+    async def _go(session):
+        data = await op_store.save_personalities(
+            session, operator_id, active=active, personalities=personalities
+        )
+        sync_personalities_file(operator_id, data["active"], data["personalities"])
+        return data
+
+    return run_sync(_with_session(_go))
+
+
+def append_turn(operator_id: str | uuid.UUID, role: str, content: str) -> None:
+    from services.async_bridge import run_sync
+
+    async def _go(session):
+        await op_store.append_message(session, operator_id, role, content)
+
+    run_sync(_with_session(_go))
+
+
+def get_conversation(operator_id: str | uuid.UUID) -> list[dict[str, str]]:
+    from services.async_bridge import run_sync
+
+    async def _go(session):
+        return await op_store.get_conversation_turns(session, operator_id)
+
+    return run_sync(_with_session(_go))
+
+
+def get_history_messages(operator_id: str | uuid.UUID, *, limit: int = 40) -> list[dict[str, str]]:
+    from services.async_bridge import run_sync
+
+    async def _go(session):
+        return await op_store.history_as_messages(session, operator_id, limit=limit)
+
+    return run_sync(_with_session(_go))
+
+
+def sync_operator_files(operator_id: str | uuid.UUID) -> None:
+    settings = load_settings(operator_id)
+    pers = load_personalities(operator_id)
+    sync_settings_file(operator_id, settings)
+    sync_personalities_file(operator_id, pers.get("active", ""), pers.get("personalities", {}))
+    seed_operator_dirs(operator_id)
+
+
+from maya_db.models.operator_voice import OperatorVoiceSettings
+
+
+async def ensure_operator_seeded(session, operator_id: str | uuid.UUID) -> bool:
+    """Seed defaults for a new operator. Returns True if newly seeded."""
+    oid = uuid.UUID(str(operator_id))
+    existing = await session.get(OperatorVoiceSettings, oid)
+    if existing is not None:
+        seed_operator_dirs(operator_id)
+        return False
+    settings = deepcopy(DEFAULT_SETTINGS)
+    personalities_data = load_legacy_global_personalities()
+    if not personalities_data.get("personalities"):
+        personalities_data = {"active": "default", "personalities": {}}
+    await op_store.save_settings(session, oid, settings)
+    await op_store.save_personalities(
+        session,
+        oid,
+        active=str(personalities_data.get("active") or "default"),
+        personalities=personalities_data.get("personalities") or {},
+    )
+    sync_operator_files(operator_id)
+    log.info("seeded operator voice workspace %s", operator_id)
+    return True
+
+
+async def import_legacy_global_to_admin(session) -> bool:
+    """One-time: copy global data/*.json into first admin if no operator settings exist."""
+    if await op_store.any_operator_settings_exist(session):
+        return False
+    from maya_db.models.operator import OperatorUser
+
+    admin = await session.scalar(
+        select(OperatorUser).where(OperatorUser.role == "admin").order_by(OperatorUser.created_at).limit(1)
+    )
+    if admin is None:
+        ops = await list_operators(session)
+        if not ops:
+            return False
+        admin = ops[0]
+    settings = load_legacy_global_settings()
+    pers = load_legacy_global_personalities()
+    await op_store.save_settings(session, admin.id, settings)
+    await op_store.save_personalities(
+        session,
+        admin.id,
+        active=str(pers.get("active") or "default"),
+        personalities=pers.get("personalities") or {},
+    )
+    sync_operator_files(admin.id)
+    log.info("imported legacy global voice data -> admin operator %s", admin.username)
+    return True
