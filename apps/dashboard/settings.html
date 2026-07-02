@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-settings.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-profile.css" />
   </head>
   <body>
     <header class="mu-shell" x-data="mayaShell()" x-init="init()">
@@ -14,19 +15,31 @@
       <nav class="mu-nav">
         <a href="/" :class="{ active: s.page === 'dashboard' }">Dashboard</a>
         <a href="/memory" :class="{ active: s.page === 'memory' }">Memory</a>
-        <a href="/settings" :class="{ active: s.page === 'settings' }">Settings</a>
         <a href="/docs" target="_blank" rel="noopener">API</a>
       </nav>
       <div class="mu-status">
         <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
         <span class="mu-hint" x-show="s.hint()" x-text="s.hint()"></span>
       </div>
+      <div class="mu-user" x-show="currentUser" x-data="{ open: false }" @click.away="open = false">
+        <button class="mu-user-btn" @click="open = !open" id="user-menu-btn">
+          <span class="mu-avatar-dot" :style="`background:${currentUser?.avatar_color}`"></span>
+          <span x-text="currentUser?.display_name || currentUser?.username"></span>
+          <span class="mu-chevron">▾</span>
+        </button>
+        <div class="mu-dropdown" x-show="open" x-cloak>
+          <a href="/settings" class="mu-dd-item" :class="{ active: s.page === 'settings' }">Settings</a>
+          <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'" :class="{ active: s.page === 'admin' }">Admin — Users</a>
+          <div class="mu-dd-sep"></div>
+          <button class="mu-dd-item mu-dd-signout" id="signout-btn" @click="signOut()">Sign out</button>
+        </div>
+      </div>
     </header>
 
     <div class="ms-page mv-root" data-mv-theme="dark" x-data="mayaSettings()" x-init="init()">
       <div class="ms-hero">
         <h1>Settings</h1>
-        <p>Server config + operator kitchen sink. Persists to <span class="mv-mono">data/settings.json</span>. Memory explorer: <a href="/memory" style="color:var(--mv-accent)">Memory</a> page. Tools + EQ on the <a href="/" style="color:var(--mv-accent)">Dashboard</a>.</p>
+        <p>Operator account and server voice config. Voice settings persist to <span class="mv-mono">data/settings.json</span>. Memory explorer: <a href="/memory" style="color:var(--mv-accent)">Memory</a>. Tools + EQ on the <a href="/" style="color:var(--mv-accent)">Dashboard</a>.</p>
       </div>
 
       <div class="ms-toolbar">
@@ -54,14 +67,94 @@
 
         <div class="mv-content ms-card-stack">
 
-          <!-- OPERATOR (kitchen sink) -->
-          <div x-show="tab === 'operator'">
+          <!-- ACCOUNT -->
+          <div x-show="tab === 'account'">
             <div class="ms-panel-head">
-              <p class="mv-eyebrow">Operator</p>
-              <h2 class="mv-title">Voice Control Panel</h2>
-              <p class="mv-desc">maya-public Alpine SDK — device routing, vocal monitor, detection engine, Wispr-style dictation defaults.</p>
+              <p class="mv-eyebrow">Account</p>
+              <h2 class="mv-title">Profile</h2>
+              <p class="mv-desc">Manage your operator identity, password, and browser-local preferences.</p>
             </div>
-            <iframe class="ms-operator-frame" src="/dashboard/operator-panel.html" title="Operator panel"></iframe>
+
+            <div class="mp-section">
+              <div class="mp-section-head">
+                <h2>Identity</h2>
+                <span class="mp-role-badge" :class="user.role" x-text="user.role"></span>
+              </div>
+              <div class="mp-section-body">
+                <div class="mp-avatar" :style="`background:${user.avatar_color || '#0a84ff'}`"
+                     x-text="initials()"></div>
+                <div class="mp-grid">
+                  <div class="mp-field">
+                    <label class="mp-label" for="prof-username">Username</label>
+                    <input id="prof-username" class="mv-input" type="text"
+                      :value="user.username" disabled style="opacity:0.55;cursor:not-allowed" />
+                  </div>
+                  <div class="mp-field">
+                    <label class="mp-label" for="prof-display">Display Name</label>
+                    <input id="prof-display" class="mv-input" type="text"
+                      placeholder="Your Name" x-model="user.display_name" />
+                  </div>
+                  <div class="mp-field mp-field-full">
+                    <label class="mp-label">Avatar Colour</label>
+                    <div class="mp-color-grid">
+                      <template x-for="c in colours" :key="c">
+                        <div class="mp-color-swatch"
+                          :style="`background:${c}`"
+                          :class="{ selected: user.avatar_color === c }"
+                          @click="user.avatar_color = c"
+                          :title="c"></div>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+                <div class="mp-save-row">
+                  <button class="mv-btn" @click="saveIdentity()" :disabled="accountSaving">
+                    <span x-show="accountSaving">Saving…</span>
+                    <span x-show="!accountSaving">Save</span>
+                  </button>
+                  <span class="mp-save-msg" x-show="savedId" x-cloak>✓ Saved</span>
+                  <span class="mp-save-err" x-show="errId" x-text="errId" x-cloak></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="mp-section">
+              <div class="mp-section-head"><h2>Change Password</h2></div>
+              <div class="mp-section-body">
+                <div class="mp-grid">
+                  <div class="mp-field">
+                    <label class="mp-label" for="pw-new">New Password</label>
+                    <input id="pw-new" class="mv-input" type="password"
+                      placeholder="min 8 characters" x-model="newPw" autocomplete="new-password" />
+                  </div>
+                  <div class="mp-field">
+                    <label class="mp-label" for="pw-confirm">Confirm</label>
+                    <input id="pw-confirm" class="mv-input" type="password"
+                      placeholder="repeat password" x-model="confirmPw" autocomplete="new-password" />
+                  </div>
+                </div>
+                <div class="mp-save-row">
+                  <button class="mv-btn" @click="changePassword()" :disabled="accountSaving">Change Password</button>
+                  <span class="mp-save-msg" x-show="savedPw" x-cloak>✓ Password updated</span>
+                  <span class="mp-save-err" x-show="errPw" x-text="errPw" x-cloak></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="mp-section">
+              <div class="mp-section-head"><h2>Preferences</h2></div>
+              <div class="mp-section-body">
+                <p style="margin:0;font-size:13px;color:var(--mv-muted);line-height:1.5;">
+                  Browser-local voice SDK preferences are stored on this device.
+                  Clearing them resets client-side defaults only — server config in
+                  <span class="mv-mono">data/settings.json</span> is unchanged.
+                </p>
+                <div class="mp-save-row" style="margin-top:12px;">
+                  <button class="mv-btn mv-btn-danger" @click="clearPrefs()">Clear Local Preferences</button>
+                  <span class="mp-save-msg" x-show="clearedPrefs" x-cloak>✓ Cleared</span>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- AUDIO -->
@@ -771,7 +864,6 @@
       </div>
     </div>
 
-    <script defer src="/sdk/maya-voice-sdk.js"></script>
     <script defer src="/dashboard/js/mayaShell.js"></script>
     <script defer src="/dashboard/js/mayaSettings.js"></script>
     <script defer src="/dashboard/js/mayaPersonality.js"></script>

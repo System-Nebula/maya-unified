@@ -69,6 +69,7 @@ document.addEventListener("alpine:init", () => {
 
   Alpine.data("mayaShell", () => ({
     get s() { return Alpine.store("mayaShell"); },
+    currentUser: null,
     _unsub: null,
     _bound: false,
 
@@ -79,12 +80,33 @@ document.addEventListener("alpine:init", () => {
       if (path === "/" || path === "/conversation") this.s.page = "dashboard";
       else if (path.startsWith("/settings")) this.s.page = "settings";
       else if (path.startsWith("/memory")) this.s.page = "memory";
+      else if (path.startsWith("/admin")) this.s.page = "admin";
       else if (path.startsWith("/experimental")) this.s.page = "experimental";
       this.s.loadStarted = Date.now();
       this.pollStatus();
       this._unsub = window.mayaAgentEvents.subscribe((ev) => this.onAgentEvent(ev));
       this.syncSettingsToSdk();
       setInterval(() => this.pollStatus(), 12000);
+      this.fetchCurrentUser();
+    },
+
+    async fetchCurrentUser() {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.authenticated) {
+          this.currentUser = data;
+          window._mayaCurrentUser = data;
+        }
+      } catch (_) {}
+    },
+
+    async signOut() {
+      try {
+        await fetch("/api/auth/logout", { method: "POST" });
+      } catch (_) {}
+      window.location.href = "/login";
     },
 
     onAgentEvent(ev) {

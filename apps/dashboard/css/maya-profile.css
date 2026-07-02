@@ -1,0 +1,206 @@
+/* Maya Unified — Profile & Admin pages */
+
+.mp-page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 28px 20px 72px;
+}
+
+/* Section cards */
+.mp-section {
+  border: 1px solid var(--mv-border, #2a2a2e);
+  border-radius: 12px;
+  background: var(--mv-bg, #1a1a1e);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.mp-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--mv-border, #2a2a2e);
+}
+.mp-section-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--mv-text, #f5f5f5);
+}
+.mp-section-body {
+  padding: 16px 18px 20px;
+}
+
+/* Two-column field grid */
+.mp-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+@media (max-width: 600px) {
+  .mp-grid { grid-template-columns: 1fr; }
+}
+.mp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mp-field-full { grid-column: 1 / -1; }
+.mp-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--mv-muted, #8e8e93);
+}
+
+/* Avatar colour picker */
+.mp-color-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.mp-color-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 0.12s, border-color 0.12s;
+}
+.mp-color-swatch:hover { transform: scale(1.15); }
+.mp-color-swatch.selected {
+  border-color: #f5f5f5;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.15);
+}
+
+/* Save row */
+.mp-save-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+.mp-save-msg {
+  font-size: 12px;
+  color: #30d158;
+}
+.mp-save-err {
+  font-size: 12px;
+  color: #ff453a;
+}
+
+/* Role badge */
+.mp-role-badge {
+  font-size: 10px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid;
+}
+.mp-role-badge.admin {
+  color: #ff9f0a;
+  border-color: #5c4a20;
+  background: rgba(255, 159, 10, 0.08);
+}
+.mp-role-badge.operator {
+  color: #8e8e93;
+  border-color: #333;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Avatar initials chip (large, profile page) */
+.mp-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+  margin-bottom: 8px;
+}
+
+/* Admin table */
+.mp-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--mv-border, #2a2a2e);
+  border-radius: 8px;
+}
+.mp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.mp-table th,
+.mp-table td {
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--mv-border, #2a2a2e);
+  vertical-align: middle;
+}
+.mp-table th {
+  font-size: 10px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--mv-muted, #8e8e93);
+  background: var(--mv-sidebar, #131315);
+}
+.mp-table tr:last-child td { border-bottom: none; }
+.mp-table tbody tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* User chip in table */
+.mp-user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.mp-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.mp-username { color: var(--mv-text, #f5f5f5); font-weight: 500; }
+.mp-display  { color: var(--mv-muted, #8e8e93); font-size: 12px; }
+
+/* Modal overlay */
+.mp-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  backdrop-filter: blur(4px);
+}
+.mp-modal {
+  background: #1a1a1e;
+  border: 1px solid #2a2a2e;
+  border-radius: 12px;
+  padding: 28px 26px 24px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: 0 32px 80px rgba(0,0,0,0.6);
+}
+.mp-modal h3 {
+  margin: 0 0 18px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.mp-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}

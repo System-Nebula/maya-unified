@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin — Users — Maya Unified</title>
+    <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-profile.css" />
+  </head>
+  <body>
+    <!-- Shell -->
+    <header class="mu-shell" x-data="mayaShell()" x-init="init()">
+      <div class="mu-brand">Maya <span>Unified</span></div>
+      <nav class="mu-nav">
+        <a href="/">Dashboard</a>
+        <a href="/memory">Memory</a>
+        <a href="/docs" target="_blank" rel="noopener">API</a>
+      </nav>
+      <div class="mu-status">
+        <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
+      </div>
+      <div class="mu-user" x-show="currentUser" x-data="{ open: false }" @click.away="open = false">
+        <button class="mu-user-btn" @click="open = !open" id="user-menu-btn">
+          <span class="mu-avatar-dot" :style="`background:${currentUser?.avatar_color}`"></span>
+          <span x-text="currentUser?.display_name || currentUser?.username"></span>
+          <span class="mu-chevron">▾</span>
+        </button>
+        <div class="mu-dropdown" x-show="open" x-cloak>
+          <a href="/settings" class="mu-dd-item" :class="{ active: s.page === 'settings' }">Settings</a>
+          <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'" :class="{ active: s.page === 'admin' }">Admin — Users</a>
+          <div class="mu-dd-sep"></div>
+          <button class="mu-dd-item mu-dd-signout" id="signout-btn"
+            @click="signOut()">Sign out</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Admin page -->
+    <div class="mp-page mv-root" data-mv-theme="dark" x-data="mayaAdminUsers()" x-init="init()">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;">
+        <div>
+          <h1 style="font-size:20px;font-weight:600;margin:0 0 4px;">Users</h1>
+          <p style="margin:0;font-size:13px;color:var(--mv-muted)">Manage operator accounts.</p>
+        </div>
+        <button class="mv-btn" @click="showCreate = true" id="create-user-btn">+ New Operator</button>
+      </div>
+
+      <!-- Error banner -->
+      <div x-show="pageError" x-text="pageError"
+           style="background:rgba(255,69,58,0.1);border:1px solid rgba(255,69,58,0.25);border-radius:6px;padding:10px 14px;font-size:13px;color:#ff453a;margin-bottom:14px;">
+      </div>
+
+      <!-- Users table -->
+      <div class="mp-section">
+        <div class="mp-table-wrap">
+          <table class="mp-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Role</th>
+                <th>Last Login</th>
+                <th>Since</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-if="operators.length === 0">
+                <tr><td colspan="5" style="text-align:center;color:var(--mv-faint);font-style:italic;">No operators yet.</td></tr>
+              </template>
+              <template x-for="op in operators" :key="op.id">
+                <tr>
+                  <td>
+                    <div class="mp-user-chip">
+                      <div class="mp-dot" :style="`background:${op.avatar_color}`"></div>
+                      <div>
+                        <div class="mp-username" x-text="op.display_name"></div>
+                        <div class="mp-display" x-text="'@' + op.username"></div>
+                      </div>
+                    </div>
+                  </td>
+                  <td><span class="mp-role-badge" :class="op.role" x-text="op.role"></span></td>
+                  <td style="font-size:12px;color:var(--mv-muted)" x-text="op.last_login ? reltime(op.last_login) : '—'"></td>
+                  <td style="font-size:12px;color:var(--mv-muted)" x-text="op.created_at ? datestr(op.created_at) : '—'"></td>
+                  <td style="text-align:right;white-space:nowrap;">
+                    <button class="mv-btn" style="font-size:11px;padding:4px 10px;"
+                      @click="openEdit(op)">Edit</button>
+                    <button class="mv-btn mv-btn-danger" style="font-size:11px;padding:4px 10px;margin-left:6px;"
+                      @click="confirmDelete(op)"
+                      :disabled="op.id === currentUserId">Delete</button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Create / Edit modal -->
+      <div class="mp-overlay" x-show="showCreate || showEdit" x-cloak @click.self="closeModal()">
+        <div class="mp-modal">
+          <h3 x-text="showEdit ? 'Edit Operator' : 'New Operator'"></h3>
+
+          <div class="mp-field" style="margin-bottom:12px;" x-show="!showEdit">
+            <label class="mp-label" for="modal-username">Username</label>
+            <input id="modal-username" class="mv-input" type="text" placeholder="operator" x-model="form.username" />
+          </div>
+          <div class="mp-field" style="margin-bottom:12px;">
+            <label class="mp-label" for="modal-display">Display Name</label>
+            <input id="modal-display" class="mv-input" type="text" placeholder="Name" x-model="form.display_name" />
+          </div>
+          <div class="mp-field" style="margin-bottom:12px;">
+            <label class="mp-label" for="modal-role">Role</label>
+            <select id="modal-role" class="mv-select" x-model="form.role">
+              <option value="operator">operator</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <div class="mp-field" style="margin-bottom:12px;" x-show="!showEdit">
+            <label class="mp-label" for="modal-password">Password</label>
+            <input id="modal-password" class="mv-input" type="password" placeholder="min 8 chars" x-model="form.password" />
+          </div>
+          <div class="mp-field" style="margin-bottom:12px;" x-show="showEdit">
+            <label class="mp-label" for="modal-newpw">New Password <span style="color:var(--mv-faint)">(leave blank to keep)</span></label>
+            <input id="modal-newpw" class="mv-input" type="password" placeholder="optional" x-model="form.password" />
+          </div>
+
+          <div x-show="modalError" x-text="modalError"
+            style="font-size:12px;color:#ff453a;margin-bottom:10px;"></div>
+
+          <div class="mp-modal-actions">
+            <button class="mv-btn" style="background:transparent;border:1px solid var(--mv-border);" @click="closeModal()">Cancel</button>
+            <button class="mv-btn" @click="saveModal()" :disabled="modalSaving">
+              <span x-text="modalSaving ? 'Saving…' : (showEdit ? 'Save Changes' : 'Create')"></span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Delete confirm modal -->
+      <div class="mp-overlay" x-show="deleteTarget" x-cloak @click.self="deleteTarget = null">
+        <div class="mp-modal">
+          <h3>Delete Operator</h3>
+          <p style="font-size:13px;color:var(--mv-muted);">
+            Delete <strong style="color:var(--mv-text)" x-text="deleteTarget?.display_name"></strong>
+            (@<span x-text="deleteTarget?.username"></span>)? This cannot be undone.
+          </p>
+          <div class="mp-modal-actions">
+            <button class="mv-btn" style="background:transparent;border:1px solid var(--mv-border);" @click="deleteTarget = null">Cancel</button>
+            <button class="mv-btn mv-btn-danger" @click="doDelete()" :disabled="modalSaving">
+              <span x-text="modalSaving ? 'Deleting…' : 'Delete'"></span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script defer src="/dashboard/vendor/eq-ui.js"></script>
+    <script defer src="/dashboard/js/mayaShell.js"></script>
+    <script defer src="/dashboard/js/mayaAdminUsers.js"></script>
+    <script defer src="/sdk/vendor/alpine.min.js"></script>
+  </body>
+</html>

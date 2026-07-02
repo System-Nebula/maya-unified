@@ -1,5 +1,6 @@
 """Database models."""
 
+from maya_db.models.operator import OperatorUser
 from maya_db.models.arena import (
     ArenaArtifact,
     ArenaBattle,
@@ -43,6 +44,7 @@ from maya_db.models.research import (
 )
 
 __all__ = [
+    "OperatorUser",
     "ArenaArtifact",
     "ArenaBattle",
     "ArenaCandidate",

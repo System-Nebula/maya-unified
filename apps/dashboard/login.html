@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sign In — Maya Unified</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/dashboard/css/maya-login.css" />
+    <style>body { margin: 0; }</style>
+  </head>
+  <body>
+    <div class="ml-page" x-data="mayaLogin" x-init="init()">
+      <div class="ml-bg">
+        <div class="ml-blob ml-blob-1"></div>
+        <div class="ml-blob ml-blob-2"></div>
+        <div class="ml-blob ml-blob-3"></div>
+      </div>
+
+      <div class="ml-card" id="login-card" :class="{ shake: shaking }">
+        <div class="ml-card-head">
+          <h1 class="ml-title">Welcome to Maya Unified</h1>
+          <div class="ml-hero">
+            <div class="ml-mark" aria-hidden="true">
+              <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M18 4L30 11V25L18 32L6 25V11L18 4Z" stroke="currentColor" stroke-width="1.6"/>
+                <circle cx="18" cy="18" r="4" fill="currentColor"/>
+              </svg>
+            </div>
+          </div>
+          <p class="ml-subtitle">
+            Your operator account unlocks the voice dashboard, settings, and memory tools.
+          </p>
+        </div>
+
+        <div class="ml-error" x-show="error" x-text="error" x-cloak></div>
+
+        <form @submit.prevent="submit()" id="login-form">
+          <div class="ml-field">
+            <div class="ml-row">
+              <div class="ml-row-icon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+                  <circle cx="12" cy="7" r="4"/>
+                </svg>
+              </div>
+              <input
+                id="login-username"
+                class="ml-row-input"
+                type="text"
+                placeholder="Username"
+                autocomplete="username"
+                x-model="username"
+                :disabled="loading"
+                autofocus
+              />
+            </div>
+          </div>
+
+          <div class="ml-field">
+            <div class="ml-row">
+              <div class="ml-row-icon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+              </div>
+              <div class="ml-row-input-wrap">
+                <input
+                  id="login-password"
+                  class="ml-row-input"
+                  :type="showPw ? 'text' : 'password'"
+                  placeholder="Password"
+                  autocomplete="current-password"
+                  x-model="password"
+                  :disabled="loading"
+                />
+              </div>
+              <button
+                type="button"
+                class="ml-toggle-btn"
+                @click="showPw = !showPw"
+                :aria-label="showPw ? 'Hide password' : 'Show password'"
+                :aria-pressed="showPw"
+                tabindex="-1"
+              >
+                <svg x-show="!showPw" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+                <svg x-show="showPw" x-cloak xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 7 10 7a16.66 16.66 0 0 1-1.67 2.68"/>
+                  <path d="M6.61 6.61A16.66 16.66 0 0 0 2 12s3.5 7 10 7a9.12 9.12 0 0 0 2.1-.24"/>
+                  <line x1="2" x2="22" y1="2" y2="22"/>
+                  <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <button id="login-submit" class="ml-btn" type="submit" :disabled="loading">
+            <span x-show="loading" class="ml-spinner-wrap"><span class="ml-spinner"></span></span>
+            <span x-text="submitLabel()"></span>
+          </button>
+        </form>
+
+        <div class="ml-footer">Maya Unified · Local operator auth</div>
+      </div>
+    </div>
+
+    <script defer src="/dashboard/js/mayaLogin.js"></script>
+    <script defer src="/sdk/vendor/alpine.min.js"></script>
+  </body>
+</html>

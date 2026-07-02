@@ -3,6 +3,7 @@
 from maya_db.base import Base, TimestampMixin, UUIDPrimaryKey
 from maya_db.connection import get_async_session, get_engine
 from maya_db.models import (
+    OperatorUser,
     Battle,
     Candidate,
     Channel,
@@ -36,6 +37,7 @@ from maya_db.models import (
 
 __all__ = [
     "Base",
+    "OperatorUser",
     "Battle",
     "Candidate",
     "Channel",
