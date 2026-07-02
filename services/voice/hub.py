@@ -173,6 +173,11 @@ class VoiceHub(Hub):
             live = _build_live_diff(previous, merged)
             if live:
                 self.set_config(live)
+            if (
+                _section_changed(previous, merged, "voice")
+                or _nested_changed(previous, merged, "delivery", "xvec_only")
+            ):
+                self.agent._ensure_icl_ref_text()
             new_pid = str(_nested_get(merged, "personality", "active_id") or "")
             old_pid = str(_nested_get(previous, "personality", "active_id") or "")
             if new_pid and new_pid != old_pid:

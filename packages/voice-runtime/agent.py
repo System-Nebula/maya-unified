@@ -311,6 +311,8 @@ class VoiceAgent:
         if CONFIG.vts.enabled:
             self._start_vtuber()
 
+        self._ensure_icl_ref_text()
+
         log.info("ready")
 
     def _load_active_personality_meta(self) -> None:
@@ -1939,6 +1941,7 @@ class VoiceAgent:
         text = _clean_text(text)
         if not text or self._barge_in_flag.is_set():
             return
+        self._ensure_icl_ref_text()
         instruct = self._effective_instruct()
         self._express(self._turn_instruct or "", text)
         log.info("AI: %s", text)
@@ -1959,6 +1962,7 @@ class VoiceAgent:
             self._barge_in_flag.clear()
             self.playback.stop()
             self.playback.begin_turn()
+            self._ensure_icl_ref_text()
             self._emit(type="status", value="speaking")
             self._emit(type="ai", text=cleaned)
             if instruct and instruct.strip():
@@ -2654,14 +2658,34 @@ class VoiceAgent:
         current voice doesn't have it yet."""
         CONFIG.tts.xvec_only = bool(enabled)
         self.voice.cfg.xvec_only = bool(enabled)
-        if not enabled and not (CONFIG.tts.ref_text or "").strip():
-            ref = getattr(self.voice.cfg, "ref_audio", "")
-            if ref and os.path.exists(ref):
-                text = self.ensure_ref_text(ref)
-                if text:
-                    CONFIG.tts.ref_text = text
-                    self.voice.cfg.ref_text = text
+        if not enabled:
+            self._ensure_icl_ref_text()
         self._emit(type="settings", xvec_only=CONFIG.tts.xvec_only)
+
+    def _ensure_stt_for_ref_text(self) -> None:
+        """Load STT on demand so reference clips can be transcribed for ICL mode."""
+        if self.stt is not None:
+            return
+        from stt import create_stt
+
+        log.info("loading STT for reference transcription (%s)", CONFIG.stt.whisper_model)
+        self.stt = create_stt()
+
+    def _ensure_icl_ref_text(self) -> None:
+        """Ensure ref_text exists when ICL clone mode is active (auto-transcribe if needed)."""
+        if CONFIG.tts.xvec_only or self.voice is None:
+            return
+        if (CONFIG.tts.ref_text or "").strip():
+            self.voice.cfg.ref_text = CONFIG.tts.ref_text.strip()
+            return
+        ref = CONFIG.tts.ref_audio
+        if not ref or not os.path.exists(ref):
+            return
+        self._ensure_stt_for_ref_text()
+        text = self.ensure_ref_text(ref)
+        if text:
+            CONFIG.tts.ref_text = text
+            self.voice.cfg.ref_text = text
 
     # ----- VTuber (VTube Studio) -------------------------------------------
 
@@ -2748,6 +2772,7 @@ class VoiceAgent:
                     return fh.read().strip()
             except OSError:
                 pass
+        self._ensure_stt_for_ref_text()
         if self.stt is None:
             return ""
         log.info("transcribing reference for ICL: %s", os.path.basename(path))
