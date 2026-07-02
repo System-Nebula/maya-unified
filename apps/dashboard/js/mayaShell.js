@@ -106,6 +106,7 @@ document.addEventListener("alpine:init", () => {
       else if (path.startsWith("/admin")) this.s.page = "admin";
       else if (path.startsWith("/experimental")) this.s.page = "experimental";
       this.s.loadStarted = Date.now();
+      if (window.mayaConversationStore) window.mayaConversationStore.ensureHydrated();
       this.pollStatus();
       this._unsub = window.mayaAgentEvents.subscribe((ev) => this.onAgentEvent(ev));
       this.syncSettingsToSdk();
@@ -159,11 +160,13 @@ document.addEventListener("alpine:init", () => {
     },
 
     onAgentEvent(ev) {
+      if (window.mayaConversationStore) window.mayaConversationStore.handleAgentEvent(ev);
       if (ev.type === "ready") {
         this.s.ready = !!ev.value;
         if (ev.value) {
           this.s.error = "";
           this.pollStatus();
+          if (window.mayaConversationStore) window.mayaConversationStore.syncFromServer();
         }
       }
       if (ev.type === "status") this.s.status = ev.value || this.s.status;
@@ -181,6 +184,13 @@ document.addEventListener("alpine:init", () => {
         const d = await r.json();
         this.s.ready = !!d.ready;
         this.s.status = d.status || "idle";
+        if (window.mayaConversationStore && d.session_running !== undefined) {
+          const store = Alpine.store("mayaConversation");
+          if (store) {
+            store.sessionOn = !!d.session_running;
+            if (d.status) store.statusLabel = d.status;
+          }
+        }
         this.s.llmOk = !!d.llm_ok;
         this.s.llmError = d.llm_error || "";
         this.s.llmModel = d.llm_model || "";

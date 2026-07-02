@@ -29,10 +29,14 @@ def register_agent_routes(app) -> None:
     @app.get(f"{prefix}/status")
     def agent_status() -> dict:
         llm = hub.llm_status() if hub.ready else {"ok": False, "error": "agent still loading"}
+        session_running = False
+        if hub.ready and hub.agent is not None:
+            session_running = hub.agent.is_session_running()
         return {
             "ok": True,
             "ready": hub.ready,
             "status": hub.status,
+            "session_running": session_running,
             "error": getattr(hub, "last_error", "") or None,
             "llm_ok": llm.get("ok", False),
             "llm_error": llm.get("error"),
@@ -40,6 +44,10 @@ def register_agent_routes(app) -> None:
             "llm_model": llm.get("model"),
             "llm_provider": llm.get("provider"),
         }
+
+    @app.get(f"{prefix}/conversation")
+    def agent_conversation() -> dict:
+        return hub.conversation_state()
 
     @app.post(f"{prefix}/chat")
     def agent_chat(data: dict = Body(...)) -> dict:

@@ -1,6 +1,87 @@
-/** Conversation — voice session + server LLM chat when agent ready. */
+/** Conversation state — shared across dashboard pages + sessionStorage. */
+const MAYA_CONV_STORAGE_KEY = "maya.conversation.v1";
+
+function _persistConversation(store) {
+  try {
+    sessionStorage.setItem(
+      MAYA_CONV_STORAGE_KEY,
+      JSON.stringify({
+        turns: store.turns,
+        statusLabel: store.statusLabel,
+        step: store.step,
+      }),
+    );
+  } catch (_) {}
+}
+
+function _restoreConversation(store) {
+  try {
+    const raw = sessionStorage.getItem(MAYA_CONV_STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (Array.isArray(data.turns)) store.turns = data.turns;
+    if (data.statusLabel) store.statusLabel = data.statusLabel;
+    if (data.step) store.step = data.step;
+  } catch (_) {}
+}
+
+function _applyAgentEvent(store, ev) {
+  if (!ev || !ev.type) return;
+  if (ev.type === "status") {
+    const v = ev.value || "idle";
+    store.statusLabel = v;
+    if (v === "listening" || v === "hearing") {
+      store.step = "listen";
+      if (store.ttsBusy) store.ttsBusy = false;
+    } else if (v === "transcribing") store.step = "detect";
+    else if (v === "thinking") store.step = "reason";
+    else if (v === "speaking") store.step = "maya";
+    else if (v === "idle") {
+      const last = store.turns[store.turns.length - 1];
+      if (last && last._streaming) last._streaming = false;
+      if (store.ttsBusy) store.ttsBusy = false;
+    }
+    _persistConversation(store);
+    return;
+  }
+  if (ev.type === "error" && ev.text && store.ttsBusy) {
+    store.ttsError = ev.text;
+    store.ttsBusy = false;
+    return;
+  }
+  if (ev.type === "tts_error" && ev.text) {
+    store.ttsError = ev.text;
+    store.ttsBusy = false;
+    return;
+  }
+  if (ev.type === "user" && ev.text) {
+    const last = store.turns[store.turns.length - 1];
+    if (last && last.role === "operator" && last.text === ev.text) return;
+    store.turns.push({ role: "operator", text: ev.text });
+    _persistConversation(store);
+    return;
+  }
+  if (ev.type === "ai" && ev.text) {
+    const last = store.turns[store.turns.length - 1];
+    const chunk = String(ev.text);
+    if (last && last.role === "maya" && last._streaming) {
+      const cur = last.text || "";
+      if (!chunk || cur.endsWith(chunk)) return;
+      if (cur && chunk.startsWith(cur)) {
+        last.text = chunk;
+        _persistConversation(store);
+        return;
+      }
+      last.text = cur + chunk;
+    } else {
+      store.turns.push({ role: "maya", text: chunk, _streaming: true });
+    }
+    _persistConversation(store);
+  }
+}
+
 document.addEventListener("alpine:init", () => {
-  Alpine.data("mayaConversation", () => ({
+  Alpine.store("mayaConversation", {
     sessionOn: false,
     statusLabel: "idle",
     step: "listen",
@@ -12,29 +93,49 @@ document.addEventListener("alpine:init", () => {
     turns: [],
     useWebLLM: false,
     sending: false,
-    _unsub: null,
-    _bound: false,
+    _hydrated: false,
 
-    get agentReady() {
-      return Alpine.store("mayaShell")?.ready || false;
+    persist() {
+      _persistConversation(this);
     },
-    get agentError() {
-      return Alpine.store("mayaShell")?.error || "";
+
+    restore() {
+      _restoreConversation(this);
     },
-    get llmOk() {
-      return Alpine.store("mayaShell")?.llmOk !== false && Alpine.store("mayaShell")?.ready;
+
+    handleAgentEvent(ev) {
+      _applyAgentEvent(this, ev);
     },
-    get llmError() {
-      return Alpine.store("mayaShell")?.llmError || "";
+
+    async syncFromServer() {
+      try {
+        const [statusR, convR] = await Promise.all([
+          fetch("/api/voice/agent/status"),
+          fetch("/api/voice/agent/conversation"),
+        ]);
+        if (statusR.ok) {
+          const d = await statusR.json();
+          this.sessionOn = !!d.session_running;
+          if (d.status) this.statusLabel = d.status;
+        }
+        if (convR.ok) {
+          const d = await convR.json();
+          if (d.session_running !== undefined) this.sessionOn = !!d.session_running;
+          if (d.status) this.statusLabel = d.status;
+          if (Array.isArray(d.turns) && d.turns.length > this.turns.length) {
+            this.turns = d.turns;
+          }
+        }
+        this.persist();
+      } catch (_) {}
     },
-    get webllmFailed() {
-      const st = Alpine.store("mayaShell")?.webllmBridgeStatus || "";
-      if (/failed|unavailable|rejected|null/i.test(st)) return st;
-      const issue = window.mayaWebLLMBridge?.gpuIssue;
-      return issue || "";
-    },
-    get webllmTroubleshoot() {
-      return window.mayaWebLLMBridge?.troubleshoot || "";
+
+    async ensureHydrated() {
+      if (this._hydrated) return;
+      this.restore();
+      await this.loadSettings();
+      await this.syncFromServer();
+      this._hydrated = true;
     },
 
     async loadSettings() {
@@ -47,87 +148,28 @@ document.addEventListener("alpine:init", () => {
       } catch (_) {}
     },
 
-    async init() {
-      if (this._bound) return;
-      this._bound = true;
-      await this.loadSettings();
-      this._unsub = window.mayaAgentEvents.subscribe((ev) => this.onAgentEvent(ev));
-    },
-
-    destroy() {
-      if (this._unsub) {
-        this._unsub();
-        this._unsub = null;
-      }
-      this._bound = false;
-    },
-
-    onAgentEvent(ev) {
-      if (ev.type === "status") {
-        const v = ev.value || "idle";
-        this.statusLabel = v;
-        if (v === "listening" || v === "hearing") {
-          this.step = "listen";
-          if (this.ttsBusy) this.ttsBusy = false;
-        } else if (v === "transcribing") this.step = "detect";
-        else if (v === "thinking") this.step = "reason";
-        else if (v === "speaking") this.step = "maya";
-        else if (v === "idle") {
-          const last = this.turns[this.turns.length - 1];
-          if (last && last._streaming) last._streaming = false;
-          if (this.ttsBusy) this.ttsBusy = false;
-        }
-      }
-      if (ev.type === "error" && ev.text && this.ttsBusy) {
-        this.ttsError = ev.text;
-        this.ttsBusy = false;
-      }
-      if (ev.type === "tts_error" && ev.text) {
-        this.ttsError = ev.text;
-        this.ttsBusy = false;
-      }
-      if (ev.type === "user" && ev.text) {
-        const last = this.turns[this.turns.length - 1];
-        if (last && last.role === "operator" && last.text === ev.text) return;
-        this.turns.push({ role: "operator", text: ev.text });
-      }
-      if (ev.type === "ai" && ev.text) {
-        const last = this.turns[this.turns.length - 1];
-        const chunk = String(ev.text);
-        if (last && last.role === "maya" && last._streaming) {
-          const cur = last.text || "";
-          if (!chunk || cur.endsWith(chunk)) return;
-          if (cur && chunk.startsWith(cur)) {
-            last.text = chunk;
-            return;
-          }
-          last.text = cur + chunk;
-        } else {
-          this.turns.push({ role: "maya", text: chunk, _streaming: true });
-        }
-      }
-    },
-
     async startSession() {
       const r = await fetch("/api/voice/agent/start", { method: "POST" });
       const data = await r.json();
       if (data.ok) {
         this.sessionOn = true;
-        this.$dispatch("maya-session-start");
+        window.dispatchEvent(new CustomEvent("maya-session-start"));
       } else {
         this.turns.push({ role: "system", text: data.error || "Could not start session" });
+        this.persist();
       }
     },
 
     async stopSession() {
       await fetch("/api/voice/agent/stop", { method: "POST" });
       this.sessionOn = false;
-      this.$dispatch("maya-session-stop");
+      window.dispatchEvent(new CustomEvent("maya-session-stop"));
+      this.persist();
     },
 
     async speakPreview() {
       const text = this.ttsDraft.trim();
-      if (!text || this.ttsBusy || !this.agentReady) return;
+      if (!text || this.ttsBusy || !Alpine.store("mayaShell")?.ready) return;
       this.ttsBusy = true;
       this.ttsError = "";
       this.step = "maya";
@@ -179,11 +221,14 @@ document.addEventListener("alpine:init", () => {
     async sendServer() {
       const text = this.draft.trim();
       if (!text || this.sending) return;
+      const shell = Alpine.store("mayaShell");
+      const agentReady = shell?.ready || false;
+      const llmOk = shell?.llmOk !== false && shell?.ready;
       this.sending = true;
       this.draft = "";
       this.step = "reason";
       try {
-        if (this.agentReady && this.llmOk) {
+        if (agentReady && llmOk) {
           const r = await fetch("/api/voice/agent/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -192,6 +237,7 @@ document.addEventListener("alpine:init", () => {
           const data = await r.json();
           if (!data.ok) {
             this.turns.push({ role: "system", text: data.error || "Chat failed" });
+            this.persist();
           }
         } else {
           this.turns.push({ role: "operator", text });
@@ -208,6 +254,7 @@ document.addEventListener("alpine:init", () => {
             const data = await r.json();
             this.turns.push({ role: "maya", text: data.maya_turn });
           }
+          this.persist();
         }
       } finally {
         this.sending = false;
@@ -224,6 +271,51 @@ document.addEventListener("alpine:init", () => {
 
     reset() {
       this.turns = [];
+      this.persist();
+    },
+  });
+
+  Alpine.data("mayaConversation", () => ({
+    get agentReady() {
+      return Alpine.store("mayaShell")?.ready || false;
+    },
+    get agentError() {
+      return Alpine.store("mayaShell")?.error || "";
+    },
+    get llmOk() {
+      return Alpine.store("mayaShell")?.llmOk !== false && Alpine.store("mayaShell")?.ready;
+    },
+    get llmError() {
+      return Alpine.store("mayaShell")?.llmError || "";
+    },
+    get webllmFailed() {
+      const st = Alpine.store("mayaShell")?.webllmBridgeStatus || "";
+      if (/failed|unavailable|rejected|null/i.test(st)) return st;
+      const issue = window.mayaWebLLMBridge?.gpuIssue;
+      return issue || "";
+    },
+    get webllmTroubleshoot() {
+      return window.mayaWebLLMBridge?.troubleshoot || "";
+    },
+
+    init() {
+      Alpine.store("mayaConversation").ensureHydrated();
     },
   }));
 });
+
+// Expose for mayaShell (loads after this file on dashboard pages).
+window.mayaConversationStore = {
+  handleAgentEvent(ev) {
+    const store = window.Alpine?.store("mayaConversation");
+    if (store) store.handleAgentEvent(ev);
+  },
+  async ensureHydrated() {
+    const store = window.Alpine?.store("mayaConversation");
+    if (store) await store.ensureHydrated();
+  },
+  async syncFromServer() {
+    const store = window.Alpine?.store("mayaConversation");
+    if (store) await store.syncFromServer();
+  },
+};

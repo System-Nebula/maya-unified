@@ -43,15 +43,15 @@
       </div>
 
       <div class="md-banner error" x-show="agentError" x-text="agentError"></div>
-      <div class="md-banner error" x-show="agentReady && !llmOk && useWebLLM" x-text="llmError || 'WebLLM loading — keep this tab open in Chrome/Edge with WebGPU.'"></div>
-      <div class="md-banner error" x-show="agentReady && !llmOk && !useWebLLM" x-text="llmError || 'LLM offline — configure model in Settings.'"></div>
+      <div class="md-banner error" x-show="agentReady && !llmOk && $store.mayaConversation.useWebLLM" x-text="llmError || 'WebLLM loading — keep this tab open in Chrome/Edge with WebGPU.'"></div>
+      <div class="md-banner error" x-show="agentReady && !llmOk && !$store.mayaConversation.useWebLLM" x-text="llmError || 'LLM offline — configure model in Settings.'"></div>
       <div class="md-banner" x-show="!agentReady && !agentError">Agent loading — voice session unlocks when the status chip shows ready.</div>
 
       <div class="md-pipeline">
-        <span class="md-step" :class="{ on: step === 'listen' }">01 Listen</span>
-        <span class="md-step" :class="{ on: step === 'detect' }">02 Detect</span>
-        <span class="md-step" :class="{ on: step === 'reason' }">03 Reason</span>
-        <span class="md-step" :class="{ on: step === 'maya' }">04 Maya turn</span>
+        <span class="md-step" :class="{ on: $store.mayaConversation.step === 'listen' }">01 Listen</span>
+        <span class="md-step" :class="{ on: $store.mayaConversation.step === 'detect' }">02 Detect</span>
+        <span class="md-step" :class="{ on: $store.mayaConversation.step === 'reason' }">03 Reason</span>
+        <span class="md-step" :class="{ on: $store.mayaConversation.step === 'maya' }">04 Maya turn</span>
       </div>
 
       <div class="md-grid">
@@ -169,35 +169,35 @@
 
           <div class="md-session">
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
-              <span class="mv-chip" :class="{ live: sessionOn }"><span class="ind"></span><span x-text="statusLabel"></span></span>
-              <button class="mv-btn mv-btn-primary" x-show="!sessionOn" @click="startSession()" :disabled="!agentReady">Start voice session</button>
-              <button class="mv-btn mv-btn-danger" x-show="sessionOn" @click="stopSession()">Stop</button>
+              <span class="mv-chip" :class="{ live: $store.mayaConversation.sessionOn }"><span class="ind"></span><span x-text="$store.mayaConversation.statusLabel"></span></span>
+              <button class="mv-btn mv-btn-primary" x-show="!$store.mayaConversation.sessionOn" @click="$store.mayaConversation.startSession()" :disabled="!agentReady">Start voice session</button>
+              <button class="mv-btn mv-btn-danger" x-show="$store.mayaConversation.sessionOn" @click="$store.mayaConversation.stopSession()">Stop</button>
               <a class="mv-btn" href="/settings" style="margin-left:auto;text-decoration:none">Settings</a>
             </div>
 
-            <p class="mv-desc md-webllm-banner" x-show="useWebLLM" style="color:var(--mv-accent);margin-bottom:10px">
+            <p class="mv-desc md-webllm-banner" x-show="$store.mayaConversation.useWebLLM" style="color:var(--mv-accent);margin-bottom:10px">
               Experimental WebLLM — voice + typed chat run through this browser tab
               (<span x-text="$store.mayaShell.webllmBridgeStatus || 'loading…'"></span>).
             </p>
-            <div class="md-banner error" x-show="useWebLLM && webllmFailed" style="margin-bottom:10px">
+            <div class="md-banner error" x-show="$store.mayaConversation.useWebLLM && webllmFailed" style="margin-bottom:10px">
               <p x-text="webllmFailed"></p>
               <p class="mv-desc" style="margin-top:8px" x-text="webllmTroubleshoot"></p>
             </div>
 
-            <textarea class="md-textarea mv-input" x-model="draft" :placeholder="agentReady && llmOk ? 'Message Maya…' : (useWebLLM ? 'Waiting for WebLLM…' : 'Waiting for agent / LLM…')" @keydown="onKeydown($event)"></textarea>
+            <textarea class="md-textarea mv-input" x-model="$store.mayaConversation.draft" :placeholder="agentReady && llmOk ? 'Message Maya…' : ($store.mayaConversation.useWebLLM ? 'Waiting for WebLLM…' : 'Waiting for agent / LLM…')" @keydown="$store.mayaConversation.onKeydown($event)"></textarea>
             <div style="margin-top:10px;display:flex;gap:8px">
-              <button class="mv-btn mv-btn-primary" @click="sendServer()" :disabled="sending || (useWebLLM && !llmOk)">Send</button>
-              <button class="mv-btn" @click="reset()">Clear transcript</button>
+              <button class="mv-btn mv-btn-primary" @click="$store.mayaConversation.sendServer()" :disabled="$store.mayaConversation.sending || ($store.mayaConversation.useWebLLM && !llmOk)">Send</button>
+              <button class="mv-btn" @click="$store.mayaConversation.reset()">Clear transcript</button>
             </div>
 
             <div class="md-log">
-              <template x-for="(t, i) in turns" :key="i">
+              <template x-for="(t, i) in $store.mayaConversation.turns" :key="i">
                 <div class="md-turn" :class="t.role">
                   <div class="role" x-text="t.role"></div>
                   <div x-text="t.text"></div>
                 </div>
               </template>
-              <p class="mv-desc" x-show="!turns.length" style="padding:12px 0">Transcript appears here during voice or chat turns.</p>
+              <p class="mv-desc" x-show="!$store.mayaConversation.turns.length" style="padding:12px 0">Transcript appears here during voice or chat turns.</p>
             </div>
           </div>
         </div>
@@ -274,31 +274,31 @@
               </p>
               <textarea
                 class="md-textarea mv-input md-tts-input"
-                x-model="ttsDraft"
+                x-model="$store.mayaConversation.ttsDraft"
                 placeholder="Haha! That was ridiculous."
-                :disabled="!agentReady || ttsBusy"
-                @keydown="onTtsKeydown($event)"
+                :disabled="!agentReady || $store.mayaConversation.ttsBusy"
+                @keydown="$store.mayaConversation.onTtsKeydown($event)"
               ></textarea>
               <label class="md-tts-instruct">
                 <span class="md-eq-label">Voice instruct</span>
                 <input
                   class="mv-input"
                   type="text"
-                  x-model="ttsInstruct"
+                  x-model="$store.mayaConversation.ttsInstruct"
                   placeholder="warm, amused"
-                  :disabled="!agentReady || ttsBusy"
+                  :disabled="!agentReady || $store.mayaConversation.ttsBusy"
                 />
               </label>
               <div class="md-tts-actions">
                 <button
                   class="mv-btn mv-btn-primary"
-                  @click="speakPreview()"
-                  :disabled="!agentReady || ttsBusy || !ttsDraft.trim()"
-                  x-text="ttsBusy ? 'Speaking…' : 'Speak'"
+                  @click="$store.mayaConversation.speakPreview()"
+                  :disabled="!agentReady || $store.mayaConversation.ttsBusy || !$store.mayaConversation.ttsDraft.trim()"
+                  x-text="$store.mayaConversation.ttsBusy ? 'Speaking…' : 'Speak'"
                 ></button>
-                <button class="mv-btn" @click="ttsDraft = ''" :disabled="ttsBusy">Clear</button>
+                <button class="mv-btn" @click="$store.mayaConversation.ttsDraft = ''" :disabled="$store.mayaConversation.ttsBusy">Clear</button>
               </div>
-              <p class="md-banner error md-tts-error" x-show="ttsError" x-text="ttsError"></p>
+              <p class="md-banner error md-tts-error" x-show="$store.mayaConversation.ttsError" x-text="$store.mayaConversation.ttsError"></p>
             </div>
           </div>
         </aside>
@@ -307,8 +307,8 @@
 
     <script defer src="/dashboard/vendor/eq-ui.js"></script>
     <script defer src="/dashboard/js/mayaWebLLM.js"></script>
-    <script defer src="/dashboard/js/mayaShell.js"></script>
     <script defer src="/dashboard/js/mayaConversation.js"></script>
+    <script defer src="/dashboard/js/mayaShell.js"></script>
     <script defer src="/dashboard/js/mayaEqViz.js"></script>
     <script defer src="/dashboard/js/mayaToolsPanel.js"></script>
     <script defer src="/sdk/vendor/alpine.min.js"></script>

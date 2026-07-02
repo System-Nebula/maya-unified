@@ -192,6 +192,27 @@ class VoiceHub(Hub):
             out["agent_error"] = self.last_error
         return out
 
+    def conversation_state(self) -> dict:
+        """Transcript + live voice session flags for dashboard persistence."""
+        if not self.ready or self.agent is None:
+            return {"ok": True, "session_running": False, "status": self.status, "turns": []}
+        turns: list[dict] = []
+        for msg in self.agent.history:
+            role = msg.get("role")
+            content = str(msg.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "user":
+                turns.append({"role": "operator", "text": content})
+            elif role == "assistant":
+                turns.append({"role": "maya", "text": content})
+        return {
+            "ok": True,
+            "session_running": self.agent.is_session_running(),
+            "status": self.status,
+            "turns": turns,
+        }
+
     def llm_status(self) -> dict:
         from config import CONFIG
 
@@ -245,6 +266,9 @@ class VoiceHub(Hub):
                 parts.append(chunk)
                 self.broadcast({"type": "ai", "text": chunk})
             reply = "".join(parts).strip()
+            if reply:
+                self.agent.history.append({"role": "user", "content": text})
+                self.agent.history.append({"role": "assistant", "content": reply})
             self.broadcast({"type": "status", "value": "idle"})
             return {"ok": True, "text": reply}
         except Exception as exc:  # noqa: BLE001
