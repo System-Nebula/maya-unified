@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Request
 
-from services.operator_voice import context as op_ctx
 from services.settings.catalog import (
     CLONE_MODELS,
     CUSTOM_TTS_MODELS,
@@ -13,7 +12,7 @@ from services.settings.catalog import (
     WEBLLM_MODELS,
     fetch_openai_models,
 )
-from services.settings.store import load_settings as load_global_settings
+from services.settings.store import load_effective_settings
 from services.voice.hub import hub
 
 router = APIRouter(prefix="/api/voice/settings", tags=["voice-settings"])
@@ -28,12 +27,12 @@ def _operator_id(request: Request) -> str:
 def get_settings(request: Request) -> dict:
     oid = _operator_id(request)
     if oid:
-        return {"ok": True, "settings": op_ctx.load_settings(oid)}
-    return {"ok": True, "settings": load_global_settings()}
+        return {"ok": True, "settings": load_effective_settings(oid)}
+    return {"ok": True, "settings": load_effective_settings(None)}
 
 
 @router.get("/catalog")
-def settings_catalog(request: Request) -> dict:
+def settings_catalog(request: Request, llm: bool = True) -> dict:
     catalog: dict = {
         "barge_modes": ["smart", "instant", "off"],
         "delivery_modes": ["full", "hybrid", "off"],
@@ -57,12 +56,16 @@ def settings_catalog(request: Request) -> dict:
         "personas": ["maya", "operator", "assistant", "technical", "friendly", "professional"],
     }
     oid = _operator_id(request)
-    settings = op_ctx.load_settings(oid) if oid else load_global_settings()
+    settings = load_effective_settings(oid or None)
     reasoning = settings.get("reasoning", {})
-    catalog["llm_models"] = fetch_openai_models(
-        str(reasoning.get("base_url", "")),
-        str(reasoning.get("api_key", "")),
-    )
+    if llm:
+        catalog["llm_models"] = fetch_openai_models(
+            str(reasoning.get("base_url", "")),
+            str(reasoning.get("api_key", "")),
+            timeout=0.75,
+        )
+    else:
+        catalog["llm_models"] = []
     if not catalog["llm_models"] and reasoning.get("model"):
         mid = str(reasoning["model"])
         catalog["llm_models"] = [{"id": mid, "label": mid}]
@@ -93,4 +96,4 @@ def patch_settings(request: Request, data: dict = Body(...)) -> dict:
     patch = data.get("settings", data) if isinstance(data, dict) else {}
     oid = _operator_id(request)
     merged = hub.apply_settings_patch(patch if isinstance(patch, dict) else {}, operator_id=oid or None)
-    return {"ok": True, "settings": merged}
+    return {"ok": True, "settings": load_effective_settings(oid or None)}

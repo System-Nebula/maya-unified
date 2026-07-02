@@ -109,11 +109,15 @@ document.addEventListener("alpine:init", () => {
       else if (path.startsWith("/rooms")) this.s.page = "rooms";
       else if (path.startsWith("/experimental")) this.s.page = "experimental";
       this.s.loadStarted = Date.now();
-      if (window.mayaConversationStore) window.mayaConversationStore.ensureHydrated();
+      if (window.mayaConversationStore && this.s.page !== "settings") {
+        window.mayaConversationStore.ensureHydrated();
+      }
       this.pollStatus();
       this._unsub = window.mayaAgentEvents.subscribe((ev) => this.onAgentEvent(ev));
-      this.syncSettingsToSdk();
-      this.initWebLLMBridge();
+      if (this.s.page !== "settings") {
+        this.syncSettingsToSdk();
+        this.initWebLLMBridge();
+      }
       setInterval(() => this.pollStatus(), 12000);
       this._bridgeTick = setInterval(() => this.refreshBridgeStatus(), 800);
       this.fetchCurrentUser();

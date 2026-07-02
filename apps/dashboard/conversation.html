@@ -198,7 +198,7 @@
               <button class="mv-btn" @click="$store.mayaConversation.reset()">Clear transcript</button>
             </div>
 
-            <div class="md-log">
+            <div class="md-log md-scroll">
               <template x-for="(t, i) in $store.mayaConversation.turns" :key="i">
                 <div class="md-turn" :class="t.role">
                   <div class="role" x-text="t.role"></div>
@@ -210,7 +210,7 @@
           </div>
         </div>
 
-        <aside class="md-col-side">
+        <aside class="md-col-side md-scroll">
           <div class="md-tools-card" x-data="mayaToolsPanel()" x-init="init()">
             <div class="md-tools-head">
               <div>
@@ -257,7 +257,7 @@
               </ul>
 
               <p class="mv-eyebrow" style="margin:16px 0 6px">Live tool log</p>
-              <ul class="md-tool-log">
+              <ul class="md-tool-log md-scroll">
                 <template x-for="(line, i) in toolLog" :key="i">
                   <li x-text="line"></li>
                 </template>

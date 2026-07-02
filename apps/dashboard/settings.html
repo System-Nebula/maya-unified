@@ -605,7 +605,8 @@
           </div>
 
           <!-- PERSONALITY -->
-          <div x-show="tab === 'personality'" x-data="mayaPersonality()" x-init="init()">
+          <template x-if="tab === 'personality'">
+          <div x-data="mayaPersonality()" x-init="init()">
             <div class="ms-panel-head">
               <p class="mv-eyebrow">Agent</p>
               <h2 class="mv-title">Personality</h2>
@@ -678,6 +679,7 @@
               <textarea class="ms-textarea ms-preview" readonly x-text="promptPreview" :value="promptPreview"></textarea>
             </details>
           </div>
+          </template>
 
           <!-- MEMORY -->
           <div x-show="tab === 'memory'">
@@ -738,6 +740,7 @@
               </div>
             </div>
 
+          <template x-if="tab === 'tools'">
           <div x-data="mayaToolsPanel()" x-init="init()">
             <div class="ms-btn-row" style="margin-bottom:12px">
               <button type="button" class="mv-btn" @click="refresh()">Refresh</button>
@@ -751,20 +754,20 @@
             <p class="ms-toast err" x-show="error" x-text="error"></p>
             <p class="mv-desc" x-show="!agentReady && !loading">Agent still loading — tool list fills in when ready.</p>
 
+            <div class="ms-tool-summary" x-show="!loading && tools.length">
+              <p class="mv-eyebrow" style="margin:0 0 6px">Registered</p>
+              <p class="ms-tool-summary-count" x-text="tools.length + (tools.length === 1 ? ' tool' : ' tools')"></p>
+              <p class="ms-tool-index" x-text="allToolsLine"></p>
+            </div>
+
             <template x-for="[group, items] in toolGroups" :key="group">
-              <div class="ms-panel-head" style="margin-top:16px">
-                <p class="mv-eyebrow" x-text="group"></p>
-                <h3 class="mv-title" style="font-size:14px" x-text="items.length + ' tool(s)'"></h3>
+              <div class="ms-tool-group">
+                <div class="ms-tool-group-head">
+                  <span class="ms-tool-group-label" x-text="group"></span>
+                  <span class="ms-tool-group-count" x-text="items.length + (items.length === 1 ? ' tool' : ' tools')"></span>
+                </div>
+                <p class="ms-tool-index" x-text="toolNamesLine(items)"></p>
               </div>
-              <ul class="ms-tool-list">
-                <template x-for="t in items" :key="t.name">
-                  <li>
-                    <span class="ms-tool-badge" x-text="t.group || 'tool'"></span>
-                    <strong x-text="t.name"></strong>
-                    <span class="ms-tool-desc" x-text="t.description || ''"></span>
-                  </li>
-                </template>
-              </ul>
             </template>
 
             <p class="mv-desc" x-show="!loading && !tools.length && agentReady">No tools registered.</p>
@@ -796,6 +799,7 @@
               <li class="ms-empty" x-show="!toolLog.length">No tool calls yet — start a voice session on the Dashboard.</li>
             </ul>
           </div>
+          </template>
           </div>
 
           <!-- DISCORD -->
@@ -870,7 +874,8 @@
           </div>
 
           <!-- INTEGRATIONS -->
-          <div x-show="tab === 'integrations'" x-data="mayaIntegrations" x-init="init()">
+          <template x-if="tab === 'integrations'">
+          <div x-data="mayaIntegrations" x-init="init()">
             <div class="ms-panel-head">
               <p class="mv-eyebrow">Connect</p>
               <h2 class="mv-title">App Integrations</h2>
@@ -950,6 +955,7 @@
               </div>
             </div>
           </div>
+          </template>
 
           <!-- PLATFORM -->
           <div x-show="tab === 'platform'">
@@ -974,9 +980,7 @@
       </div>
     </div>
 
-    <script defer src="/sdk/maya-voice-sdk.js"></script>
     <script defer src="/dashboard/js/mayaWebLLM.js"></script>
-    <script defer src="/dashboard/js/mayaConversation.js"></script>
     <script defer src="/dashboard/js/mayaShell.js"></script>
     <script defer src="/dashboard/js/mayaIntegrations.js"></script>
     <script defer src="/dashboard/js/mayaSettings.js"></script>

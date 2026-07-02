@@ -7,7 +7,7 @@ import os
 from copy import deepcopy
 from typing import Any
 
-from services.paths import DATA_DIR, VOICE_RUNTIME, agent_data_dir, resolve_voice_ref, resolve_runtime_file
+from services.paths import DATA_DIR, ROOT, VOICE_RUNTIME, agent_data_dir, resolve_voice_ref, resolve_runtime_file
 from services.settings.schema import DEFAULT_SETTINGS, deep_merge
 
 
@@ -233,26 +233,93 @@ def _load_ref_text_sidecar(tts_cfg) -> None:
                 pass
 
 
+def _overlay_env_vars(settings: dict[str, Any]) -> None:
+    """Apply VA_* process env onto settings (gateway loads .env at startup)."""
+    reasoning = settings.setdefault("reasoning", {})
+    discord = settings.setdefault("discord", {})
+
+    base_url = os.environ.get("VA_LLM_BASE_URL", "").strip()
+    if base_url:
+        reasoning["base_url"] = base_url
+    model = os.environ.get("VA_LLM_MODEL", "").strip()
+    if model:
+        reasoning["model"] = model
+    api_key = os.environ.get("VA_LLM_API_KEY", "").strip()
+    if api_key:
+        reasoning["api_key"] = api_key
+
+    token = os.environ.get("VA_DISCORD_TOKEN", "").strip()
+    if token:
+        discord["token"] = token
+        discord["enabled"] = True
+    guild = os.environ.get("VA_DISCORD_GUILD_ID", "").strip()
+    if guild:
+        try:
+            discord["guild_id"] = int(guild)
+        except ValueError:
+            pass
+    if os.environ.get("VA_DISCORD_AUTO_REPLY") is not None:
+        discord["auto_reply"] = os.environ.get("VA_DISCORD_AUTO_REPLY", "1").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    vol = os.environ.get("VA_DISCORD_MUSIC_VOLUME", "").strip()
+    if vol:
+        try:
+            discord["music_volume"] = float(vol)
+        except ValueError:
+            pass
+
+
+def _overlay_env_file(settings: dict[str, Any], env_path) -> None:
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key == "VA_LLM_BASE_URL" and val:
+            settings.setdefault("reasoning", {})["base_url"] = val
+        elif key == "VA_LLM_MODEL" and val:
+            settings.setdefault("reasoning", {})["model"] = val
+        elif key == "VA_LLM_API_KEY" and val:
+            settings.setdefault("reasoning", {})["api_key"] = val
+        elif key == "VA_DISCORD_TOKEN" and val:
+            disc = settings.setdefault("discord", {})
+            disc["token"] = val
+            disc["enabled"] = True
+        elif key == "VA_DISCORD_GUILD_ID" and val:
+            try:
+                settings.setdefault("discord", {})["guild_id"] = int(val)
+            except ValueError:
+                pass
+
+
 def seed_env_defaults() -> dict[str, Any]:
-    """Merge .env / VA_* into settings on first load."""
+    """Global settings file + .env / VA_* overlays (shared runtime defaults)."""
     settings = load_settings()
+    _overlay_env_file(settings, ROOT / ".env")
     if VOICE_RUNTIME.is_dir():
-        env_path = VOICE_RUNTIME / ".env"
-        if env_path.is_file():
-            for line in env_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, val = line.partition("=")
-                key = key.strip()
-                val = val.strip().strip('"').strip("'")
-                if key == "VA_LLM_BASE_URL" and val:
-                    settings["reasoning"]["base_url"] = val
-                elif key == "VA_LLM_MODEL" and val:
-                    settings["reasoning"]["model"] = val
-                elif key == "VA_LLM_API_KEY" and val:
-                    settings["reasoning"]["api_key"] = val
-                elif key == "VA_DISCORD_TOKEN" and val:
-                    settings["discord"]["token"] = val
-                    settings["discord"]["enabled"] = True
+        _overlay_env_file(settings, VOICE_RUNTIME / ".env")
+    _overlay_env_vars(settings)
     return settings
+
+
+def load_effective_settings(operator_id: str | None = None) -> dict[str, Any]:
+    """Operator settings with global/env fallbacks for unset fields (e.g. Discord token)."""
+    base = seed_env_defaults()
+    if not operator_id:
+        return base
+    from services.operator_voice import context as op_ctx
+
+    operator = op_ctx.load_settings(operator_id)
+    merged = deep_merge(base, operator)
+    op_disc = operator.get("discord") if isinstance(operator.get("discord"), dict) else {}
+    if not str((op_disc or {}).get("token") or "").strip():
+        merged["discord"] = deepcopy(base.get("discord") or merged.get("discord") or {})
+    return merged

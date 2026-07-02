@@ -28,6 +28,14 @@ function _restoreConversation(store) {
   } catch (_) {}
 }
 
+function _scrollTranscript(smooth = true) {
+  requestAnimationFrame(() => {
+    const el = document.querySelector(".md-log");
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  });
+}
+
 function _applyAgentEvent(store, ev) {
   if (!ev || !ev.type) return;
   if (ev.type === "status") {
@@ -62,6 +70,7 @@ function _applyAgentEvent(store, ev) {
     if (last && last.role === "operator" && last.text === ev.text) return;
     store.turns.push({ role: "operator", text: ev.text });
     _persistConversation(store);
+    _scrollTranscript();
     return;
   }
   if (ev.type === "ai" && ev.text) {
@@ -73,6 +82,7 @@ function _applyAgentEvent(store, ev) {
       if (cur && chunk.startsWith(cur)) {
         last.text = chunk;
         _persistConversation(store);
+        _scrollTranscript();
         return;
       }
       last.text = cur + chunk;
@@ -80,6 +90,7 @@ function _applyAgentEvent(store, ev) {
       store.turns.push({ role: "maya", text: chunk, _streaming: true });
     }
     _persistConversation(store);
+    _scrollTranscript();
   }
 }
 
@@ -127,6 +138,7 @@ document.addEventListener("alpine:init", () => {
           if (d.status) this.statusLabel = d.status;
           if (Array.isArray(d.turns) && d.turns.length > this.turns.length) {
             this.turns = d.turns;
+            _scrollTranscript();
           }
         }
         this.persist();
@@ -161,9 +173,11 @@ document.addEventListener("alpine:init", () => {
         const who = data.owner?.speaker_name || data.owner?.context_id || "another user";
         this.turns.push({ role: "system", text: `Voice is in use by ${who}. Try again when they finish.` });
         this.persist();
+        _scrollTranscript();
       } else {
         this.turns.push({ role: "system", text: data.error || "Could not start session" });
         this.persist();
+        _scrollTranscript();
       }
     },
 
@@ -245,6 +259,7 @@ document.addEventListener("alpine:init", () => {
           if (!data.ok) {
             this.turns.push({ role: "system", text: data.error || "Chat failed" });
             this.persist();
+            _scrollTranscript();
           }
         } else {
           this.turns.push({ role: "operator", text });
@@ -262,6 +277,7 @@ document.addEventListener("alpine:init", () => {
             this.turns.push({ role: "maya", text: data.maya_turn });
           }
           this.persist();
+          _scrollTranscript();
         }
       } finally {
         this.sending = false;
@@ -279,6 +295,7 @@ document.addEventListener("alpine:init", () => {
     reset() {
       this.turns = [];
       this.persist();
+      _scrollTranscript(false);
     },
   });
 
@@ -306,7 +323,9 @@ document.addEventListener("alpine:init", () => {
     },
 
     init() {
-      Alpine.store("mayaConversation").ensureHydrated();
+      Alpine.store("mayaConversation").ensureHydrated().then(() => {
+        _scrollTranscript(false);
+      });
     },
   }));
 });

@@ -16,7 +16,7 @@ from services.llm.provider import create_llm_client, is_webllm_provider, swap_ag
 from services.operator_voice.paths import operator_data_dir as op_data_dir
 from services.paths import DATA_DIR, VOICE_RUNTIME
 from services.voice.data_migration import migrate_qwen3_data_to_unified
-from services.settings.store import apply_to_config, load_settings as load_global_settings, save_settings as save_global_settings
+from services.settings.store import apply_to_config, load_effective_settings, load_settings as load_global_settings, save_settings as save_global_settings
 
 _RELOAD_SECTIONS = frozenset({"discord", "tools", "memory", "runtime"})
 _inference_lock = threading.Lock()
@@ -205,16 +205,13 @@ class VoiceHub(Hub):
     def apply_operator_context(self, operator_id: str) -> None:
         from services.operator_voice.paths import (
             load_operator_personalities_file,
-            load_operator_settings_file,
             seed_operator_dirs,
         )
 
         seed_operator_dirs(operator_id)
         data_dir = op_data_dir(operator_id)
         os.environ["VA_DATA_DIR"] = str(data_dir)
-        settings = load_operator_settings_file(operator_id)
-        if settings is None:
-            settings = load_global_settings()
+        settings = load_effective_settings(operator_id)
         apply_to_config(settings, operator_id=operator_id)
         self._active_operator_id = str(operator_id)
         self._active_room_id = None
@@ -340,12 +337,7 @@ class VoiceHub(Hub):
 
     def get_config(self, operator_id: str | None = None) -> dict:
         out = super().get_config()
-        if operator_id:
-            from services.operator_voice import context as op_ctx
-
-            out["unified_settings"] = op_ctx.load_settings(operator_id)
-        else:
-            out["unified_settings"] = load_global_settings()
+        out["unified_settings"] = load_effective_settings(operator_id or None)
         if self.last_error:
             out["agent_error"] = self.last_error
         out.update(self.lease_status())

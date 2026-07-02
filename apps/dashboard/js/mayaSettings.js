@@ -85,7 +85,8 @@ document.addEventListener("alpine:init", () => {
       discord: {
         enabled: false, token: "", guild_id: 0, auto_reply: true,
         music_volume: 0.85, imagine_enabled: false, comfyui_url: "http://localhost:3000",
-        default_voice_channel: "", youtube_cookies_browser: "", youtube_cookies_file: "",
+        default_voice_channel: "", voice_channel_aliases: {},
+        youtube_cookies_browser: "", youtube_cookies_file: "",
       },
       platform: { database_url: "", otel_enabled: false },
     },
@@ -248,7 +249,7 @@ document.addEventListener("alpine:init", () => {
 
     async refreshCatalog() {
       try {
-        const r = await fetch("/api/voice/settings/catalog");
+        const r = await fetch("/api/voice/settings/catalog?llm=1");
         if (!r.ok) throw new Error("catalog failed");
         const data = await r.json();
         this.catalog = { ...this.catalog, ...(data.catalog || {}) };
@@ -287,10 +288,8 @@ document.addEventListener("alpine:init", () => {
       }
 
       try {
-        const [settingsR, catalogR, statusR, accountR] = await Promise.all([
+        const [settingsR, accountR] = await Promise.all([
           fetch("/api/voice/settings"),
-          fetch("/api/voice/settings/catalog"),
-          fetch("/api/voice/agent/status"),
           fetch("/api/auth/me"),
         ]);
         if (accountR.ok) {
@@ -312,20 +311,6 @@ document.addEventListener("alpine:init", () => {
           this.s = this.deepMerge(this.s, data.settings || {});
           this.normalizeWebLLM();
         }
-        if (catalogR.ok) {
-          const data = await catalogR.json();
-          this.catalog = { ...this.catalog, ...(data.catalog || {}) };
-        }
-        this.ensureCatalogDefaults();
-        if (statusR.ok) {
-          const st = await statusR.json();
-          this.agentReady = !!st.ready;
-        }
-        const cfgR = await fetch("/api/voice/agent/config");
-        if (cfgR.ok) {
-          const cfg = await cfgR.json();
-          this.currentVoice = cfg.current_voice || cfg.voice || "";
-        }
       } catch (e) {
         this.error = String(e.message || e);
       } finally {
@@ -333,6 +318,33 @@ document.addEventListener("alpine:init", () => {
         this.$nextTick(() => {
           this.$root?.setAttribute?.("data-alpine-ready", "true");
         });
+      }
+
+      this.loadExtras();
+    },
+
+    async loadExtras() {
+      try {
+        const [catalogR, statusR, cfgR] = await Promise.all([
+          fetch("/api/voice/settings/catalog?llm=0"),
+          fetch("/api/voice/agent/status"),
+          fetch("/api/voice/agent/config"),
+        ]);
+        if (catalogR.ok) {
+          const data = await catalogR.json();
+          this.catalog = { ...this.catalog, ...(data.catalog || {}) };
+          this.ensureCatalogDefaults();
+        }
+        if (statusR.ok) {
+          const st = await statusR.json();
+          this.agentReady = !!st.ready;
+        }
+        if (cfgR.ok) {
+          const cfg = await cfgR.json();
+          this.currentVoice = cfg.current_voice || cfg.voice || "";
+        }
+      } catch (e) {
+        if (!this.error) this.error = String(e.message || e);
       }
     },
 

@@ -77,5 +77,13 @@ document.addEventListener("alpine:init", () => {
       }
       return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]));
     },
+
+    toolNamesLine(items) {
+      return (items || []).map((t) => t.name).join(" · ");
+    },
+
+    get allToolsLine() {
+      return this.tools.map((t) => t.name).join(" · ");
+    },
   }));
 });
