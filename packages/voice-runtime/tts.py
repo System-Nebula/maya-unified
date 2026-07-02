@@ -50,6 +50,20 @@ def _resolve_dtype(name: str):
 
 
 class Qwen3TTS:
+    def _try_load_ref_text_sidecar(self) -> None:
+        if self.cfg.ref_text.strip():
+            return
+        base, _ = os.path.splitext(self.cfg.ref_audio)
+        ref_dir = os.path.dirname(self.cfg.ref_audio) or "."
+        for candidate in (f"{base}.txt", os.path.join(ref_dir, "ref.txt")):
+            if os.path.exists(candidate):
+                try:
+                    with open(candidate, encoding="utf-8") as fh:
+                        self.cfg.ref_text = fh.read().strip()
+                    break
+                except OSError:
+                    pass
+
     def __init__(self, cfg: TTSConfig | None = None):
         self.cfg = cfg or CONFIG.tts
         mode = self.cfg.mode.lower()
@@ -78,6 +92,9 @@ class Qwen3TTS:
             max_seq_len=2048,
         )
         self.sr: int | None = None  # learned from the first generated chunk
+
+        if self.mode == "clone":
+            self._try_load_ref_text_sidecar()
 
         if self.cfg.warmup:
             self.warmup()
@@ -196,17 +213,8 @@ class Qwen3TTS:
         self.cfg.ref_audio = self.cfg.resolve_ref_audio()
         if ref_text.strip():
             self.cfg.ref_text = ref_text.strip()
-        elif not self.cfg.ref_text.strip():
-            base, _ = os.path.splitext(self.cfg.ref_audio)
-            ref_dir = os.path.dirname(self.cfg.ref_audio) or "."
-            for candidate in (f"{base}.txt", os.path.join(ref_dir, "ref.txt")):
-                if os.path.exists(candidate):
-                    try:
-                        with open(candidate, encoding="utf-8") as fh:
-                            self.cfg.ref_text = fh.read().strip()
-                        break
-                    except OSError:
-                        pass
+        else:
+            self._try_load_ref_text_sidecar()
         if not os.path.exists(self.cfg.ref_audio):
             raise FileNotFoundError(self.cfg.ref_audio)
         self.cfg.mode = "clone"

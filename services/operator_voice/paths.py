@@ -49,6 +49,20 @@ def sync_settings_file(operator_id: str | uuid.UUID, settings: dict) -> Path:
     return path
 
 
+def load_operator_settings_file(operator_id: str | uuid.UUID) -> dict | None:
+    path = operator_data_dir(operator_id) / "settings.json"
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_operator_personalities_file(operator_id: str | uuid.UUID) -> dict:
+    path = operator_data_dir(operator_id) / "personalities.json"
+    if not path.is_file():
+        return {"active": "default", "personalities": {}}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def load_legacy_global_settings() -> dict:
     from services.settings.store import load_settings
 

@@ -113,11 +113,11 @@ class VoiceHub(Hub):
     voice_lease: VoiceLease | None = None
     _active_operator_id: str | None = None
     _active_room_id: str | None = None
-    _scoped_subscribers: set[_Subscriber]
+    _scoped_subscribers: list[_Subscriber]
 
     def __init__(self) -> None:
         super().__init__()
-        self._scoped_subscribers = set()
+        self._scoped_subscribers = []
 
     # ----- SSE with operator/room scoping -----------------------------------
 
@@ -125,7 +125,7 @@ class VoiceHub(Hub):
         q: queue.Queue = queue.Queue()
         sub = _Subscriber(q=q, operator_id=operator_id, room_id=room_id)
         with self._lock:
-            self._scoped_subscribers.add(sub)
+            self._scoped_subscribers.append(sub)
             self._subscribers.add(q)
         q.put({"type": "status", "value": self.status})
         q.put({"type": "ready", "value": self.ready})
@@ -134,7 +134,7 @@ class VoiceHub(Hub):
     def unsubscribe(self, q: queue.Queue) -> None:
         with self._lock:
             self._subscribers.discard(q)
-            self._scoped_subscribers = {s for s in self._scoped_subscribers if s.q is not q}
+            self._scoped_subscribers = [s for s in self._scoped_subscribers if s.q is not q]
         super().unsubscribe(q)
 
     def broadcast(self, event: dict, *, operator_id: str | None = None, room_id: str | None = None) -> None:
@@ -203,16 +203,22 @@ class VoiceHub(Hub):
     # ----- Operator / room context ------------------------------------------
 
     def apply_operator_context(self, operator_id: str) -> None:
-        from services.operator_voice import context as op_ctx
+        from services.operator_voice.paths import (
+            load_operator_personalities_file,
+            load_operator_settings_file,
+            seed_operator_dirs,
+        )
 
-        op_ctx.sync_operator_files(operator_id)
+        seed_operator_dirs(operator_id)
         data_dir = op_data_dir(operator_id)
         os.environ["VA_DATA_DIR"] = str(data_dir)
-        settings = op_ctx.load_settings(operator_id)
+        settings = load_operator_settings_file(operator_id)
+        if settings is None:
+            settings = load_global_settings()
         apply_to_config(settings, operator_id=operator_id)
         self._active_operator_id = str(operator_id)
         self._active_room_id = None
-        pers = op_ctx.load_personalities(operator_id)
+        pers = load_operator_personalities_file(operator_id)
         active = str(pers.get("active") or "")
         if active and self.ready and self.agent is not None:
             try:

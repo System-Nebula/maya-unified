@@ -23,6 +23,19 @@ from services.settings.schema import DEFAULT_SETTINGS, deep_merge
 
 log = logging.getLogger("maya-unified.operator_voice")
 
+
+def _sync_operator_files_from_data(
+    operator_id: str | uuid.UUID,
+    settings: dict,
+    *,
+    active: str,
+    personalities: dict,
+) -> None:
+    """Write operator workspace files without nesting asyncio.run inside the gateway loop."""
+    sync_settings_file(operator_id, settings)
+    sync_personalities_file(operator_id, active, personalities)
+    seed_operator_dirs(operator_id)
+
 __all__ = [
     "ensure_operator_seeded",
     "import_legacy_global_to_admin",
@@ -136,19 +149,28 @@ async def ensure_operator_seeded(session, operator_id: str | uuid.UUID) -> bool:
     existing = await session.get(OperatorVoiceSettings, oid)
     if existing is not None:
         seed_operator_dirs(operator_id)
+        pers_row = await op_store.get_or_create_personalities(session, oid)
+        _sync_operator_files_from_data(
+            operator_id,
+            existing.settings if isinstance(existing.settings, dict) else {},
+            active=str(pers_row.get("active") or "default"),
+            personalities=pers_row.get("personalities") or {},
+        )
         return False
     settings = deepcopy(DEFAULT_SETTINGS)
     personalities_data = load_legacy_global_personalities()
     if not personalities_data.get("personalities"):
         personalities_data = {"active": "default", "personalities": {}}
+    active = str(personalities_data.get("active") or "default")
+    personalities = personalities_data.get("personalities") or {}
     await op_store.save_settings(session, oid, settings)
     await op_store.save_personalities(
         session,
         oid,
-        active=str(personalities_data.get("active") or "default"),
-        personalities=personalities_data.get("personalities") or {},
+        active=active,
+        personalities=personalities,
     )
-    sync_operator_files(operator_id)
+    _sync_operator_files_from_data(operator_id, settings, active=active, personalities=personalities)
     log.info("seeded operator voice workspace %s", operator_id)
     return True
 
@@ -169,13 +191,15 @@ async def import_legacy_global_to_admin(session) -> bool:
         admin = ops[0]
     settings = load_legacy_global_settings()
     pers = load_legacy_global_personalities()
+    active = str(pers.get("active") or "default")
+    personalities = pers.get("personalities") or {}
     await op_store.save_settings(session, admin.id, settings)
     await op_store.save_personalities(
         session,
         admin.id,
-        active=str(pers.get("active") or "default"),
-        personalities=pers.get("personalities") or {},
+        active=active,
+        personalities=personalities,
     )
-    sync_operator_files(admin.id)
+    _sync_operator_files_from_data(admin.id, settings, active=active, personalities=personalities)
     log.info("imported legacy global voice data -> admin operator %s", admin.username)
     return True

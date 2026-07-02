@@ -15,7 +15,11 @@ from maya_db.models.voice_room import VoiceRoom, VoiceRoomMember, VoiceRoomMessa
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.operator_voice.context import load_personalities, load_settings
+from services.operator_voice.paths import (
+    load_legacy_global_settings,
+    load_operator_personalities_file,
+    load_operator_settings_file,
+)
 from services.rooms.guest_session import hash_guest_token, sign_guest_session
 
 log = logging.getLogger("maya-unified.rooms")
@@ -41,8 +45,8 @@ async def create_room(
     visibility: str = "private",
     personality_slug: str | None = None,
 ) -> VoiceRoom:
-    settings = load_settings(owner_id)
-    pers = load_personalities(owner_id)
+    settings = load_operator_settings_file(owner_id) or load_legacy_global_settings()
+    pers = load_operator_personalities_file(owner_id)
     active = personality_slug or pers.get("active") or "default"
     personalities = pers.get("personalities") or {}
     personality_snapshot = personalities.get(active) or {}

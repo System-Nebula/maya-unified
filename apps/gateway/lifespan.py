@@ -35,8 +35,12 @@ async def _seed_operator_account() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
     import os
 
+    from services.async_bridge import set_main_loop
+
+    set_main_loop(asyncio.get_running_loop())
     install_loop_handler()
     os.makedirs(DATA_DIR, exist_ok=True)
     migrate_qwen3_data_to_unified()
