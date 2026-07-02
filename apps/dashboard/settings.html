@@ -490,7 +490,7 @@
               <div class="mv-list-row">
                 <div class="lhs"><div class="mv-row-label">Provider</div></div>
                 <div class="rhs">
-                  <select class="mv-select" x-model="s.reasoning.provider" @change="save()">
+                  <select class="mv-select" x-model="s.reasoning.provider" @change="onProviderChange()">
                     <option value="lm_studio">LM Studio / OpenAI-compatible</option>
                     <option value="litellm">LiteLLM</option>
                     <option value="webllm">WebLLM (browser)</option>
@@ -562,8 +562,11 @@
                 </div>
               </div>
               <div class="mv-list-row" x-show="s.reasoning.provider === 'webllm'">
-                <div class="lhs"><div class="mv-row-label">WebLLM enabled</div></div>
-                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.reasoning.webllm.enabled" @change="save()" /><span class="slider"></span></label></div>
+                <div class="lhs">
+                  <div class="mv-row-label">WebLLM</div>
+                  <div class="mv-row-sub">Auto-enabled — powers voice + chat via this browser tab (WebGPU). If init fails on a new GPU (e.g. RTX 50-series), check chrome://gpu and enable chrome://flags/#ignore-gpu-blocklist.</div>
+                </div>
+                <div class="rhs"><span class="mv-chip live"><span class="ind"></span>Active</span></div>
               </div>
               <div class="mv-list-row" x-show="s.reasoning.provider === 'webllm'">
                 <div class="lhs"><div class="mv-row-label">WebLLM model</div></div>
@@ -744,7 +747,7 @@
             <div class="ms-panel-head" style="margin-top:20px">
               <p class="mv-eyebrow">MCP</p>
               <h3 class="mv-title" style="font-size:14px">MCP servers</h3>
-              <p class="mv-desc">Configure <span class="mv-mono">mcp_servers.json</span> in qwen3-voice-agent and restart.</p>
+              <p class="mv-desc">Configure <span class="mv-mono">packages/voice-runtime/mcp_servers.json</span> and restart.</p>
             </div>
             <ul class="ms-tool-list">
               <template x-for="s in mcpServers" :key="s.name">
@@ -864,6 +867,8 @@
       </div>
     </div>
 
+    <script defer src="/sdk/maya-voice-sdk.js"></script>
+    <script defer src="/dashboard/js/mayaWebLLM.js"></script>
     <script defer src="/dashboard/js/mayaShell.js"></script>
     <script defer src="/dashboard/js/mayaSettings.js"></script>
     <script defer src="/dashboard/js/mayaPersonality.js"></script>

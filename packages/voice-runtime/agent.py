@@ -254,6 +254,7 @@ class VoiceAgent:
         self._active_card: dict = {}
         self._greeting_pending = False
         self._greeting_lock = threading.Lock()
+        self._speak_lock = threading.Lock()
         self._pending_channel_post: Optional[dict[str, str]] = None
         self._pending_channel_reply: Optional[dict[str, str]] = None
         self._last_discord_intent: Optional[dict[str, str]] = None
@@ -658,8 +659,21 @@ class VoiceAgent:
         self._record_discord_intent_from_text(raw)
         return raw
 
+    def _webllm_direct_chat(self) -> bool:
+        prefers = getattr(self.llm, "prefers_direct_chat", None)
+        return bool(callable(prefers) and prefers())
+
     def _should_orchestrate(self) -> bool:
+        if self._webllm_direct_chat():
+            return False
         return bool(self._tools_active() and CONFIG.llm.orchestrator_enabled)
+
+    def _should_use_tool_loop(self) -> bool:
+        if not self._tools_active():
+            return False
+        if self._webllm_direct_chat():
+            return False
+        return True
 
     def _discord_channels_hint(self) -> str:
         if self.discord is None:
@@ -1933,6 +1947,38 @@ class VoiceAgent:
                 break
             self.playback.submit(audio, sr)
 
+    def speak_preview(self, text: str, *, instruct: str | None = None) -> None:
+        """Speak arbitrary text through TTS (no LLM). For dashboard preview / tag testing."""
+        if self.voice is None:
+            raise RuntimeError("TTS not loaded")
+        cleaned = _clean_text((text or "").strip())
+        if not cleaned:
+            raise ValueError("Nothing to speak")
+        with self._speak_lock:
+            was_session = self.is_session_running()
+            self._barge_in_flag.clear()
+            self.playback.stop()
+            self.playback.begin_turn()
+            self._emit(type="status", value="speaking")
+            self._emit(type="ai", text=cleaned)
+            if instruct and instruct.strip():
+                eff_instruct = instruct.strip()
+            else:
+                eff_instruct = (CONFIG.tts.instruct or "").strip() or None
+            log.info("TTS preview: %s", cleaned)
+            for audio, sr in self.voice.stream(
+                cleaned, stop=self._barge_in_flag, instruct=eff_instruct
+            ):
+                if self._barge_in_flag.is_set():
+                    break
+                self.playback.submit(audio, sr)
+            while self.playback.is_playing() and not self._barge_in_flag.is_set():
+                time.sleep(0.05)
+            if was_session and self.is_session_running():
+                self._emit(type="status", value="listening")
+            else:
+                self._emit(type="status", value="idle")
+
     def _effective_instruct(self) -> Optional[str]:
         """Combine the base voice description with this reply's delivery cue.
 
@@ -2025,7 +2071,7 @@ class VoiceAgent:
                 direct = self._try_web_direct(user_text)
             if direct is not None:
                 token_stream = iter([direct])
-            elif self._tools_active():
+            elif self._should_use_tool_loop():
                 messages = self._build_messages(user_text)
                 if plan and plan.intent == "chat":
                     hint = (

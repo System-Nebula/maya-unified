@@ -309,6 +309,7 @@ document.addEventListener("alpine:init", () => {
         if (settingsR.ok) {
           const data = await settingsR.json();
           this.s = this.deepMerge(this.s, data.settings || {});
+          this.normalizeWebLLM();
         }
         if (catalogR.ok) {
           const data = await catalogR.json();
@@ -344,6 +345,24 @@ document.addEventListener("alpine:init", () => {
         }
       }
       return out;
+    },
+
+    normalizeWebLLM() {
+      if (this.s.reasoning?.provider === "webllm") {
+        if (!this.s.reasoning.webllm) this.s.reasoning.webllm = {};
+        this.s.reasoning.webllm.enabled = true;
+      } else if (this.s.reasoning?.webllm) {
+        this.s.reasoning.webllm.enabled = false;
+      }
+    },
+
+    async onProviderChange() {
+      const leavingWebLLM = this.s.reasoning?.provider !== "webllm";
+      this.normalizeWebLLM();
+      if (leavingWebLLM && window.mayaWebLLMBridge?.unload) {
+        await window.mayaWebLLMBridge.unload();
+      }
+      this.save();
     },
 
     save() {

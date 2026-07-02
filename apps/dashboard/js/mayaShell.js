@@ -30,8 +30,16 @@ document.addEventListener("alpine:init", () => {
     llmOk: false,
     llmError: "",
     llmModel: "",
+    llmProvider: "",
+    webllmBridgeStatus: "",
     page: "",
     loadStarted: 0,
+
+    shortWebLLMModel() {
+      const id = this.llmModel || "";
+      if (!id) return "model";
+      return id.replace(/-q4f16_1-MLC$/i, "").replace(/-Instruct.*$/i, "");
+    },
 
     label() {
       if (this.error) return "agent error";
@@ -39,12 +47,17 @@ document.addEventListener("alpine:init", () => {
         if (this.status === "loading") return "loading models";
         return this.status || "connecting";
       }
+      if (this.llmProvider === "webllm") {
+        if (!this.llmOk) return "experimental mode";
+        return "experimental agent ready";
+      }
       if (!this.llmOk) return "llm offline";
       return "agent ready";
     },
 
     chipClass() {
       if (this.error) return "error";
+      if (this.llmProvider === "webllm" && this.ready && this.llmOk) return "ready experimental";
       if (this.ready && !this.llmOk) return "loading";
       if (this.ready) return "ready";
       return "loading";
@@ -52,6 +65,16 @@ document.addEventListener("alpine:init", () => {
 
     hint() {
       if (this.error) return this.error.slice(0, 140);
+      if (this.llmProvider === "webllm") {
+        const model = this.shortWebLLMModel();
+        if (this.ready && !this.llmOk) {
+          const st = this.webllmBridgeStatus || this.llmError || "loading in browser…";
+          return `webllm: ${model} — ${st}`.slice(0, 140);
+        }
+        if (this.ready && this.llmOk) {
+          return `webllm: ${model}`;
+        }
+      }
       if (this.ready && !this.llmOk) {
         return (this.llmError || "Start LM Studio and load a model.").slice(0, 140);
       }
@@ -86,7 +109,9 @@ document.addEventListener("alpine:init", () => {
       this.pollStatus();
       this._unsub = window.mayaAgentEvents.subscribe((ev) => this.onAgentEvent(ev));
       this.syncSettingsToSdk();
+      this.initWebLLMBridge();
       setInterval(() => this.pollStatus(), 12000);
+      this._bridgeTick = setInterval(() => this.refreshBridgeStatus(), 800);
       this.fetchCurrentUser();
     },
 
@@ -109,6 +134,30 @@ document.addEventListener("alpine:init", () => {
       window.location.href = "/login";
     },
 
+    refreshBridgeStatus() {
+      const bridge = window.mayaWebLLMBridge;
+      this.s.webllmBridgeStatus = bridge?.status || "";
+      if (this.s.llmProvider === "webllm" && bridge?.ready && !this.s.llmOk) {
+        this.pollStatus();
+      }
+    },
+
+    async initWebLLMBridge() {
+      try {
+        const r = await fetch("/api/voice/settings");
+        if (!r.ok) return;
+        const data = await r.json();
+        const reas = data.settings?.reasoning || {};
+        const isWebllm = reas.provider === "webllm";
+        const modelId = reas.webllm?.model_id || "Llama-3.1-8B-Instruct-q4f16_1-MLC";
+        if (window.mayaWebLLMBridge) {
+          await window.mayaWebLLMBridge.init(isWebllm, modelId);
+          this.refreshBridgeStatus();
+          this.pollStatus();
+        }
+      } catch (_) {}
+    },
+
     onAgentEvent(ev) {
       if (ev.type === "ready") {
         this.s.ready = !!ev.value;
@@ -119,6 +168,10 @@ document.addEventListener("alpine:init", () => {
       }
       if (ev.type === "status") this.s.status = ev.value || this.s.status;
       if (ev.type === "error" && ev.text) this.s.error = ev.text;
+      if (ev.type === "settings") this.initWebLLMBridge();
+      if (ev.type === "webllm_unload" && window.mayaWebLLMBridge?.unload) {
+        window.mayaWebLLMBridge.unload().then(() => this.refreshBridgeStatus());
+      }
     },
 
     async pollStatus() {
@@ -131,6 +184,8 @@ document.addEventListener("alpine:init", () => {
         this.s.llmOk = !!d.llm_ok;
         this.s.llmError = d.llm_error || "";
         this.s.llmModel = d.llm_model || "";
+        this.s.llmProvider = d.llm_provider || "";
+        this.refreshBridgeStatus();
         if (d.error) this.s.error = d.error;
       } catch (_) {}
     },

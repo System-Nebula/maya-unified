@@ -9,7 +9,7 @@ import queue
 from fastapi import Body, File, UploadFile
 from fastapi.responses import StreamingResponse
 
-from services.paths import VOICE_RUNTIME
+from services.paths import VOICE_RUNTIME, voices_dir
 from services.voice.hub import hub
 
 # Reuse voice file helpers from qwen3 server
@@ -20,7 +20,7 @@ from server import (  # noqa: E402
     _safe_voice_path,
 )
 
-VOICES_DIR = str(VOICE_RUNTIME / "voices") if VOICE_RUNTIME.is_dir() else "voices"
+VOICES_DIR = str(voices_dir()) if VOICE_RUNTIME.is_dir() else "voices"
 
 
 def register_agent_routes(app) -> None:
@@ -44,6 +44,32 @@ def register_agent_routes(app) -> None:
     @app.post(f"{prefix}/chat")
     def agent_chat(data: dict = Body(...)) -> dict:
         return hub.chat_text(str((data or {}).get("text", "")))
+
+    @app.post(f"{prefix}/speak")
+    def agent_speak(data: dict = Body(...)) -> dict:
+        payload = data or {}
+        instruct = str(payload.get("instruct", "") or "").strip() or None
+        return hub.speak_text(str(payload.get("text", "")), instruct=instruct)
+
+    @app.post(f"{prefix}/webllm/ready")
+    def webllm_ready(data: dict = Body(default_factory=dict)) -> dict:
+        from services.llm import webllm_broker
+
+        webllm_broker.mark_browser_ready(bool((data or {}).get("ready", True)))
+        return {"ok": True}
+
+    @app.post(f"{prefix}/webllm/fulfill")
+    def webllm_fulfill(data: dict = Body(...)) -> dict:
+        from services.llm import webllm_broker
+
+        payload = data or {}
+        ok = webllm_broker.fulfill(
+            str(payload.get("id", "")),
+            chunk=str(payload.get("chunk", "")),
+            done=bool(payload.get("done")),
+            error=str(payload.get("error", "")),
+        )
+        return {"ok": ok}
 
     @app.get(f"{prefix}/config")
     def get_config() -> dict:

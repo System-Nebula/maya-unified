@@ -12,6 +12,47 @@ VOICE_RUNTIME = PACKAGES_DIR / "voice-runtime"
 GATEWAY_SRC = ROOT / "apps" / "maya-gateway" / "src"
 
 
+def voices_dir() -> Path:
+    """Directory for clone reference clips and uploads."""
+    return VOICE_RUNTIME / "voices"
+
+
+def resolve_voice_ref(path: str) -> str:
+    """Resolve settings-relative voice paths to absolute files under voice-runtime."""
+    raw = (path or "").strip()
+    if not raw:
+        return raw
+    p = Path(raw)
+    if p.is_file():
+        return str(p.resolve())
+    if p.is_absolute():
+        return str(p)
+    norm = raw.replace("\\", "/")
+    candidates = [
+        VOICE_RUNTIME / norm,
+        voices_dir() / p.name,
+        DATA_DIR / "voices" / p.name,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return str((VOICE_RUNTIME / norm).resolve())
+
+
+def resolve_runtime_file(path: str) -> str:
+    """Resolve MCP / VTS config files relative to voice-runtime."""
+    raw = (path or "").strip()
+    if not raw:
+        return raw
+    p = Path(raw)
+    if p.is_file():
+        return str(p.resolve())
+    if p.is_absolute():
+        return str(p)
+    candidate = VOICE_RUNTIME / raw
+    return str(candidate.resolve() if candidate.is_file() else candidate)
+
+
 def agent_data_dir() -> Path:
     """Agent memory / DB / personalities — repo-root data/."""
     return DATA_DIR

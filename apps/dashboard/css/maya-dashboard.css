@@ -46,6 +46,64 @@
   background: var(--mv-bg);
   padding: 18px 20px;
 }
+.md-tts-preview {
+  border: 1px solid var(--mv-border);
+  border-radius: var(--mv-r-panel);
+  background: var(--mv-bg);
+  overflow: hidden;
+}
+.md-tts-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--mv-border);
+}
+.md-tts-body {
+  padding: 12px 14px 16px;
+}
+.md-tts-title {
+  font-size: 14px;
+  margin: 0;
+}
+.md-tts-hint {
+  margin: 0 0 10px;
+  line-height: 1.45;
+  font-size: 12px;
+}
+.md-tts-hint code {
+  font-family: var(--mv-mono);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--mv-sidebar);
+  border: 1px solid var(--mv-border);
+}
+.md-tts-input {
+  min-height: 64px;
+  font-size: 13px;
+}
+.md-tts-instruct {
+  display: block;
+  margin-top: 10px;
+}
+.md-tts-instruct .mv-input {
+  width: 100%;
+  margin-top: 4px;
+}
+.md-tts-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.md-tts-chip-muted {
+  opacity: 0.75;
+}
+.md-tts-error {
+  margin: 10px 0 0;
+}
 .md-banner {
   padding: 10px 14px;
   margin-bottom: 14px;

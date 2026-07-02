@@ -43,7 +43,8 @@
       </div>
 
       <div class="md-banner error" x-show="agentError" x-text="agentError"></div>
-      <div class="md-banner error" x-show="agentReady && !llmOk && !useWebLLM" x-text="llmError || 'LLM offline — configure model in Settings or enable WebLLM.'"></div>
+      <div class="md-banner error" x-show="agentReady && !llmOk && useWebLLM" x-text="llmError || 'WebLLM loading — keep this tab open in Chrome/Edge with WebGPU.'"></div>
+      <div class="md-banner error" x-show="agentReady && !llmOk && !useWebLLM" x-text="llmError || 'LLM offline — configure model in Settings.'"></div>
       <div class="md-banner" x-show="!agentReady && !agentError">Agent loading — voice session unlocks when the status chip shows ready.</div>
 
       <div class="md-pipeline">
@@ -174,24 +175,19 @@
               <a class="mv-btn" href="/settings" style="margin-left:auto;text-decoration:none">Settings</a>
             </div>
 
-            <template x-if="useWebLLM">
-              <p class="mv-desc" style="color:var(--mv-accent);margin-bottom:10px">WebLLM mode — typed chat runs in-browser (WebGPU).</p>
-            </template>
-
-            <div x-show="!useWebLLM">
-              <textarea class="md-textarea mv-input" x-model="draft" :placeholder="agentReady && llmOk ? 'Message Maya…' : 'Waiting for agent / LLM…'" @keydown="onKeydown($event)"></textarea>
-              <div style="margin-top:10px;display:flex;gap:8px">
-                <button class="mv-btn mv-btn-primary" @click="sendServer()" :disabled="sending">Send</button>
-                <button class="mv-btn" @click="reset()">Clear transcript</button>
-              </div>
+            <p class="mv-desc md-webllm-banner" x-show="useWebLLM" style="color:var(--mv-accent);margin-bottom:10px">
+              Experimental WebLLM — voice + typed chat run through this browser tab
+              (<span x-text="$store.mayaShell.webllmBridgeStatus || 'loading…'"></span>).
+            </p>
+            <div class="md-banner error" x-show="useWebLLM && webllmFailed" style="margin-bottom:10px">
+              <p x-text="webllmFailed"></p>
+              <p class="mv-desc" style="margin-top:8px" x-text="webllmTroubleshoot"></p>
             </div>
 
-            <div x-show="useWebLLM" x-data="mayaWebLLM()" x-init="init()">
-              <textarea class="md-textarea mv-input" x-model="prompt" placeholder="WebLLM chat…"></textarea>
-              <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
-                <button class="mv-btn mv-btn-primary" @click="send()" :disabled="loading || !ready">Send</button>
-                <span class="mv-mono" style="font-size:12px;color:var(--mv-muted)" x-text="status"></span>
-              </div>
+            <textarea class="md-textarea mv-input" x-model="draft" :placeholder="agentReady && llmOk ? 'Message Maya…' : (useWebLLM ? 'Waiting for WebLLM…' : 'Waiting for agent / LLM…')" @keydown="onKeydown($event)"></textarea>
+            <div style="margin-top:10px;display:flex;gap:8px">
+              <button class="mv-btn mv-btn-primary" @click="sendServer()" :disabled="sending || (useWebLLM && !llmOk)">Send</button>
+              <button class="mv-btn" @click="reset()">Clear transcript</button>
             </div>
 
             <div class="md-log">
@@ -261,16 +257,60 @@
               </ul>
             </div>
           </div>
+
+          <div class="md-tts-preview">
+            <div class="md-tts-head">
+              <div>
+                <p class="mv-eyebrow">Voice output</p>
+                <h2 class="mv-title md-tts-title">TTS preview</h2>
+              </div>
+              <span class="mv-chip md-tts-chip-muted" x-show="!agentReady">Waiting</span>
+            </div>
+            <div class="md-tts-body">
+              <p class="mv-desc md-tts-hint">
+                Speak text directly — no LLM. Qwen3 does <em>not</em> parse ElevenLabs-style
+                <code>[laughter]</code> tags — use natural phrasing (“haha”) or
+                <strong>Voice instruct</strong> (“amused, laughing”).
+              </p>
+              <textarea
+                class="md-textarea mv-input md-tts-input"
+                x-model="ttsDraft"
+                placeholder="Haha! That was ridiculous."
+                :disabled="!agentReady || ttsBusy"
+                @keydown="onTtsKeydown($event)"
+              ></textarea>
+              <label class="md-tts-instruct">
+                <span class="md-eq-label">Voice instruct</span>
+                <input
+                  class="mv-input"
+                  type="text"
+                  x-model="ttsInstruct"
+                  placeholder="warm, amused"
+                  :disabled="!agentReady || ttsBusy"
+                />
+              </label>
+              <div class="md-tts-actions">
+                <button
+                  class="mv-btn mv-btn-primary"
+                  @click="speakPreview()"
+                  :disabled="!agentReady || ttsBusy || !ttsDraft.trim()"
+                  x-text="ttsBusy ? 'Speaking…' : 'Speak'"
+                ></button>
+                <button class="mv-btn" @click="ttsDraft = ''" :disabled="ttsBusy">Clear</button>
+              </div>
+              <p class="md-banner error md-tts-error" x-show="ttsError" x-text="ttsError"></p>
+            </div>
+          </div>
         </aside>
       </div>
     </div>
 
     <script defer src="/dashboard/vendor/eq-ui.js"></script>
+    <script defer src="/dashboard/js/mayaWebLLM.js"></script>
     <script defer src="/dashboard/js/mayaShell.js"></script>
     <script defer src="/dashboard/js/mayaConversation.js"></script>
     <script defer src="/dashboard/js/mayaEqViz.js"></script>
     <script defer src="/dashboard/js/mayaToolsPanel.js"></script>
-    <script defer src="/dashboard/js/mayaWebLLM.js"></script>
     <script defer src="/sdk/vendor/alpine.min.js"></script>
   </body>
 </html>

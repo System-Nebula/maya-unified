@@ -9,7 +9,7 @@ import urllib.request
 
 from server import Hub
 
-from services.llm.provider import create_llm_client, swap_agent_llm
+from services.llm.provider import create_llm_client, is_webllm_provider, swap_agent_llm
 from services.paths import DATA_DIR, VOICE_RUNTIME
 from services.voice.data_migration import migrate_qwen3_data_to_unified
 from services.settings.store import apply_to_config, load_settings, save_settings
@@ -128,7 +128,6 @@ class VoiceHub(Hub):
 
             self.broadcast({"type": "status", "value": "loading"})
             agent = VoiceAgent(mode="vad", on_event=self.broadcast)
-            agent.llm = create_llm_client()
             swap_agent_llm(agent)
             self.agent = agent
             from services.discord.patch_agent import patch_voice_agent
@@ -164,6 +163,12 @@ class VoiceHub(Hub):
             return merged
         if self.ready and self.agent is not None:
             if _section_changed(previous, merged, "reasoning"):
+                old_provider = str(_nested_get(previous, "reasoning", "provider") or "").lower()
+                new_provider = str(_nested_get(merged, "reasoning", "provider") or "").lower()
+                if old_provider == "webllm" and new_provider != "webllm":
+                    from services.llm import webllm_broker
+
+                    webllm_broker.request_browser_unload()
                 swap_agent_llm(self.agent)
             live = _build_live_diff(previous, merged)
             if live:
@@ -187,10 +192,27 @@ class VoiceHub(Hub):
 
         settings = load_settings()
         reasoning = settings.get("reasoning", {})
+        provider = str(reasoning.get("provider", "lm_studio"))
+        if is_webllm_provider():
+            from services.llm import webllm_broker
+
+            webllm = reasoning.get("webllm") or {}
+            ready = webllm_broker.browser_ready()
+            return {
+                "ok": ready,
+                "provider": "webllm",
+                "base_url": None,
+                "model": str(webllm.get("model_id") or ""),
+                "error": (
+                    None
+                    if ready
+                    else "Keep this dashboard open in Chrome/Edge — WebLLM loads in the browser."
+                ),
+            }
         ok, err = _ping_llm(CONFIG.llm.base_url, CONFIG.llm.api_key)
         return {
             "ok": ok,
-            "provider": str(reasoning.get("provider", "lm_studio")),
+            "provider": provider,
             "base_url": CONFIG.llm.base_url,
             "model": CONFIG.llm.model,
             "error": err or None,
@@ -205,9 +227,10 @@ class VoiceHub(Hub):
             return {"ok": False, "error": "empty message"}
         from config import CONFIG
 
-        llm_ok, llm_err = _ping_llm(CONFIG.llm.base_url, CONFIG.llm.api_key)
-        if not llm_ok:
-            return {"ok": False, "error": llm_err}
+        if not is_webllm_provider():
+            llm_ok, llm_err = _ping_llm(CONFIG.llm.base_url, CONFIG.llm.api_key)
+            if not llm_ok:
+                return {"ok": False, "error": llm_err}
         try:
             self.broadcast({"type": "status", "value": "thinking"})
             self.broadcast({"type": "user", "text": text})
@@ -221,7 +244,10 @@ class VoiceHub(Hub):
             return {"ok": True, "text": reply}
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            if "connection" in msg.lower() or "connect" in msg.lower():
+            if is_webllm_provider():
+                if "timeout" in msg.lower():
+                    msg = "WebLLM timed out — is this browser tab open and the model loaded?"
+            elif "connection" in msg.lower() or "connect" in msg.lower():
                 msg = (
                     f"LLM connection failed ({CONFIG.llm.base_url}). "
                     "Is LM Studio running with a model loaded?"
@@ -230,5 +256,30 @@ class VoiceHub(Hub):
             self.broadcast({"type": "error", "text": msg})
             return {"ok": False, "error": msg}
 
+    def speak_text(self, text: str, *, instruct: str | None = None) -> dict:
+        """Synthesize and play text directly (no LLM). For TTS preview / paralinguistic tags."""
+        if not self.ready or self.agent is None:
+            return {"ok": False, "error": self.last_error or "agent not ready"}
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "error": "empty text"}
+        instruct = (instruct or "").strip() or None
+
+        def _run() -> None:
+            try:
+                self.agent.speak_preview(text, instruct=instruct)
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                self.broadcast({"type": "status", "value": "idle"})
+                self.broadcast({"type": "tts_error", "text": msg})
+                self.broadcast({"type": "error", "text": msg})
+
+        threading.Thread(target=_run, daemon=True, name="tts-preview").start()
+        return {"ok": True}
+
 
 hub = VoiceHub()
+
+from services.llm import webllm_broker  # noqa: E402
+
+webllm_broker.set_broadcast(hub.broadcast)

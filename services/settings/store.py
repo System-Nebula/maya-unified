@@ -7,7 +7,7 @@ import os
 from copy import deepcopy
 from typing import Any
 
-from services.paths import DATA_DIR, VOICE_RUNTIME, agent_data_dir
+from services.paths import DATA_DIR, VOICE_RUNTIME, agent_data_dir, resolve_voice_ref, resolve_runtime_file
 from services.settings.schema import DEFAULT_SETTINGS, deep_merge
 
 
@@ -28,6 +28,11 @@ def load_settings() -> dict[str, Any]:
             disc = merged.get("discord", {})
             if str(disc.get("token") or "").strip() and not disc.get("enabled"):
                 merged["discord"] = {**disc, "enabled": True}
+            reasoning = merged.get("reasoning", {})
+            if str(reasoning.get("provider", "")).lower() == "webllm":
+                webllm = dict(reasoning.get("webllm") or {})
+                webllm["enabled"] = True
+                merged["reasoning"] = {**reasoning, "webllm": webllm}
             return merged
     except (OSError, TypeError, ValueError):
         pass
@@ -37,6 +42,11 @@ def load_settings() -> dict[str, Any]:
 def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
     current = load_settings()
     merged = deep_merge(current, patch)
+    reasoning = merged.get("reasoning", {})
+    if str(reasoning.get("provider", "")).lower() == "webllm":
+        webllm = dict(reasoning.get("webllm") or {})
+        webllm["enabled"] = True
+        merged["reasoning"] = {**reasoning, "webllm": webllm}
     with open(_path(), "w", encoding="utf-8") as fh:
         json.dump(merged, fh, indent=2, ensure_ascii=False)
     return merged
@@ -48,7 +58,12 @@ def apply_to_config(settings: dict[str, Any]) -> None:
 
     r = settings.get("reasoning", {})
     provider = str(r.get("provider", "lm_studio"))
-    if provider == "litellm":
+    if provider == "webllm":
+        webllm = r.get("webllm") or {}
+        model_id = str(webllm.get("model_id") or "")
+        if model_id:
+            CONFIG.llm.model = model_id
+    elif provider == "litellm":
         litellm_cfg = r.get("litellm") or {}
         if str(litellm_cfg.get("mode", "sdk")) == "proxy" and r.get("base_url"):
             CONFIG.llm.base_url = str(r["base_url"])
@@ -107,9 +122,11 @@ def apply_to_config(settings: dict[str, Any]) -> None:
 
     voice = settings.get("voice", {})
     if voice.get("ref_audio"):
-        CONFIG.tts.ref_audio = str(voice["ref_audio"])
+        CONFIG.tts.ref_audio = resolve_voice_ref(str(voice["ref_audio"]))
     if voice.get("ref_text") is not None:
         CONFIG.tts.ref_text = str(voice["ref_text"])
+    elif not CONFIG.tts.ref_text.strip():
+        _load_ref_text_sidecar(CONFIG.tts)
     if voice.get("speaker"):
         CONFIG.tts.speaker = str(voice["speaker"])
     if voice.get("clone_model"):
@@ -159,6 +176,8 @@ def apply_to_config(settings: dict[str, Any]) -> None:
         CONFIG.tools.mode = str(tools["mode"])
     if tools.get("mcp_enabled") is not None:
         CONFIG.mcp.enabled = bool(tools["mcp_enabled"])
+    if CONFIG.mcp.enabled:
+        CONFIG.mcp.config_file = resolve_runtime_file(CONFIG.mcp.config_file)
 
     runtime = settings.get("runtime", {})
     if runtime.get("orchestrator") is not None:
@@ -170,7 +189,6 @@ def apply_to_config(settings: dict[str, Any]) -> None:
     token = str(disc.get("token") or "").strip()
     if token:
         CONFIG.discord.token = token
-        # Token saved ⇒ bot should run (toggle off clears token in UI).
         CONFIG.discord.enabled = True
     elif disc.get("enabled") is not None:
         CONFIG.discord.enabled = bool(disc["enabled"])
@@ -198,6 +216,21 @@ def apply_to_config(settings: dict[str, Any]) -> None:
         CONFIG.vts.mouth_smoothing = float(vts["mouth_smoothing"])
     if vts.get("mouth_fps") is not None:
         CONFIG.vts.mouth_fps = int(vts["mouth_fps"])
+
+
+def _load_ref_text_sidecar(tts_cfg) -> None:
+    import os
+
+    base, _ = os.path.splitext(tts_cfg.ref_audio)
+    ref_dir = os.path.dirname(tts_cfg.ref_audio) or "."
+    for candidate in (f"{base}.txt", os.path.join(ref_dir, "ref.txt")):
+        if os.path.exists(candidate):
+            try:
+                with open(candidate, encoding="utf-8") as fh:
+                    tts_cfg.ref_text = fh.read().strip()
+                break
+            except OSError:
+                pass
 
 
 def seed_env_defaults() -> dict[str, Any]:

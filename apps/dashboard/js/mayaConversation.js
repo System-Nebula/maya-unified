@@ -5,6 +5,10 @@ document.addEventListener("alpine:init", () => {
     statusLabel: "idle",
     step: "listen",
     draft: "",
+    ttsDraft: "Haha! That was ridiculous.",
+    ttsInstruct: "",
+    ttsBusy: false,
+    ttsError: "",
     turns: [],
     useWebLLM: false,
     sending: false,
@@ -23,14 +27,22 @@ document.addEventListener("alpine:init", () => {
     get llmError() {
       return Alpine.store("mayaShell")?.llmError || "";
     },
+    get webllmFailed() {
+      const st = Alpine.store("mayaShell")?.webllmBridgeStatus || "";
+      if (/failed|unavailable|rejected|null/i.test(st)) return st;
+      const issue = window.mayaWebLLMBridge?.gpuIssue;
+      return issue || "";
+    },
+    get webllmTroubleshoot() {
+      return window.mayaWebLLMBridge?.troubleshoot || "";
+    },
 
     async loadSettings() {
       try {
         const r = await fetch("/api/voice/settings");
         if (r.ok) {
           const data = await r.json();
-          const w = data.settings?.reasoning?.webllm;
-          this.useWebLLM = !!(data.settings?.reasoning?.provider === "webllm" && w?.enabled);
+          this.useWebLLM = data.settings?.reasoning?.provider === "webllm";
         }
       } catch (_) {}
     },
@@ -54,14 +66,25 @@ document.addEventListener("alpine:init", () => {
       if (ev.type === "status") {
         const v = ev.value || "idle";
         this.statusLabel = v;
-        if (v === "listening" || v === "hearing") this.step = "listen";
-        else if (v === "transcribing") this.step = "detect";
+        if (v === "listening" || v === "hearing") {
+          this.step = "listen";
+          if (this.ttsBusy) this.ttsBusy = false;
+        } else if (v === "transcribing") this.step = "detect";
         else if (v === "thinking") this.step = "reason";
         else if (v === "speaking") this.step = "maya";
         else if (v === "idle") {
           const last = this.turns[this.turns.length - 1];
           if (last && last._streaming) last._streaming = false;
+          if (this.ttsBusy) this.ttsBusy = false;
         }
+      }
+      if (ev.type === "error" && ev.text && this.ttsBusy) {
+        this.ttsError = ev.text;
+        this.ttsBusy = false;
+      }
+      if (ev.type === "tts_error" && ev.text) {
+        this.ttsError = ev.text;
+        this.ttsBusy = false;
       }
       if (ev.type === "user" && ev.text) {
         const last = this.turns[this.turns.length - 1];
@@ -70,12 +93,17 @@ document.addEventListener("alpine:init", () => {
       }
       if (ev.type === "ai" && ev.text) {
         const last = this.turns[this.turns.length - 1];
+        const chunk = String(ev.text);
         if (last && last.role === "maya" && last._streaming) {
-          const chunk = String(ev.text);
-          if (last.text.endsWith(chunk)) return;
-          last.text = last.text ? `${last.text} ${chunk}` : chunk;
+          const cur = last.text || "";
+          if (!chunk || cur.endsWith(chunk)) return;
+          if (cur && chunk.startsWith(cur)) {
+            last.text = chunk;
+            return;
+          }
+          last.text = cur + chunk;
         } else {
-          this.turns.push({ role: "maya", text: ev.text, _streaming: true });
+          this.turns.push({ role: "maya", text: chunk, _streaming: true });
         }
       }
     },
@@ -95,6 +123,57 @@ document.addEventListener("alpine:init", () => {
       await fetch("/api/voice/agent/stop", { method: "POST" });
       this.sessionOn = false;
       this.$dispatch("maya-session-stop");
+    },
+
+    async speakPreview() {
+      const text = this.ttsDraft.trim();
+      if (!text || this.ttsBusy || !this.agentReady) return;
+      this.ttsBusy = true;
+      this.ttsError = "";
+      this.step = "maya";
+      try {
+        const body = { text };
+        const instruct = this.ttsInstruct.trim();
+        if (instruct) body.instruct = instruct;
+        const r = await fetch("/api/voice/agent/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        let data = {};
+        try {
+          data = await r.json();
+        } catch (_) {
+          data = {};
+        }
+        if (!r.ok) {
+          const detail = data.detail || data.error;
+          this.ttsError =
+            detail ||
+            (r.status === 404
+              ? "Speak API not found — restart launch.py to load the new route."
+              : `Speak failed (HTTP ${r.status})`);
+          this.ttsBusy = false;
+          this.step = "listen";
+          return;
+        }
+        if (!data.ok) {
+          this.ttsError = data.error || "Speak failed";
+          this.ttsBusy = false;
+          this.step = "listen";
+        }
+      } catch (e) {
+        this.ttsError = String(e.message || e);
+        this.ttsBusy = false;
+        this.step = "listen";
+      }
+    },
+
+    onTtsKeydown(e) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        this.speakPreview();
+      }
     },
 
     async sendServer() {

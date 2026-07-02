@@ -68,6 +68,8 @@
 .mu-chip.error .dot { background: #ff453a; }
 .mu-chip.loading { color: #ff9f0a; border-color: #5c4a20; }
 .mu-chip.ready { color: #30d158; border-color: #2d5a3a; }
+.mu-chip.ready.experimental { color: #bf5af2; border-color: #5a3d6b; }
+.mu-chip.ready.experimental .dot { background: #bf5af2; }
 .mu-chip.error { color: #ff453a; border-color: #5c2d2d; }
 @keyframes mu-pulse { 50% { opacity: 0.4; } }
 .mu-hint {

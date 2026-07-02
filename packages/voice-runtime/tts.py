@@ -192,13 +192,26 @@ class Qwen3TTS:
                 "Voice upload requires clone mode. Restart the server without "
                 "VA_TTS_MODE=custom to clone from an uploaded clip."
             )
-        if not os.path.exists(ref_audio):
-            raise FileNotFoundError(ref_audio)
+        self.cfg.ref_audio = ref_audio
+        self.cfg.ref_audio = self.cfg.resolve_ref_audio()
+        if ref_text.strip():
+            self.cfg.ref_text = ref_text.strip()
+        elif not self.cfg.ref_text.strip():
+            base, _ = os.path.splitext(self.cfg.ref_audio)
+            ref_dir = os.path.dirname(self.cfg.ref_audio) or "."
+            for candidate in (f"{base}.txt", os.path.join(ref_dir, "ref.txt")):
+                if os.path.exists(candidate):
+                    try:
+                        with open(candidate, encoding="utf-8") as fh:
+                            self.cfg.ref_text = fh.read().strip()
+                        break
+                    except OSError:
+                        pass
+        if not os.path.exists(self.cfg.ref_audio):
+            raise FileNotFoundError(self.cfg.ref_audio)
         self.cfg.mode = "clone"
         self.mode = "clone"
-        self.cfg.ref_audio = ref_audio
-        self.cfg.ref_text = ref_text or ""
-        self.current_ref = ref_audio
+        self.current_ref = self.cfg.ref_audio
         if warm:
             try:
                 for _ in self.stream("Okay, I will use this voice now."):
