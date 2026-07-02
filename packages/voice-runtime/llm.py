@@ -11,13 +11,21 @@ Two call shapes:
 
 from __future__ import annotations
 
+import queue
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Iterator
 
 from openai import OpenAI
 
 from config import CONFIG, LLMConfig
+from observability import get_logger
+
+log = get_logger("llm")
+
+_STREAM_TIMEOUT_S = 90.0
 
 # Models sometimes echo control tokens from the system prompt (e.g. Gemma + /no_think).
 _CONTROL_TOKEN_RE = re.compile(r"\s*/no[-_]think\b", re.I)
@@ -96,44 +104,69 @@ class LLMClient:
         if self.cfg.disable_thinking:
             # Honored by LM Studio / vLLM for Qwen3-style templates; ignored otherwise.
             extra_body["chat_template_kwargs"] = {"enable_thinking": False}
-        if self.cfg.reasoning_effort:
+        effort = (self.cfg.reasoning_effort or "").strip().lower()
+        if effort:
             # Honored by reasoning models like Gemma; "none" disables hidden reasoning
             # so the visible reply isn't empty. Sent raw to bypass client validation.
             extra_body["reasoning_effort"] = self.cfg.reasoning_effort
+        elif self.cfg.disable_thinking:
+            # Many reasoning models return an empty spoken stream unless effort is set.
+            extra_body["reasoning_effort"] = "none"
         return extra_body
 
-    # ----- streaming (spoken answer, no tools) ------------------------------
+    @staticmethod
+    def _delta_text(delta) -> str:
+        if delta is None:
+            return ""
+        text = getattr(delta, "content", None) or ""
+        return text if isinstance(text, str) else ""
 
-    def stream_reply(self, user_text: str, history: list[dict] | None = None) -> Iterator[str]:
-        """Yield content deltas as the model generates them."""
-        kwargs: dict = dict(
-            model=self.cfg.model,
-            stream=True,
-            temperature=self.cfg.temperature,
-            top_p=self.cfg.top_p,
-            max_tokens=self.cfg.max_tokens,
-            messages=self._messages(user_text, history),
-        )
+    def _create_stream(self, kwargs: dict):
         extra_body = self._extra_body()
         if extra_body:
             kwargs["extra_body"] = extra_body
-
         try:
-            response = self.client.chat.completions.create(**kwargs)
+            return self.client.chat.completions.create(**kwargs)
         except Exception:
-            # Some servers reject the extra body; retry without it.
             kwargs.pop("extra_body", None)
-            response = self.client.chat.completions.create(**kwargs)
+            return self.client.chat.completions.create(**kwargs)
 
-        for chunk in response:
-            if not chunk.choices:
+    def _iter_stream_chunks(self, response, *, timeout_s: float = _STREAM_TIMEOUT_S) -> Iterator[str]:
+        """Yield stream tokens with a wall-clock timeout so a stuck server can't hang voice."""
+        out_q: queue.Queue[tuple[str, object]] = queue.Queue()
+
+        def _producer() -> None:
+            try:
+                for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    text = self._delta_text(chunk.choices[0].delta)
+                    if text:
+                        out_q.put(("token", text))
+            except Exception as exc:  # noqa: BLE001
+                out_q.put(("error", exc))
+            finally:
+                out_q.put(("done", None))
+
+        threading.Thread(target=_producer, daemon=True, name="llm-stream").start()
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.warning("LLM stream timed out after %.0fs", timeout_s)
+                break
+            try:
+                kind, value = out_q.get(timeout=min(remaining, 1.0))
+            except queue.Empty:
                 continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+            if kind == "token":
+                yield str(value)
+            elif kind == "error":
+                raise value  # type: ignore[misc]
+            else:
+                break
 
-    def stream_messages(self, messages: list[dict]) -> Iterator[str]:
-        """Stream a reply for a pre-built message list (used after the tool loop)."""
+    def _stream_with_fallback(self, messages: list[dict]) -> Iterator[str]:
         kwargs: dict = dict(
             model=self.cfg.model,
             stream=True,
@@ -142,20 +175,28 @@ class LLMClient:
             max_tokens=self.cfg.max_tokens,
             messages=messages,
         )
-        extra_body = self._extra_body()
-        if extra_body:
-            kwargs["extra_body"] = extra_body
-        try:
-            response = self.client.chat.completions.create(**kwargs)
-        except Exception:
-            kwargs.pop("extra_body", None)
-            response = self.client.chat.completions.create(**kwargs)
-        for chunk in response:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        response = self._create_stream(kwargs)
+        yielded = False
+        for token in self._iter_stream_chunks(response):
+            yielded = True
+            yield token
+        if yielded:
+            return
+        log.warning("LLM stream returned no tokens; falling back to complete()")
+        text = self.complete(messages).content
+        if text:
+            yield text
+
+    # ----- streaming (spoken answer, no tools) ------------------------------
+
+    def stream_reply(self, user_text: str, history: list[dict] | None = None) -> Iterator[str]:
+        """Yield content deltas as the model generates them."""
+        messages = self._messages(user_text, history)
+        yield from self._stream_with_fallback(messages)
+
+    def stream_messages(self, messages: list[dict]) -> Iterator[str]:
+        """Stream a reply for a pre-built message list (used after the tool loop)."""
+        yield from self._stream_with_fallback(messages)
 
     # ----- one-shot completion (tool loop) ----------------------------------
 
@@ -196,9 +237,14 @@ class LLMClient:
             resp = self.client.chat.completions.create(**kwargs)
 
         if not resp.choices:
+            log.warning("LLM complete returned no choices")
             return LLMResponse()
         msg = resp.choices[0].message
-        out = LLMResponse(content=sanitize_llm_output((msg.content or "").strip()))
+        content = sanitize_llm_output((msg.content or "").strip())
+        if not content:
+            finish = getattr(resp.choices[0], "finish_reason", None)
+            log.warning("LLM complete returned empty content (finish_reason=%s)", finish)
+        out = LLMResponse(content=content)
         for tc in (getattr(msg, "tool_calls", None) or []):
             raw = tc.function.arguments or "{}"
             try:

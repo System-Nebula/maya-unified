@@ -52,7 +52,7 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def apply_to_config(settings: dict[str, Any]) -> None:
+def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None) -> None:
     """Push reasoning + detection settings into qwen3 CONFIG (in-process)."""
     from config import CONFIG
 
@@ -157,7 +157,7 @@ def apply_to_config(settings: dict[str, Any]) -> None:
         CONFIG.audio.aec_enabled = bool(audio["aec_enabled"])
 
     mem = settings.get("memory", {})
-    CONFIG.memory.data_dir = str(agent_data_dir())
+    CONFIG.memory.data_dir = str(agent_data_dir(operator_id))
     if mem.get("enabled") is not None:
         CONFIG.memory.enabled = bool(mem["enabled"])
     if mem.get("write_approval") is not None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, String
+from sqlalchemy import Boolean, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from maya_db.base import Base, TimestampMixin, UUIDPrimaryKey
@@ -24,6 +24,7 @@ class OperatorUser(Base, UUIDPrimaryKey, TimestampMixin):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False, server_default="operator")
     avatar_color: Mapped[str] = mapped_column(String(16), nullable=False, server_default="#0a84ff")
+    is_banned: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     last_login: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

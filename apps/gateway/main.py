@@ -24,11 +24,13 @@ from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
+from apps.gateway.admin_routes import router as admin_router  # noqa: E402
 from apps.gateway.auth_routes import router as auth_router  # noqa: E402
 from apps.gateway.google_integrations_routes import router as google_integrations_router  # noqa: E402
 from apps.gateway.platform_auth_routes import router as platform_auth_router  # noqa: E402
 from apps.gateway.lifespan import lifespan  # noqa: E402
 from apps.gateway.settings_routes import router as settings_router  # noqa: E402
+from apps.gateway.room_routes import router as room_router  # noqa: E402
 from apps.gateway.voice_routes import register_agent_routes  # noqa: E402
 from services.auth.deps import resolve_operator_from_token  # noqa: E402
 from services.auth.operator_store import any_operators_exist, get_db_session  # noqa: E402
@@ -48,12 +50,11 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 # Auth guard middleware — redirect unauthenticated HTML; 401 JSON for protected APIs
 # ---------------------------------------------------------------------------
-_GUARDED_PREFIXES = ("/", "/memory", "/settings", "/panel", "/admin")
+_GUARDED_PREFIXES = ("/", "/memory", "/settings", "/panel", "/admin", "/rooms")
 _OPEN_PREFIXES = (
     "/login", "/setup", "/static", "/sdk", "/dashboard", "/docs", "/redoc",
-    "/openapi", "/health", "/favicon",
+    "/openapi", "/health", "/favicon", "/room",
 )
-_API_PROTECTED_PREFIXES = ("/api/voice/agent", "/api/voice/settings")
 _API_AUTH_OPEN = ("/api/auth/login", "/api/auth/logout", "/api/auth/me")
 _API_PLATFORM_OPEN = ("/api/platform/auth/status", "/api/platform/auth/login")
 
@@ -64,10 +65,29 @@ def _path_needs_api_auth(path: str, method: str) -> bool:
     if any(path == p or path.startswith(p + "/") for p in _API_PLATFORM_OPEN):
         return False
     if path.startswith("/api/operators"):
-        if method == "POST" and path == "/api/operators":
-            return False
+        return not (method == "POST" and path == "/api/operators")
+    if path.startswith("/api/admin"):
         return True
-    return any(path.startswith(p) for p in _API_PROTECTED_PREFIXES)
+    if path.startswith("/api/voice/"):
+        return True
+    if path == "/api/rooms" and method in ("GET", "POST"):
+        return True
+    if path.startswith("/api/rooms/") and method == "PATCH":
+        return True
+    return False
+
+
+def _is_room_guest_api(path: str, method: str) -> bool:
+    if not path.startswith("/api/rooms/"):
+        return False
+    if path.endswith("/join") and method == "POST":
+        return True
+    if method == "GET" and path.count("/") == 3:
+        return True
+    for suffix in ("/chat", "/messages", "/events", "/leave", "/queue", "/queue/request", "/queue/release"):
+        if path.endswith(suffix):
+            return True
+    return False
 
 
 async def _attach_operator(request: Request):
@@ -98,6 +118,12 @@ async def _auth_guard(request: Request, call_next):
         op = await _attach_operator(request)
         if op is None:
             return JSONResponse({"detail": "not authenticated"}, status_code=401)
+        if getattr(op, "is_banned", False):
+            return JSONResponse({"detail": "account banned"}, status_code=403)
+        return await call_next(request)
+
+    if _is_room_guest_api(path, method) or path.startswith("/api/rooms"):
+        await _attach_operator(request)
         return await call_next(request)
 
     if any(path.startswith(p) for p in _OPEN_PREFIXES):
@@ -109,6 +135,8 @@ async def _auth_guard(request: Request, call_next):
 
     op = await _attach_operator(request)
     if op is not None:
+        if getattr(op, "is_banned", False):
+            return RedirectResponse(url="/login?banned=1")
         return await call_next(request)
 
     try:
@@ -122,6 +150,7 @@ async def _auth_guard(request: Request, call_next):
 
 # --- operator auth (dashboard) — mount before other /api/auth routes -------------
 app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(platform_auth_router)
 app.include_router(google_integrations_router)
 
@@ -177,6 +206,7 @@ def _mount_platform_routes() -> None:
 _mount_platform_routes()
 
 app.include_router(settings_router)
+app.include_router(room_router)
 register_agent_routes(app)
 
 # --- static: voice SDK ----------------------------------------------------------
@@ -263,6 +293,15 @@ def profile_redirect():
     return RedirectResponse(url="/settings?tab=account", status_code=302)
 
 
+@app.get("/admin/workspaces")
+def admin_workspaces_page():
+    """Admin cross-operator workspace management."""
+    page = _dashboard_dir / "admin-workspaces.html"
+    if page.is_file():
+        return FileResponse(page)
+    raise HTTPException(404, "admin-workspaces.html not found")
+
+
 @app.get("/admin/users")
 def admin_users_page():
     """Admin operator management panel."""
@@ -270,6 +309,22 @@ def admin_users_page():
     if page.is_file():
         return FileResponse(page)
     raise HTTPException(404, "admin-users.html not found")
+
+
+@app.get("/rooms")
+def rooms_page():
+    page = _dashboard_dir / "rooms.html"
+    if page.is_file():
+        return FileResponse(page)
+    raise HTTPException(404, "rooms.html not found")
+
+
+@app.get("/room/{slug}")
+def room_guest_page(slug: str):
+    page = _dashboard_dir / "room.html"
+    if page.is_file():
+        return FileResponse(page)
+    raise HTTPException(404, "room.html not found")
 
 
 def run() -> None:

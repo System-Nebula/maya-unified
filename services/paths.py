@@ -54,8 +54,12 @@ def resolve_runtime_file(path: str) -> str:
     return str(candidate.resolve() if candidate.is_file() else candidate)
 
 
-def agent_data_dir() -> Path:
-    """Agent memory / DB / personalities — repo-root data/."""
+def agent_data_dir(operator_id: str | None = None) -> Path:
+    """Agent memory / DB / personalities — per-operator or legacy global data/."""
+    if operator_id:
+        path = DATA_DIR / "operators" / str(operator_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
     return DATA_DIR
 
 

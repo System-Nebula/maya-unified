@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rooms — Maya Unified</title>
+    <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-dashboard.css" />
+  </head>
+  <body>
+    <header class="mu-shell" x-data="mayaShell()" x-init="init()">
+      <div class="mu-brand">Maya <span>Unified</span></div>
+      <nav class="mu-nav">
+        <a href="/">Dashboard</a>
+        <a href="/rooms" class="active">Rooms</a>
+        <a href="/memory">Memory</a>
+        <a href="/settings">Settings</a>
+      </nav>
+      <div class="mu-status">
+        <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
+      </div>
+    </header>
+
+    <div class="md-page mv-root" data-mv-theme="dark" x-data="mayaRooms()" x-init="init()">
+      <div class="md-hero">
+        <h1>Voice rooms</h1>
+        <p class="md-sub">Create public rooms with a share link, or join open rooms.</p>
+      </div>
+
+      <div class="mv-card" style="margin-bottom:16px;padding:16px;">
+        <h3 style="margin:0 0 12px;">Create room</h3>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:end;">
+          <label style="flex:1;min-width:160px;">Name<input class="mv-input" x-model="form.name" style="width:100%;margin-top:4px;" /></label>
+          <label>Visibility
+            <select class="mv-input" x-model="form.visibility" style="margin-top:4px;">
+              <option value="public">Public</option>
+              <option value="private">Private</option>
+            </select>
+          </label>
+          <button class="mv-btn mv-btn-primary" @click="createRoom()" :disabled="creating">Create</button>
+        </div>
+        <p x-show="error" x-text="error" style="color:var(--mv-danger);margin:8px 0 0;"></p>
+      </div>
+
+      <div class="mv-card" style="padding:16px;">
+        <h3 style="margin:0 0 12px;">Rooms</h3>
+        <template x-if="rooms.length === 0">
+          <p style="color:var(--mv-muted);">No rooms yet.</p>
+        </template>
+        <template x-for="room in rooms" :key="room.id">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--mv-border);">
+            <div>
+              <strong x-text="room.name"></strong>
+              <span style="color:var(--mv-muted);font-size:12px;margin-left:8px;" x-text="room.visibility"></span>
+              <div style="font-size:12px;color:var(--mv-muted);" x-text="`${room.member_count}/${room.max_participants} · ${room.status}`"></div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <a class="mv-btn" :href="room.share_url" x-text="room.visibility === 'public' ? 'Open' : 'Join'"></a>
+              <button class="mv-btn" x-show="room.is_owner" @click="copyLink(room)">Copy link</button>
+              <button class="mv-btn" x-show="room.is_owner && room.status === 'open'" @click="closeRoom(room)">Close</button>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <script defer src="/dashboard/js/mayaConversation.js"></script>
+    <script defer src="/dashboard/js/mayaShell.js"></script>
+    <script defer src="/dashboard/js/mayaRooms.js"></script>
+    <script defer src="/sdk/vendor/alpine.min.js"></script>
+  </body>
+</html>

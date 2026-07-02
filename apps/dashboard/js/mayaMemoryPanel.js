@@ -27,6 +27,10 @@ document.addEventListener("alpine:init", () => {
     dbColumns: [],
     dbTotal: 0,
     dbPageLabel: "",
+    isAdmin: false,
+    currentUserId: "",
+    operators: [],
+    exploreOperatorId: "",
     _unsub: null,
 
     get agentReady() {
@@ -34,9 +38,35 @@ document.addEventListener("alpine:init", () => {
     },
 
     async init() {
+      try {
+        const me = await fetch("/api/auth/me").then((r) => r.json());
+        if (me.authenticated) {
+          this.isAdmin = me.role === "admin";
+          this.currentUserId = me.id || "";
+          this.exploreOperatorId = me.id || "";
+          if (this.isAdmin) await this.loadOperators();
+        }
+      } catch (_) {}
       await this.refresh();
       this._unsub = window.mayaAgentEvents?.subscribe((ev) => this.onEvent(ev));
       this.loading = false;
+    },
+
+    async loadOperators() {
+      try {
+        const res = await fetch("/api/admin/workspaces");
+        if (!res.ok) return;
+        const data = await res.json();
+        this.operators = data.workspaces || [];
+        if (!this.exploreOperatorId && this.operators.length) {
+          this.exploreOperatorId = this.operators[0].id;
+        }
+      } catch (_) {}
+    },
+
+    onExploreOperatorChange() {
+      this.dbOffset = 0;
+      this.exploreDb(true);
     },
 
     destroy() {
@@ -72,7 +102,7 @@ document.addEventListener("alpine:init", () => {
         this.skills = d.skills || [];
         this.sessions = d.sessions || [];
         if (!this.enabled) return;
-        await this.exploreDb(false);
+        if (this.isAdmin) await this.exploreDb(false);
       } catch (e) {
         this.error = String(e.message || e);
       }
@@ -170,6 +200,9 @@ document.addEventListener("alpine:init", () => {
       });
       if (this.db === "state" && this.dbSessionId) params.set("session_id", this.dbSessionId);
       if (this.db === "cognitive" && this.dbScope) params.set("scope", this.dbScope);
+      if (this.isAdmin && this.exploreOperatorId) {
+        params.set("operator_id", this.exploreOperatorId);
+      }
       try {
         const r = await this.api("/memory-explore?" + params);
         const data = await r.json();

@@ -31,6 +31,7 @@ __all__ = [
     "get_db_session",
     "hash_password",
     "list_operators",
+    "set_operator_banned",
     "touch_last_login",
     "update_operator",
     "validate_password",
@@ -149,6 +150,23 @@ async def delete_operator(session: AsyncSession, operator_id: str | uuid.UUID) -
     if op.role == "admin" and await count_admins(session) <= 1:
         raise ValueError("cannot delete last admin")
     await session.delete(op)
+
+
+async def set_operator_banned(
+    session: AsyncSession,
+    operator_id: str | uuid.UUID,
+    *,
+    banned: bool,
+) -> OperatorUser:
+    op = await get_by_id(session, operator_id)
+    if op is None:
+        raise ValueError(f"operator {operator_id} not found")
+    if op.role == "admin" and banned:
+        if await count_admins(session) <= 1:
+            raise ValueError("cannot ban last admin")
+    op.is_banned = banned
+    await session.flush()
+    return op
 
 
 async def touch_last_login(session: AsyncSession, operator_id: str | uuid.UUID) -> None:

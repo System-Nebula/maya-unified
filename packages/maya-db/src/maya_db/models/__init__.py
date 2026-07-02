@@ -6,6 +6,18 @@ from maya_db.models.google_integration import (
     OperatorGoogleIdentity,
 )
 from maya_db.models.operator import OperatorUser
+from maya_db.models.operator_voice import (
+    OperatorConversationMessage,
+    OperatorConversationSession,
+    OperatorPersonalities,
+    OperatorVoiceSettings,
+)
+from maya_db.models.voice_room import (
+    VoiceRoom,
+    VoiceRoomMember,
+    VoiceRoomMessage,
+    VoiceRoomVoiceQueue,
+)
 from maya_db.models.arena import (
     ArenaArtifact,
     ArenaBattle,
@@ -53,6 +65,14 @@ __all__ = [
     "OAuthPkceState",
     "OperatorGoogleIdentity",
     "OperatorUser",
+    "OperatorVoiceSettings",
+    "OperatorPersonalities",
+    "OperatorConversationSession",
+    "OperatorConversationMessage",
+    "VoiceRoom",
+    "VoiceRoomMember",
+    "VoiceRoomMessage",
+    "VoiceRoomVoiceQueue",
     "ArenaArtifact",
     "ArenaBattle",
     "ArenaCandidate",

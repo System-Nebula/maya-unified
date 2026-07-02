@@ -25,14 +25,22 @@ async def _seed_operator_account() -> None:
     try:
         async for session in get_db_session():
             await seed_default_operator_if_needed(session)
+            from services.operator_voice.context import import_legacy_global_to_admin
+
+            await import_legacy_global_to_admin(session)
+            await session.commit()
     except Exception as exc:  # noqa: BLE001
         log.warning("operator seed skipped: %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
     import os
 
+    from services.async_bridge import set_main_loop
+
+    set_main_loop(asyncio.get_running_loop())
     install_loop_handler()
     os.makedirs(DATA_DIR, exist_ok=True)
     migrate_qwen3_data_to_unified()

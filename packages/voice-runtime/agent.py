@@ -429,7 +429,9 @@ class VoiceAgent:
         except Exception as exc:  # noqa: BLE001
             log.warning("discord auto-connect failed: %s", exc)
 
-    def _build_messages(self, user_text: str) -> list[dict]:
+    def _build_messages(
+        self, user_text: str, *, history_override: list[dict] | None = None
+    ) -> list[dict]:
         """Assemble the LLM message list: system (+frozen memory +tool guide),
         recent history, then the user turn with any prefetched memories."""
         if self.memory is not None:
@@ -441,7 +443,10 @@ class VoiceAgent:
             system = f"{system}\n\n{TOOL_GUIDE}"
         messages: list[dict] = [{"role": "system", "content": system}]
 
-        if self.memory is not None:
+        if history_override is not None:
+            keep = CONFIG.llm.history_turns * 2
+            messages.extend(history_override[-keep:])
+        elif self.memory is not None:
             messages.extend(self.memory.recent_history())
         else:
             keep = CONFIG.llm.history_turns * 2
@@ -2075,15 +2080,9 @@ class VoiceAgent:
                 direct = self._try_web_direct(user_text)
             if direct is not None:
                 token_stream = iter([direct])
-            elif self._should_use_tool_loop():
+            elif self._should_use_tool_loop() and not (plan and plan.intent == "chat"):
                 messages = self._build_messages(user_text)
-                if plan and plan.intent == "chat":
-                    hint = (
-                        "[System: orchestrator classified this as conversation — "
-                        "reply naturally; only call tools if clearly needed.]"
-                    )
-                    messages[-1]["content"] = f"{hint}\n\n{messages[-1]['content']}"
-                elif _is_weak_transcript(raw_text) or self._has_pending_action():
+                if _is_weak_transcript(raw_text) or self._has_pending_action():
                     hint = (
                         "[System: speech may be mistranscribed — use recent "
                         "conversation and pending actions to infer intent before "
@@ -2102,14 +2101,27 @@ class VoiceAgent:
             # Let queued audio finish unless interrupted.
             while self.playback.is_playing() and not self._barge_in_flag.is_set():
                 time.sleep(0.05)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("turn failed: %s", exc)
+            self._emit(type="error", text=str(exc))
         finally:
             self._turn_active.clear()
             self._stop_barge_listener(monitor)
+
+        if not (full_reply or "").strip() and not self._barge_in_flag.is_set():
+            log.warning("empty LLM reply for user turn: %r", display_text[:120])
+            self._emit(
+                type="error",
+                text="No reply from the language model. Check LM Studio has a model loaded.",
+            )
 
         if self._barge_in_flag.is_set():
             self.playback.stop()
             log.info("barge-in stopped speaking")
             self._emit(type="barge_in")
+
+        if self.is_session_running():
+            self._emit(type="status", value="listening")
 
         # Record the exchange for context.
         self.history.append({"role": "user", "content": display_text})
@@ -2183,12 +2195,11 @@ class VoiceAgent:
             if self._barge_in_flag.is_set():
                 break
             text += token
+            if token:
+                self._emit(type="ai", text=token)
         text = _clean_text(text)
         if not text:
             return ""
-        # Show the transcript split into sentences for nicer display.
-        for phrase in sentence_chunks(iter([text])):
-            self._emit(type="ai", text=phrase)
         mark_speaking()
         self._speak(text)
         return text

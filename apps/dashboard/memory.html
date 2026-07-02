@@ -36,6 +36,7 @@
         <div class="mu-dropdown" x-show="open" x-cloak>
           <a href="/settings" class="mu-dd-item" :class="{ active: s.page === 'settings' }">Settings</a>
           <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'" :class="{ active: s.page === 'admin' }">Admin — Users</a>
+          <a href="/admin/workspaces" class="mu-dd-item" x-show="currentUser?.role === 'admin'">Admin — Workspaces</a>
           <div class="mu-dd-sep"></div>
           <button class="mu-dd-item mu-dd-signout" id="signout-btn" @click="signOut()">Sign out</button>
         </div>
@@ -153,12 +154,18 @@
               </ul>
             </div>
 
-            <div class="md-memory-card" style="margin-top:14px">
+            <div class="md-memory-card" style="margin-top:14px" x-show="isAdmin">
               <div class="md-memory-card-head">
                 <h3>Explore databases</h3>
                 <span class="mv-mono" style="font-size:11px;color:var(--mv-muted)" x-text="dbPageLabel"></span>
               </div>
+              <p class="mv-desc" style="margin:0 0 10px;">Admin-only raw database browse across operator workspaces.</p>
               <div class="md-db-toolbar">
+                <select class="mv-select" x-show="operators.length" x-model="exploreOperatorId" @change="onExploreOperatorChange()">
+                  <template x-for="op in operators" :key="op.id">
+                    <option :value="op.id" x-text="op.display_name + ' (@' + op.username + ')'"></option>
+                  </template>
+                </select>
                 <select class="mv-select" x-model="db" @change="onDbChange()">
                   <option value="state">state.db (sessions)</option>
                   <option value="cognitive">cognitive.db (semantic)</option>
