@@ -1,4 +1,13 @@
 /** Imagine Alpine app — composer, SSE, poll fallback, leaderboard. */
+(function applyImagineTheme() {
+  try {
+    let id = localStorage.getItem("maya-ui-theme") || "unified";
+    if (id === "gateway") id = "industrial";
+    if (id === "hermes") id = "unified";
+    document.documentElement.dataset.mayaTheme = id;
+  } catch (_) {}
+})();
+
 function readImagineBootstrap() {
   const el = document.getElementById("imagine-bootstrap");
   if (!el) return { battles: [], default_workflow_id: "z-image-turbo-t2i" };

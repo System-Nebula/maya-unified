@@ -1,14 +1,12 @@
-/* Maya Unified — Login / Setup (Hermes-inspired card) */
+/* Maya Unified — Login / Setup layout (colors via theme tokens) */
 
 .ml-page {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0d0d0f;
   position: relative;
   overflow: hidden;
-  font-family: "Inter", -apple-system, system-ui, sans-serif;
 }
 
 .ml-bg {
@@ -27,7 +25,6 @@
 .ml-blob-1 {
   width: 480px;
   height: 480px;
-  background: radial-gradient(circle, #0a84ff 0%, transparent 70%);
   top: -120px;
   left: -100px;
   animation-duration: 16s;
@@ -35,7 +32,6 @@
 .ml-blob-2 {
   width: 360px;
   height: 360px;
-  background: radial-gradient(circle, #bf5af2 0%, transparent 70%);
   bottom: -80px;
   right: -60px;
   animation-duration: 20s;
@@ -44,7 +40,6 @@
 .ml-blob-3 {
   width: 260px;
   height: 260px;
-  background: radial-gradient(circle, #30d158 0%, transparent 70%);
   top: 60%;
   left: 30%;
   animation-duration: 12s;
@@ -62,13 +57,7 @@
   max-width: 420px;
   margin: 20px;
   padding: 36px 32px 28px;
-  background: rgba(24, 24, 28, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 20px;
   backdrop-filter: blur(24px);
-  box-shadow:
-    0 0 0 1px rgba(10, 132, 255, 0.05),
-    0 24px 64px rgba(0, 0, 0, 0.45);
 }
 
 .ml-card-head {
@@ -80,7 +69,6 @@
   margin: 0;
   font-size: 22px;
   font-weight: 600;
-  color: #f5f5f5;
   letter-spacing: -0.02em;
   line-height: 1.25;
 }
@@ -98,24 +86,18 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(145deg, rgba(10, 132, 255, 0.18), rgba(191, 90, 242, 0.14));
   border: 1px solid rgba(255, 255, 255, 0.08);
-  color: #64d2ff;
 }
 
 .ml-subtitle {
   margin: 0;
   font-size: 14px;
   line-height: 1.55;
-  color: #8e8e93;
   text-align: center;
 }
 
 .ml-error {
   font-size: 12px;
-  color: #ff453a;
-  background: rgba(255, 69, 58, 0.1);
-  border: 1px solid rgba(255, 69, 58, 0.2);
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 14px;
@@ -132,29 +114,17 @@
   gap: 10px;
   min-height: 52px;
   padding: 0 12px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
+  border: 1px solid transparent;
   transition: border-color 0.15s, box-shadow 0.15s;
-}
-
-.ml-row:focus-within {
-  border-color: rgba(10, 132, 255, 0.45);
-  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.1);
 }
 
 .ml-row-icon {
   flex: 0 0 24px;
   width: 24px;
   height: 24px;
-  color: #636366;
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.ml-row:focus-within .ml-row-icon {
-  color: #8e8e93;
 }
 
 .ml-row-input {
@@ -162,15 +132,10 @@
   min-width: 0;
   border: none;
   background: transparent;
-  color: #f5f5f5;
   font-size: 14px;
   font-family: inherit;
   outline: none;
   padding: 14px 0;
-}
-
-.ml-row-input::placeholder {
-  color: #636366;
 }
 
 .ml-row-input-wrap {
@@ -190,15 +155,9 @@
   background: none;
   border: none;
   border-radius: 8px;
-  color: #8e8e93;
   cursor: pointer;
   padding: 0;
   transition: color 0.15s, background 0.15s;
-}
-
-.ml-toggle-btn:hover {
-  color: #f5f5f5;
-  background: rgba(255, 255, 255, 0.06);
 }
 
 .ml-toggle-btn svg {
@@ -209,9 +168,7 @@
 .ml-btn {
   width: 100%;
   padding: 13px;
-  background: #0a84ff;
   border: none;
-  border-radius: 12px;
   color: #fff;
   font-size: 14px;
   font-weight: 600;
@@ -220,7 +177,6 @@
   transition: background 0.15s, opacity 0.15s, transform 0.1s;
 }
 
-.ml-btn:hover:not(:disabled) { background: #2396ff; }
 .ml-btn:active:not(:disabled) { transform: scale(0.99); }
 .ml-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
@@ -237,7 +193,6 @@
   text-align: center;
   margin-top: 18px;
   font-size: 11px;
-  color: #48484a;
   line-height: 1.5;
 }
 
@@ -260,4 +215,115 @@
   display: inline-flex;
   vertical-align: middle;
   margin-right: 6px;
+}
+
+/* Auth method stack (replaces tabs) */
+.ml-auth-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.ml-auth-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.ml-auth-block-label {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--mt-muted, #8e8e93);
+}
+
+.ml-auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 16px;
+  color: var(--mt-faint, #636366);
+  font-size: 11px;
+}
+
+.ml-auth-divider::before,
+.ml-auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--mt-border-subtle, rgba(255, 255, 255, 0.1));
+}
+
+.ml-auth-divider span {
+  flex-shrink: 0;
+  text-transform: lowercase;
+}
+
+.ml-auth-block--oauth {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ml-oauth-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ml-oauth-btn:disabled:hover {
+  border-color: var(--mt-border-subtle, rgba(255, 255, 255, 0.12));
+  background: var(--mt-surface-dim, rgba(255, 255, 255, 0.03));
+}
+
+.ml-oauth-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--mt-border-subtle, rgba(255, 255, 255, 0.12));
+  border-radius: var(--mt-radius-control, 10px);
+  background: var(--mt-surface-dim, rgba(255, 255, 255, 0.03));
+  color: var(--mt-text, #f5f5f5);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ml-oauth-btn:hover:not(:disabled) {
+  border-color: var(--mt-accent, #0a84ff);
+  background: var(--mt-accent-tint, rgba(10, 132, 255, 0.08));
+}
+
+.ml-oauth-icon {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.ml-oauth-chevron {
+  margin-left: auto;
+  opacity: 0.45;
+  font-size: 16px;
+}
+
+.ml-auth-hint {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--mt-muted, #8e8e93);
+  text-align: center;
+}
+
+.ml-door-icon {
+  width: 40px;
+  height: 40px;
 }

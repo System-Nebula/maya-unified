@@ -1,0 +1,116 @@
+/* Unified theme tokens — operator portal aesthetic */
+
+[data-maya-theme="unified"] {
+  --mt-bg: #0d0d0f;
+  --mt-text: #f5f5f5;
+  --mt-muted: #8e8e93;
+  --mt-faint: #636366;
+  --mt-accent: #0a84ff;
+  --mt-accent-tint: rgba(10, 132, 255, 0.14);
+  --mt-accent-hover: #2396ff;
+  --mt-card: rgba(24, 24, 28, 0.92);
+  --mt-border: rgba(255, 255, 255, 0.1);
+  --mt-border-subtle: rgba(255, 255, 255, 0.12);
+  --mt-surface-dim: rgba(255, 255, 255, 0.03);
+  --mt-danger: #ff453a;
+  --mt-danger-tint: rgba(255, 69, 58, 0.1);
+  --mt-mark-color: #64d2ff;
+  --mt-blob-1: #0a84ff;
+  --mt-blob-2: #bf5af2;
+  --mt-blob-3: #30d158;
+  --mt-font: "Inter", -apple-system, system-ui, sans-serif;
+  --mt-font-display: var(--mt-font);
+  --mt-font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --mt-radius-card: 20px;
+  --mt-radius-control: 12px;
+  --mt-link: #64d2ff;
+}
+
+[data-maya-theme="unified"] body {
+  background: var(--mt-bg);
+}
+
+[data-maya-theme="unified"] .ml-page {
+  background: var(--mt-bg);
+  font-family: var(--mt-font);
+}
+
+[data-maya-theme="unified"] .ml-blob-1 {
+  background: radial-gradient(circle, var(--mt-blob-1) 0%, transparent 70%);
+}
+
+[data-maya-theme="unified"] .ml-blob-2 {
+  background: radial-gradient(circle, var(--mt-blob-2) 0%, transparent 70%);
+}
+
+[data-maya-theme="unified"] .ml-blob-3 {
+  background: radial-gradient(circle, var(--mt-blob-3) 0%, transparent 70%);
+}
+
+[data-maya-theme="unified"] .ml-card {
+  background: var(--mt-card);
+  border-color: var(--mt-border);
+  border-radius: var(--mt-radius-card);
+  box-shadow:
+    0 0 0 1px rgba(10, 132, 255, 0.05),
+    0 24px 64px rgba(0, 0, 0, 0.45);
+}
+
+[data-maya-theme="unified"] .ml-title {
+  color: var(--mt-text);
+}
+
+[data-maya-theme="unified"] .ml-mark {
+  background: linear-gradient(145deg, rgba(10, 132, 255, 0.18), rgba(191, 90, 242, 0.14));
+  color: var(--mt-mark-color);
+}
+
+[data-maya-theme="unified"] .ml-subtitle {
+  color: var(--mt-muted);
+}
+
+[data-maya-theme="unified"] .ml-error {
+  color: var(--mt-danger);
+  background: var(--mt-danger-tint);
+  border-color: rgba(255, 69, 58, 0.2);
+}
+
+[data-maya-theme="unified"] .ml-row {
+  background: var(--mt-surface-dim);
+  border-color: var(--mt-border-subtle);
+  border-radius: var(--mt-radius-control);
+}
+
+[data-maya-theme="unified"] .ml-row:focus-within {
+  border-color: rgba(10, 132, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.1);
+}
+
+[data-maya-theme="unified"] .ml-row-icon {
+  color: var(--mt-faint);
+}
+
+[data-maya-theme="unified"] .ml-row-input {
+  color: var(--mt-text);
+}
+
+[data-maya-theme="unified"] .ml-row-input::placeholder {
+  color: var(--mt-faint);
+}
+
+[data-maya-theme="unified"] .ml-btn {
+  background: var(--mt-accent);
+  border-radius: var(--mt-radius-control);
+}
+
+[data-maya-theme="unified"] .ml-btn:hover:not(:disabled) {
+  background: var(--mt-accent-hover);
+}
+
+[data-maya-theme="unified"] .ml-footer {
+  color: #48484a;
+}
+
+[data-maya-theme="unified"] .ml-footer a {
+  color: var(--mt-link);
+}

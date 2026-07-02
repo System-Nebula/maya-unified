@@ -1,8 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-maya-theme="unified" data-mv-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Chakra+Petch:wght@400;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-base.css" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-unified.css" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-industrial.css" />
+    <script src="/dashboard/js/mayaTheme.js"></script>
     <title>qwen3 Standalone — Maya Unified</title>
     <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
@@ -46,7 +53,7 @@
       .xp-mono { font-family: ui-monospace, monospace; font-size: 12px; }
     </style>
   </head>
-  <body>
+  <body x-init="$store.mayaTheme && $store.mayaTheme.init()">
     <header class="mu-shell" x-data="mayaShell()" x-init="init()">
       <div class="mu-brand">Maya <span>Unified</span></div>
       <nav class="mu-nav">

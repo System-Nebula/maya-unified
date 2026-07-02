@@ -9,6 +9,17 @@
   --gw-panel: #161719;
 }
 
+[data-maya-theme="industrial"] {
+  --gw-base: #080608;
+  --gw-surface: rgba(14, 10, 8, 0.92);
+  --gw-border: rgba(232, 100, 26, 0.2);
+  --gw-accent: #e8641a;
+  --gw-accent-op: #c44e10;
+  --gw-text: #f5ede4;
+  --gw-muted: #a06040;
+  --gw-panel: rgba(18, 13, 10, 0.95);
+}
+
 .imagine-alpine {
   display: flex;
   flex-direction: column;

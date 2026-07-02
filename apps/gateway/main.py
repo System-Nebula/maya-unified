@@ -40,6 +40,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse  # no
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from apps.gateway.auth_routes import router as auth_router  # noqa: E402
+from apps.gateway.platform_auth_routes import router as platform_auth_router  # noqa: E402
 from apps.gateway.lifespan import lifespan  # noqa: E402
 from apps.gateway.settings_routes import router as settings_router  # noqa: E402
 from apps.gateway.voice_routes import register_agent_routes  # noqa: E402
@@ -68,10 +69,13 @@ _OPEN_PREFIXES = (
 )
 _API_PROTECTED_PREFIXES = ("/api/voice/agent", "/api/voice/settings")
 _API_AUTH_OPEN = ("/api/auth/login", "/api/auth/logout", "/api/auth/me")
+_API_PLATFORM_OPEN = ("/api/platform/auth/status", "/api/platform/auth/login")
 
 
 def _path_needs_api_auth(path: str, method: str) -> bool:
     if any(path == p or path.startswith(p + "/") for p in _API_AUTH_OPEN):
+        return False
+    if any(path == p or path.startswith(p + "/") for p in _API_PLATFORM_OPEN):
         return False
     if path.startswith("/api/operators"):
         if method == "POST" and path == "/api/operators":
@@ -132,6 +136,7 @@ async def _auth_guard(request: Request, call_next):
 
 # --- operator auth (dashboard) — mount before other /api/auth routes -------------
 app.include_router(auth_router)
+app.include_router(platform_auth_router)
 
 # --- voice SDK routes (settings/defaults, demo turn) -----------------------------
 try:

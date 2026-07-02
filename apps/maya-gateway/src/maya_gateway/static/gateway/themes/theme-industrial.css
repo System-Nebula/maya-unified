@@ -1,0 +1,94 @@
+/* Industrial theme tokens — stealth terminal aesthetic */
+
+[data-maya-theme="industrial"] {
+  --mt-bg: #080608;
+  --mt-text: #f5ede4;
+  --mt-muted: #a06040;
+  --mt-faint: #5a3f28;
+  --mt-accent: #e8641a;
+  --mt-accent-tint: rgba(232, 100, 26, 0.18);
+  --mt-accent-line: rgba(232, 100, 26, 0.7);
+  --mt-accent-hover: #ff7828;
+  --mt-card: rgba(14, 10, 8, 0.88);
+  --mt-border: rgba(232, 100, 26, 0.2);
+  --mt-border-subtle: rgba(232, 100, 26, 0.12);
+  --mt-surface-dim: rgba(255, 255, 255, 0.03);
+  --mt-glow: rgba(232, 100, 26, 0.11);
+  --mt-tab-idle: #4a3020;
+  --mt-oauth-label: #8a6040;
+  --mt-oauth-icon-border: #8a6040;
+  --mt-email-text: #d0a070;
+  --mt-danger: #ff453a;
+  --mt-font-display: "Chakra Petch", sans-serif;
+  --mt-font-mono: "DM Mono", monospace;
+  --mt-font: var(--mt-font-display);
+  --mt-radius-card: 0;
+  --mt-radius-control: 0;
+}
+
+[data-maya-theme="industrial"] body {
+  background: var(--mt-bg);
+}
+
+[data-maya-theme="industrial"] .mu-shell {
+  font-family: var(--mt-font-mono);
+}
+
+[data-maya-theme="industrial"] .ml-page {
+  display: none;
+}
+
+[data-maya-theme="unified"] .ind-auth-page {
+  display: none;
+}
+
+[data-maya-theme="industrial"] .ml-page.ml-page--setup {
+  display: flex;
+  background: var(--mt-bg);
+  font-family: var(--mt-font-display);
+}
+
+[data-maya-theme="industrial"] .ml-page.ml-page--setup .ml-card {
+  background: var(--mt-card);
+  border: 1px solid var(--mt-border);
+  border-radius: 0;
+  box-shadow:
+    0 0 0 1px rgba(232, 100, 26, 0.06) inset,
+    0 40px 80px -20px rgba(0, 0, 0, 0.8);
+}
+
+[data-maya-theme="industrial"] .ml-page.ml-page--setup .ml-bg {
+  display: none;
+}
+
+[data-maya-theme="industrial"] .ml-page.ml-page--setup::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100'%3E%3Cpath d='M28 66L0 50V18L28 2l28 16v32L28 66z' fill='none' stroke='%23e8641a' stroke-width='0.5'/%3E%3C/svg%3E");
+  background-size: 56px 100px;
+}
+
+[data-maya-theme="industrial"] .ml-page.ml-page--setup .ml-title,
+[data-maya-theme="industrial"] .ml-page.ml-page--setup .ml-subtitle,
+[data-maya-theme="industrial"] .ml-page.ml-page--setup .ml-row-input {
+  font-family: var(--mt-font-mono);
+}
+
+[data-maya-theme="industrial"] .ml-page.ml-page--setup .ml-title {
+  color: var(--mt-text);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 18px;
+}
+
+[data-maya-theme="industrial"] .ml-page.ml-page--setup .ml-btn {
+  background: var(--mt-accent);
+  border-radius: 0;
+  font-family: var(--mt-font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-size: 11px;
+}

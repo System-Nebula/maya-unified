@@ -1,15 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-maya-theme="unified" data-mv-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Chakra+Petch:wght@400;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-base.css" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-unified.css" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-industrial.css" />
+    <script src="/dashboard/js/mayaTheme.js"></script>
     <title>Settings — Maya Unified</title>
     <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-settings.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-profile.css" />
   </head>
-  <body>
+  <body x-init="$store.mayaTheme && $store.mayaTheme.init()">
     <header class="mu-shell" x-data="mayaShell()" x-init="init()">
       <div class="mu-brand">Maya <span>Unified</span></div>
       <nav class="mu-nav">
@@ -137,6 +144,24 @@
                   <button class="mv-btn" @click="changePassword()" :disabled="accountSaving">Change Password</button>
                   <span class="mp-save-msg" x-show="savedPw" x-cloak>✓ Password updated</span>
                   <span class="mp-save-err" x-show="errPw" x-text="errPw" x-cloak></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="mp-section">
+              <div class="mp-section-head"><h2>Appearance</h2></div>
+              <div class="mp-section-body">
+                <p style="margin:0 0 12px;font-size:13px;color:var(--mv-muted);line-height:1.5;">
+                  Choose the dashboard and gateway aesthetic. Stored in this browser only.
+                </p>
+                <div class="mt-appearance-grid" x-data="mayaThemePicker">
+                  <template x-for="t in themes" :key="t.id">
+                    <button type="button" class="mt-appearance-card" :class="{ active: activeId === t.id }" @click="pick(t.id)">
+                      <div class="mt-appearance-swatch" :class="t.id === 'industrial' ? 'mt-appearance-swatch--industrial' : 'mt-appearance-swatch--unified'"></div>
+                      <h3 x-text="t.label"></h3>
+                      <p x-text="t.description"></p>
+                    </button>
+                  </template>
                 </div>
               </div>
             </div>
