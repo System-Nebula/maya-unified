@@ -15,8 +15,18 @@ from apps.gateway.asyncio_compat import install_loop_handler
 from services.voice.data_migration import migrate_qwen3_data_to_unified
 from services.voice.hub import hub
 from services.voice.personality_seed import seed_personality_if_needed
+from services.auth.seed import seed_default_operator_if_needed
+from services.auth.operator_store import get_db_session
 
 log = logging.getLogger("maya-unified.gateway")
+
+
+async def _seed_operator_account() -> None:
+    try:
+        async for session in get_db_session():
+            await seed_default_operator_if_needed(session)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("operator seed skipped: %s", exc)
 
 
 @asynccontextmanager
@@ -28,6 +38,7 @@ async def lifespan(app: FastAPI):
     migrate_qwen3_data_to_unified()
     os.environ.setdefault("VA_DATA_DIR", str(DATA_DIR))
     seed_personality_if_needed()
+    await _seed_operator_account()
     settings = load_settings()
     apply_discord_env(settings)
     apply_to_config(settings)

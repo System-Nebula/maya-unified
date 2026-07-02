@@ -1,0 +1,263 @@
+/* Maya Unified — Login / Setup (Hermes-inspired card) */
+
+.ml-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d0d0f;
+  position: relative;
+  overflow: hidden;
+  font-family: "Inter", -apple-system, system-ui, sans-serif;
+}
+
+.ml-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.ml-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.12;
+  animation: ml-drift 14s ease-in-out infinite alternate;
+}
+.ml-blob-1 {
+  width: 480px;
+  height: 480px;
+  background: radial-gradient(circle, #0a84ff 0%, transparent 70%);
+  top: -120px;
+  left: -100px;
+  animation-duration: 16s;
+}
+.ml-blob-2 {
+  width: 360px;
+  height: 360px;
+  background: radial-gradient(circle, #bf5af2 0%, transparent 70%);
+  bottom: -80px;
+  right: -60px;
+  animation-duration: 20s;
+  animation-delay: -6s;
+}
+.ml-blob-3 {
+  width: 260px;
+  height: 260px;
+  background: radial-gradient(circle, #30d158 0%, transparent 70%);
+  top: 60%;
+  left: 30%;
+  animation-duration: 12s;
+  animation-delay: -3s;
+}
+@keyframes ml-drift {
+  0%   { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(30px, 20px) scale(1.06); }
+}
+
+.ml-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 420px;
+  margin: 20px;
+  padding: 36px 32px 28px;
+  background: rgba(24, 24, 28, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  backdrop-filter: blur(24px);
+  box-shadow:
+    0 0 0 1px rgba(10, 132, 255, 0.05),
+    0 24px 64px rgba(0, 0, 0, 0.45);
+}
+
+.ml-card-head {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.ml-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: #f5f5f5;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.ml-hero {
+  display: flex;
+  justify-content: center;
+  margin: 18px 0 16px;
+}
+
+.ml-mark {
+  width: 72px;
+  height: 72px;
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(145deg, rgba(10, 132, 255, 0.18), rgba(191, 90, 242, 0.14));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #64d2ff;
+}
+
+.ml-subtitle {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #8e8e93;
+  text-align: center;
+}
+
+.ml-error {
+  font-size: 12px;
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.1);
+  border: 1px solid rgba(255, 69, 58, 0.2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  line-height: 1.4;
+}
+
+.ml-field {
+  margin-bottom: 12px;
+}
+
+.ml-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.ml-row:focus-within {
+  border-color: rgba(10, 132, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.1);
+}
+
+.ml-row-icon {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  color: #636366;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ml-row:focus-within .ml-row-icon {
+  color: #8e8e93;
+}
+
+.ml-row-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: #f5f5f5;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  padding: 14px 0;
+}
+
+.ml-row-input::placeholder {
+  color: #636366;
+}
+
+.ml-row-input-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.ml-toggle-btn {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  color: #8e8e93;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.ml-toggle-btn:hover {
+  color: #f5f5f5;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ml-toggle-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.ml-btn {
+  width: 100%;
+  padding: 13px;
+  background: #0a84ff;
+  border: none;
+  border-radius: 12px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s, transform 0.1s;
+}
+
+.ml-btn:hover:not(:disabled) { background: #2396ff; }
+.ml-btn:active:not(:disabled) { transform: scale(0.99); }
+.ml-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+@keyframes ml-shake {
+  0%, 100% { transform: translateX(0); }
+  20%       { transform: translateX(-8px); }
+  40%       { transform: translateX(8px); }
+  60%       { transform: translateX(-5px); }
+  80%       { transform: translateX(5px); }
+}
+.ml-card.shake { animation: ml-shake 0.4s ease; }
+
+.ml-footer {
+  text-align: center;
+  margin-top: 18px;
+  font-size: 11px;
+  color: #48484a;
+  line-height: 1.5;
+}
+
+.ml-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: ml-spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+@keyframes ml-spin { to { transform: rotate(360deg); } }
+
+[x-cloak] { display: none !important; }
+
+.ml-spinner-wrap {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: 6px;
+}

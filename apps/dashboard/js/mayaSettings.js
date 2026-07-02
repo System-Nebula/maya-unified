@@ -1,7 +1,13 @@
-/** Comprehensive settings UI — GET/POST /api/voice/settings */
+/** Comprehensive settings UI — GET/POST /api/voice/settings + operator account */
 document.addEventListener("alpine:init", () => {
+  const AVATAR_COLOURS = [
+    "#0a84ff", "#30d158", "#ff9f0a", "#ff453a",
+    "#bf5af2", "#32ade6", "#ffd60a", "#ff6961",
+    "#5e5ce6", "#64d2ff",
+  ];
+
   Alpine.data("mayaSettings", () => ({
-    tab: "operator",
+    tab: "account",
     filter: "",
     saved: false,
     error: "",
@@ -9,6 +15,18 @@ document.addEventListener("alpine:init", () => {
     agentReady: false,
     currentVoice: "",
     _saveTimer: null,
+
+    user: { id: "", username: "", display_name: "", role: "operator", avatar_color: "#0a84ff" },
+    colours: AVATAR_COLOURS,
+    accountSaving: false,
+    savedId: false,
+    errId: "",
+    savedPw: false,
+    errPw: "",
+    clearedPrefs: false,
+    newPw: "",
+    confirmPw: "",
+
     catalog: {
       eq_presets: [],
       voices: [],
@@ -73,9 +91,9 @@ document.addEventListener("alpine:init", () => {
     },
     sectionGroups: [
       {
-        title: "Operator",
+        title: "Account",
         items: [
-          { id: "operator", label: "Kitchen Sink", hint: "SDK control panel" },
+          { id: "account", label: "Profile", hint: "Identity · password" },
         ],
       },
       {
@@ -130,6 +148,10 @@ document.addEventListener("alpine:init", () => {
         .filter((g) => g.items.length);
     },
 
+    get validTabIds() {
+      return this.sectionGroups.flatMap((g) => g.items.map((it) => it.id));
+    },
+
     voiceFileName() {
       const p = this.s.voice?.ref_audio || "";
       const base = p.split(/[/\\]/).pop() || "";
@@ -137,7 +159,90 @@ document.addEventListener("alpine:init", () => {
     },
 
     setTab(id) {
+      if (!this.validTabIds.includes(id)) return;
       this.tab = id;
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", id);
+      history.replaceState(null, "", url);
+    },
+
+    initials() {
+      const n = this.user.display_name || this.user.username || "?";
+      return n.split(" ").map((p) => p[0]).join("").toUpperCase().slice(0, 2);
+    },
+
+    async saveIdentity() {
+      this.savedId = false;
+      this.errId = "";
+      this.accountSaving = true;
+      try {
+        const res = await fetch(`/api/operators/${this.user.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            display_name: this.user.display_name,
+            avatar_color: this.user.avatar_color,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.errId = data.detail || "Save failed.";
+          return;
+        }
+        this.savedId = true;
+        setTimeout(() => { this.savedId = false; }, 2500);
+      } catch (_) {
+        this.errId = "Network error.";
+      } finally {
+        this.accountSaving = false;
+      }
+    },
+
+    async changePassword() {
+      this.savedPw = false;
+      this.errPw = "";
+      if (!this.newPw) {
+        this.errPw = "Enter a new password.";
+        return;
+      }
+      if (this.newPw.length < 8) {
+        this.errPw = "Password must be at least 8 characters.";
+        return;
+      }
+      if (this.newPw !== this.confirmPw) {
+        this.errPw = "Passwords do not match.";
+        return;
+      }
+      this.accountSaving = true;
+      try {
+        const res = await fetch(`/api/operators/${this.user.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: this.newPw }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.errPw = data.detail || "Failed to update password.";
+          return;
+        }
+        this.savedPw = true;
+        this.newPw = "";
+        this.confirmPw = "";
+        setTimeout(() => { this.savedPw = false; }, 2500);
+      } catch (_) {
+        this.errPw = "Network error.";
+      } finally {
+        this.accountSaving = false;
+      }
+    },
+
+    clearPrefs() {
+      localStorage.removeItem("maya.voice.settings.v1");
+      if (this.user.username) {
+        localStorage.removeItem(`maya_prefs_${this.user.username}`);
+      }
+      this.clearedPrefs = true;
+      setTimeout(() => { this.clearedPrefs = false; }, 2000);
     },
 
     async refreshCatalog() {
@@ -150,13 +255,6 @@ document.addEventListener("alpine:init", () => {
       } catch (e) {
         this.error = String(e.message || e);
       }
-    },
-
-    async initSdk() {
-      try {
-        const store = Alpine.store("mayaVoice");
-        if (store && !store.ready) await store.loadDefaults();
-      } catch (_) {}
     },
 
     ensureCatalogDefaults() {
@@ -182,12 +280,32 @@ document.addEventListener("alpine:init", () => {
     },
 
     async init() {
+      const tabParam = new URLSearchParams(window.location.search).get("tab");
+      if (tabParam && this.validTabIds.includes(tabParam)) {
+        this.tab = tabParam;
+      }
+
       try {
-        const [settingsR, catalogR, statusR] = await Promise.all([
+        const [settingsR, catalogR, statusR, accountR] = await Promise.all([
           fetch("/api/voice/settings"),
           fetch("/api/voice/settings/catalog"),
           fetch("/api/voice/agent/status"),
+          fetch("/api/auth/me"),
         ]);
+        if (accountR.ok) {
+          const data = await accountR.json();
+          if (!data.authenticated) {
+            window.location.href = "/login?next=/settings";
+            return;
+          }
+          this.user = {
+            id: data.id,
+            username: data.username,
+            display_name: data.display_name,
+            role: data.role,
+            avatar_color: data.avatar_color || "#0a84ff",
+          };
+        }
         if (settingsR.ok) {
           const data = await settingsR.json();
           this.s = this.deepMerge(this.s, data.settings || {});
@@ -210,7 +328,6 @@ document.addEventListener("alpine:init", () => {
         this.error = String(e.message || e);
       } finally {
         this.loading = false;
-        await this.initSdk();
         this.$nextTick(() => {
           this.$root?.setAttribute?.("data-alpine-ready", "true");
         });

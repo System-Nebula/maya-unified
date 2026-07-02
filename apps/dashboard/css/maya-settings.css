@@ -105,14 +105,6 @@
   color: var(--mv-accent);
   background: var(--mv-accent-tint);
 }
-.ms-operator-frame {
-  display: block;
-  width: 100%;
-  min-height: 780px;
-  border: 1px solid var(--mv-border);
-  border-radius: var(--mv-r-panel);
-  background: var(--mv-bg);
-}
 .ms-btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .ms-details { margin-top: 14px; }
 .ms-details summary {

@@ -105,8 +105,48 @@ Optional full platform stack: `uv sync` from repo root (uses workspace in `pypro
 |-----|---------|
 | `/` | Dashboard — EQ, chat, tools |
 | `/memory` | Memory explorer |
-| `/settings` | All config (`data/settings.json`) |
+| `/settings` | Operator account + server voice config — open from the **user menu** (user chip → Settings) |
+| `/login` | Operator sign-in |
+| `/setup` | First-run admin creation (optional; demo admin auto-seeds on startup) |
+| `/profile` | Redirects to `/settings?tab=account` (Account tab is the default on `/settings`) |
+| `/admin/users` | Operator management (admin only) |
 | `/docs` | OpenAPI |
+
+---
+
+## Operator auth
+
+The unified dashboard uses **local operator accounts** (`operator_users` table) — separate from platform users (invite codes, OAuth, email) when the full maya-gateway stack is enabled.
+
+| What | Where |
+|------|-------|
+| Operator credentials + roles | PostgreSQL (`operator_users`) |
+| Sessions | Signed cookie `maya_op_session` (`SESSION_SECRET`) |
+| User preferences | Browser `localStorage` (not synced to server) |
+
+**Default account:** `admin` / `admin` — auto-created on startup when no operators exist. Change the password in the user menu → **Settings** (Account tab) after first sign-in.
+
+**Sign in:** visit `/login` (or `/` → redirect).
+
+**Roles:** `admin` (manage operators) and `operator` (dashboard access only).
+
+Set in `.env`:
+
+```env
+SESSION_SECRET=change-me-in-production
+SESSION_COOKIE_SECURE=0   # set 1 behind HTTPS
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/maya_public
+OPERATOR_DEFAULT_USERNAME=admin
+OPERATOR_DEFAULT_PASSWORD=admin
+```
+
+Run migrations before first login:
+
+```bash
+cd packages/maya-db && DATABASE_URL=... uv run alembic upgrade head
+```
+
+Protected APIs (`/api/voice/agent/*`, `/api/voice/settings/*`, `/api/operators/*`) return **401** without a valid operator session.
 
 ---
 

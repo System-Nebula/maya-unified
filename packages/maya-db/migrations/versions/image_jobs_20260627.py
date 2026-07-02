@@ -28,7 +28,7 @@ def upgrade() -> None:
             size VARCHAR,
             quality VARCHAR,
             mask_url VARCHAR,
-            references JSONB DEFAULT '[]',
+            "references" JSONB DEFAULT '[]',
             output JSONB DEFAULT '{}',
             error TEXT,
             metadata JSONB DEFAULT '{}',
