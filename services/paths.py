@@ -32,6 +32,7 @@ def resolve_voice_ref(path: str) -> str:
         VOICE_RUNTIME / norm,
         voices_dir() / p.name,
         DATA_DIR / "voices" / p.name,
+        ROOT / "examples" / "voices" / p.name,
     ]
     for candidate in candidates:
         if candidate.is_file():

@@ -31,6 +31,7 @@ maya-unified/
 │   ├── maya-bot/           # full Discord /imagine bot (optional)
 │   └── maya-ingest/        # feed ingest worker (optional)
 ├── services/               # settings, hub, runtime patches
+├── examples/               # bundled voice clip, personalities, starter skills
 ├── data/                   # your settings, memory, personalities (gitignored)
 ├── launch.py
 ├── setup_windows.bat
@@ -66,6 +67,18 @@ launch.bat
 `setup_windows.bat` creates `.venv` at the **repo root**, installs PyTorch (CUDA 12.8 wheels), and `pip install -e .`.
 
 Start LM Studio, set your model id in **Settings → Reasoning**, open http://localhost:8090 .
+
+### Bundled examples (first launch)
+
+On first start, Maya copies shipped assets from `examples/` into your local runtime:
+
+| Asset | Source | Destination |
+|-------|--------|-------------|
+| Demo voice clip | `examples/voices/ref.wav` + `ref.txt` | `packages/voice-runtime/voices/` |
+| Personalities | `examples/personalities/personalities.json` | `data/personalities.json` |
+| Starter skills | `examples/skills/*.md` | `data/skills/` |
+
+Default personalities: **Maya-sama**, **Professor Mari**, **Call Center Scammer**. Tools (Discord, web, memory, MCP) ship as code in `packages/voice-runtime/tools/` — enable them in **Settings**.
 
 <details>
 <summary>Manual install</summary>

@@ -13,8 +13,8 @@ from services.discord.unified_bot import apply_discord_env, start_discord_extens
 from services.settings.store import load_settings, apply_to_config
 from apps.gateway.asyncio_compat import install_loop_handler
 from services.voice.data_migration import migrate_qwen3_data_to_unified
+from services.voice.example_seed import seed_examples_if_needed
 from services.voice.hub import hub
-from services.voice.personality_seed import seed_personality_if_needed
 from services.auth.seed import seed_default_operator_if_needed
 from services.auth.operator_store import get_db_session
 
@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     os.makedirs(DATA_DIR, exist_ok=True)
     migrate_qwen3_data_to_unified()
     os.environ.setdefault("VA_DATA_DIR", str(DATA_DIR))
-    seed_personality_if_needed()
+    seed_examples_if_needed()
     await _seed_operator_account()
     settings = load_settings()
     apply_discord_env(settings)
