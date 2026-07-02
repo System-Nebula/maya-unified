@@ -1,5 +1,10 @@
 """Database models."""
 
+from maya_db.models.google_integration import (
+    GoogleConnection,
+    OAuthPkceState,
+    OperatorGoogleIdentity,
+)
 from maya_db.models.operator import OperatorUser
 from maya_db.models.arena import (
     ArenaArtifact,
@@ -44,6 +49,9 @@ from maya_db.models.research import (
 )
 
 __all__ = [
+    "GoogleConnection",
+    "OAuthPkceState",
+    "OperatorGoogleIdentity",
     "OperatorUser",
     "ArenaArtifact",
     "ArenaBattle",

@@ -130,6 +130,7 @@ document.addEventListener("alpine:init", () => {
         title: "Connect",
         items: [
           { id: "discord", label: "Discord", hint: "Bot · music" },
+          { id: "integrations", label: "Integrations", hint: "Google · mailbox" },
           { id: "platform", label: "Platform", hint: "DB · telemetry" },
         ],
       },

@@ -29,6 +29,8 @@ dependencies = [
     "numpy",
     "itsdangerous>=2.0",
     "argon2-cffi>=23.0",
+    "google-auth-oauthlib>=1.2",
+    "google-api-python-client>=2.100",
 ]
 
 [project.optional-dependencies]

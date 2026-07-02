@@ -1,5 +1,6 @@
 # Maya Unified runtime
 .env
+.data/
 data/
 __pycache__/
 *.pyc

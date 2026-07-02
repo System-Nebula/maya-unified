@@ -42,6 +42,27 @@ async def lifespan(app: FastAPI):
     settings = load_settings()
     apply_discord_env(settings)
     apply_to_config(settings)
+
+    try:
+        from services.integrations.google.config import (  # noqa: PLC0415
+            GOOGLE_CLIENT_ID,
+            GOOGLE_CONNECT_REDIRECT_URI,
+            GOOGLE_LOGIN_REDIRECT_URI,
+            dynamic_redirect_enabled,
+            google_oauth_configured,
+        )
+
+        if google_oauth_configured():
+            log.info(
+                "Google OAuth configured client_id=...%s login_redirect=%s connect_redirect=%s dynamic=%s",
+                GOOGLE_CLIENT_ID[-12:] if len(GOOGLE_CLIENT_ID) > 12 else GOOGLE_CLIENT_ID,
+                GOOGLE_LOGIN_REDIRECT_URI,
+                GOOGLE_CONNECT_REDIRECT_URI,
+                dynamic_redirect_enabled(),
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Google OAuth startup log skipped: %s", exc)
+
     threading.Thread(target=hub.load_agent, daemon=True, name="voice-agent-load").start()
 
     def _after_ready():

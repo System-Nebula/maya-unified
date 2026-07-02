@@ -12,34 +12,20 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 
-def _load_env_files() -> None:
-    """Load repo .env before maya_db reads DATABASE_URL (same as launch.py)."""
-    from services.paths import VOICE_RUNTIME  # noqa: PLC0415
-
-    for env_file in (_ROOT / ".env", VOICE_RUNTIME / ".env"):
-        if not env_file.is_file():
-            continue
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            key = key.strip()
-            if key and key not in os.environ:
-                os.environ[key] = val.strip().strip('"').strip("'")
-
-
-_load_env_files()
-
-from services.paths import GATEWAY_SRC, setup_paths  # noqa: E402
+from services.paths import GATEWAY_SRC, VOICE_RUNTIME, setup_paths  # noqa: E402
 
 setup_paths()
+
+from services.env_loader import load_env_files  # noqa: E402
+
+load_env_files(_ROOT / ".env", VOICE_RUNTIME / ".env")
 
 from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from apps.gateway.auth_routes import router as auth_router  # noqa: E402
+from apps.gateway.google_integrations_routes import router as google_integrations_router  # noqa: E402
 from apps.gateway.platform_auth_routes import router as platform_auth_router  # noqa: E402
 from apps.gateway.lifespan import lifespan  # noqa: E402
 from apps.gateway.settings_routes import router as settings_router  # noqa: E402
@@ -137,6 +123,7 @@ async def _auth_guard(request: Request, call_next):
 # --- operator auth (dashboard) — mount before other /api/auth routes -------------
 app.include_router(auth_router)
 app.include_router(platform_auth_router)
+app.include_router(google_integrations_router)
 
 # --- voice SDK routes (settings/defaults, demo turn) -----------------------------
 try:

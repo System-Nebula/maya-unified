@@ -869,6 +869,88 @@
             </div>
           </div>
 
+          <!-- INTEGRATIONS -->
+          <div x-show="tab === 'integrations'" x-data="mayaIntegrations" x-init="init()">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Connect</p>
+              <h2 class="mv-title">App Integrations</h2>
+              <p class="mv-desc">Connect Google for mailbox and calendar access. Permissions can be updated anytime via reconnect.</p>
+            </div>
+
+            <div class="mv-card" x-show="loading" x-cloak>
+              <p class="mv-desc" style="margin:0">Loading integration status…</p>
+            </div>
+
+            <div class="mv-card" x-show="error && !loading" x-cloak>
+              <p class="mp-save-err" x-text="error" style="margin:0"></p>
+            </div>
+
+            <div class="mv-card" x-show="!loading && !error" x-cloak>
+              <div class="mp-section-head" style="margin-bottom:12px">
+                <h2>Google</h2>
+                <span class="mp-role-badge" :class="status.connected ? 'operator' : ''"
+                  x-text="status.connected ? 'Connected' : 'Not connected'"></span>
+              </div>
+
+              <template x-if="!status.connected">
+                <div>
+                  <p class="mv-desc" style="margin:0 0 16px">Connect your Google account to enable mailbox and calendar features.</p>
+                  <button type="button" class="mv-btn" @click="connectGoogle()">Connect Google</button>
+                </div>
+              </template>
+
+              <template x-if="status.connected">
+                <div class="mv-list-row">
+                  <div class="lhs">
+                    <div class="mv-row-label">Account</div>
+                    <div class="mv-row-hint" x-text="status.email"></div>
+                  </div>
+                  <div class="rhs">
+                    <span class="mv-row-sub" x-text="formatConnectedAt(status.connected_at)"></span>
+                  </div>
+                </div>
+              </template>
+
+              <template x-for="key in permissionKeys" :key="key">
+                <div class="mv-list-row">
+                  <div class="lhs">
+                    <div class="mv-row-label" x-text="permissionMeta[key].label"></div>
+                    <div class="mv-row-hint" x-text="permissionMeta[key].hint"></div>
+                  </div>
+                  <div class="rhs">
+                    <label class="mv-switch">
+                      <input type="checkbox"
+                        :checked="!!status.permissions[key]"
+                        :disabled="!status.connected"
+                        @change="togglePermission(key)" />
+                      <span class="slider"></span>
+                    </label>
+                  </div>
+                </div>
+              </template>
+
+              <div class="mv-list-row" style="opacity:0.55">
+                <div class="lhs">
+                  <div class="mv-row-label">YouTube</div>
+                  <div class="mv-row-hint">Device pairing coming soon — uses OAuth device grant, not standard web connect.</div>
+                </div>
+                <div class="rhs">
+                  <label class="mv-switch">
+                    <input type="checkbox" disabled />
+                    <span class="slider"></span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="mp-save-row" x-show="status.connected" style="margin-top:16px">
+                <button type="button" class="mv-btn" style="background:var(--mv-danger,#ff453a)"
+                  @click="disconnectGoogle()" :disabled="disconnecting">
+                  <span x-text="disconnecting ? 'Disconnecting…' : 'Disconnect Google'"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- PLATFORM -->
           <div x-show="tab === 'platform'">
             <div class="ms-panel-head">
@@ -896,6 +978,7 @@
     <script defer src="/dashboard/js/mayaWebLLM.js"></script>
     <script defer src="/dashboard/js/mayaConversation.js"></script>
     <script defer src="/dashboard/js/mayaShell.js"></script>
+    <script defer src="/dashboard/js/mayaIntegrations.js"></script>
     <script defer src="/dashboard/js/mayaSettings.js"></script>
     <script defer src="/dashboard/js/mayaPersonality.js"></script>
     <script defer src="/dashboard/js/mayaToolsPanel.js"></script>

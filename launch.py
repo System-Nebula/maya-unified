@@ -29,16 +29,9 @@ for candidate in (_venv_python, _legacy_venv):
         )
         break
 
-for env_file in (ROOT / ".env", VOICE_RUNTIME / ".env"):
-    if env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            key = key.strip()
-            if key and key not in os.environ:
-                os.environ[key] = val.strip().strip('"').strip("'")
+from services.env_loader import load_env_files
+
+load_env_files(ROOT / ".env", VOICE_RUNTIME / ".env")
 
 os.environ.setdefault("PORT", "8090")
 

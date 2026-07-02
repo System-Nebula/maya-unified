@@ -161,6 +161,12 @@ cd packages/maya-db && DATABASE_URL=... uv run alembic upgrade head
 
 Protected APIs (`/api/voice/agent/*`, `/api/voice/settings/*`, `/api/operators/*`) return **401** without a valid operator session.
 
+### Google OAuth
+
+Optional **Sign in with Google** on `/login` and **Settings → Integrations** for Gmail/Calendar connect. Requires `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in `.env`, Postgres migrations, and redirect URIs registered in Google Cloud Console.
+
+See [app-integrations-google-oauth.md](app-integrations-google-oauth.md) for setup, Console checklist, and troubleshooting.
+
 ---
 
 ## Optional services
