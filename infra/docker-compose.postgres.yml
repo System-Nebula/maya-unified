@@ -1,0 +1,24 @@
+# Local Postgres for Maya Unified (operator auth + platform).
+# Start: docker compose -f infra/docker-compose.postgres.yml up -d
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: maya-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: maya_public
+    volumes:
+      - maya_postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d maya_public"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  maya_postgres_data:

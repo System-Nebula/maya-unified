@@ -46,7 +46,7 @@ def upgrade() -> None:
     op.create_table(
         "eval_runs",
         sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("uuid_generate_v4()"), nullable=False),
-        sa.Column("model_release_id", sa.String(length=36), nullable=False),
+        sa.Column("model_release_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("eval_suite", sa.String(length=128), nullable=False),
         sa.Column("eval_type", sa.String(length=32), nullable=False),
         sa.Column("status", sa.String(length=16), server_default="queued", nullable=False),
@@ -64,7 +64,7 @@ def upgrade() -> None:
 
     op.add_column(
         "arena_candidates",
-        sa.Column("model_release_id", sa.String(length=36), nullable=True),
+        sa.Column("model_release_id", postgresql.UUID(as_uuid=True), nullable=True),
     )
     op.create_index("ix_arena_candidates_model_release_id", "arena_candidates", ["model_release_id"])
     op.create_foreign_key(
