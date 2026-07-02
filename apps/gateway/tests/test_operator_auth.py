@@ -323,18 +323,17 @@ def test_operator_me_response_shape_not_platform(client: TestClient) -> None:
 def test_protected_voice_api_returns_401_without_session() -> None:
     """Middleware on main app blocks unauthenticated voice API access."""
     with patch("apps.gateway.main.register_agent_routes"):
-        with patch("apps.gateway.main._mount_auth_routes"):
-            with patch("apps.gateway.main._mount_platform_routes"):
-                from apps.gateway.main import app as main_app
+        with patch("apps.gateway.main._mount_platform_routes"):
+            from apps.gateway.main import app as main_app
 
-                with patch(
-                    "apps.gateway.main.any_operators_exist",
-                    new=AsyncMock(return_value=True),
-                ):
-                    client = TestClient(main_app)
-                    r = client.get("/api/voice/agent/status")
-                    assert r.status_code == 401
-                    assert r.json()["detail"] == "not authenticated"
+            with patch(
+                "apps.gateway.main.any_operators_exist",
+                new=AsyncMock(return_value=True),
+            ):
+                client = TestClient(main_app)
+                r = client.get("/api/voice/agent/status")
+                assert r.status_code == 401
+                assert r.json()["detail"] == "not authenticated"
 
 
 def test_seed_default_operator_if_needed_creates_admin(fake_store: FakeStore, monkeypatch) -> None:
