@@ -98,17 +98,17 @@ pip install -e ".[mcp,otel]"
 ```bash
 git clone https://github.com/System-Nebula/maya-unified.git
 cd maya-unified
-nix develop
-python -m venv .venv && source .venv/bin/activate
-pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
-pip install -e .
+nix develop          # or: direnv allow (uses .envrc)
+make setup           # uv sync — torch cu124 + faster-qwen3-tts + platform deps
 cp .env.example .env
 ./launch.sh
 ```
 
-Enable NVIDIA + `allowUnfree` in `configuration.nix`. Stay inside `nix develop` for PortAudio/FFmpeg.
+Enable NVIDIA + `allowUnfree` in `configuration.nix`. Stay inside `nix develop` for PortAudio/FFmpeg and CUDA runtime libs.
 
-Optional full platform stack: `uv sync` from repo root (uses workspace in `pyproject.toml`).
+**TTS is optional:** if `faster-qwen3-tts` or the model fails to load, Maya starts in degraded mode (text/Discord still work). Set `VA_TTS_ENABLED=0` to skip TTS entirely. Run `make tts-check` to verify GPU synthesis after setup.
+
+Optional extras: `uv sync --extra dev --extra mcp --extra otel`
 
 ---
 

@@ -265,10 +265,15 @@ class VoiceAgent:
         self.llm = LLMClient()
 
         log.info("loading FasterQwen3TTS (first load can take a bit)...")
-        from tts import Qwen3TTS
         from player import StreamPlayer
+        from tts import load_tts
 
-        self.voice = Qwen3TTS()
+        self.voice = load_tts()
+        if not getattr(self.voice, "available", False):
+            log.warning(
+                "TTS degraded — voice output unavailable: %s",
+                getattr(self.voice, "degrade_reason", "unknown"),
+            )
 
         # Acoustic Echo Cancellation for full-duplex (talk while AI speaks).
         self.aec = None
@@ -1946,6 +1951,9 @@ class VoiceAgent:
         text = _clean_text(text)
         if not text or self._barge_in_flag.is_set():
             return
+        if self.voice is None or not getattr(self.voice, "available", True):
+            log.info("AI (no TTS): %s", text)
+            return
         self._ensure_icl_ref_text()
         instruct = self._effective_instruct()
         self._express(self._turn_instruct or "", text)
@@ -1957,8 +1965,11 @@ class VoiceAgent:
 
     def speak_preview(self, text: str, *, instruct: str | None = None) -> None:
         """Speak arbitrary text through TTS (no LLM). For dashboard preview / tag testing."""
-        if self.voice is None:
-            raise RuntimeError("TTS not loaded")
+        if self.voice is None or not getattr(self.voice, "available", True):
+            raise RuntimeError(
+                "TTS not loaded: "
+                f"{getattr(self.voice, 'degrade_reason', 'voice output unavailable')}"
+            )
         cleaned = _clean_text((text or "").strip())
         if not cleaned:
             raise ValueError("Nothing to speak")
@@ -1987,6 +1998,42 @@ class VoiceAgent:
                 self._emit(type="status", value="listening")
             else:
                 self._emit(type="status", value="idle")
+
+    def render_speech(self, text: str, *, instruct: str | None = None) -> tuple[bytes, int]:
+        """Synthesize text to WAV bytes for browser playback (no PortAudio)."""
+        if self.voice is None or not getattr(self.voice, "available", True):
+            raise RuntimeError(
+                "TTS not loaded: "
+                f"{getattr(self.voice, 'degrade_reason', 'voice output unavailable')}"
+            )
+        cleaned = _clean_text((text or "").strip())
+        if not cleaned:
+            raise ValueError("Nothing to speak")
+        self._ensure_icl_ref_text()
+        self._emit(type="ai", text=cleaned)
+        if instruct and instruct.strip():
+            eff_instruct = instruct.strip()
+        else:
+            eff_instruct = (CONFIG.tts.instruct or "").strip() or None
+        log.info("TTS render: %s", cleaned)
+
+        import io
+
+        import numpy as np
+        import soundfile as sf
+
+        chunks: list[np.ndarray] = []
+        sr = 0
+        for audio, sample_rate in self.voice.stream(cleaned, instruct=eff_instruct):
+            chunks.append(audio)
+            sr = sample_rate
+        if not chunks or sr == 0:
+            raise RuntimeError("TTS produced no audio")
+
+        audio = np.concatenate(chunks)
+        buf = io.BytesIO()
+        sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
+        return buf.getvalue(), sr
 
     def _effective_instruct(self) -> Optional[str]:
         """Combine the base voice description with this reply's delivery cue.

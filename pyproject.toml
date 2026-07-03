@@ -16,6 +16,8 @@ dependencies = [
     "rapidfuzz>=3.6",
     "feedparser>=6.0",
     "langgraph>=0.2",
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
     "faster-qwen3-tts",
     "faster-whisper",
     "sounddevice",
@@ -74,7 +76,14 @@ exclude = [
     "packages/maya-voice-stack",
 ]
 
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
 [tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
 maya-contracts = { workspace = true }
 arena-core = { workspace = true }
 fal-client = { workspace = true }
@@ -88,4 +97,4 @@ maya-spider = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["apps/gateway/tests"]
+testpaths = ["apps/gateway/tests", "tests"]

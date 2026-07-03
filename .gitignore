@@ -5,10 +5,8 @@ data/
 __pycache__/
 *.pyc
 .venv/
-.flake
 .direnv
 result
-uv.lock
 
 # Voice runtime (packages/voice-runtime)
 packages/voice-runtime/.venv/
@@ -25,6 +23,9 @@ packages/voice-runtime/vts_map.json
 packages/voice-runtime/data/
 packages/voice-runtime/mcp_servers.json
 packages/voice-runtime/.env
+
+# Legacy standalone runtime (superseded by packages/voice-runtime)
+qwen3-voice-agent/
 
 # Platform apps
 apps/*/.venv/

@@ -199,33 +199,43 @@ document.addEventListener("alpine:init", () => {
         const body = { text };
         const instruct = this.ttsInstruct.trim();
         if (instruct) body.instruct = instruct;
-        const r = await fetch("/api/voice/agent/speak", {
+        const r = await fetch("/api/voice/agent/tts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
-        let data = {};
-        try {
-          data = await r.json();
-        } catch (_) {
-          data = {};
-        }
         if (!r.ok) {
-          const detail = data.detail || data.error;
+          let data = {};
+          try {
+            data = await r.json();
+          } catch (_) {
+            data = {};
+          }
           this.ttsError =
-            detail ||
+            data.error ||
+            data.detail ||
             (r.status === 404
-              ? "Speak API not found — restart launch.py to load the new route."
+              ? "TTS API not found — restart launch.py to load the new route."
               : `Speak failed (HTTP ${r.status})`);
           this.ttsBusy = false;
           this.step = "listen";
           return;
         }
-        if (!data.ok) {
-          this.ttsError = data.error || "Speak failed";
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => {
+          URL.revokeObjectURL(url);
           this.ttsBusy = false;
           this.step = "listen";
-        }
+        };
+        audio.onerror = () => {
+          URL.revokeObjectURL(url);
+          this.ttsError = "Could not play audio in browser";
+          this.ttsBusy = false;
+          this.step = "listen";
+        };
+        await audio.play();
       } catch (e) {
         this.ttsError = String(e.message || e);
         this.ttsBusy = false;

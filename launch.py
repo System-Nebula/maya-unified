@@ -44,9 +44,9 @@ def _check_voice_deps() -> str | None:
     except ImportError as exc:
         return (
             "Voice runtime packages are not installed. From the repo root run:\n"
-            "  setup_windows.bat   (Windows)\n"
-            "  or: pip install -r packages/voice-runtime/requirements.txt\n"
-            "  (install PyTorch for your GPU first)\n"
+            "  make setup\n"
+            "  or: nix develop && uv sync --extra dev\n"
+            "Maya will start with degraded voice output (no TTS) until deps are installed.\n"
             f"Detail: {exc}"
         )
     return None

@@ -7,7 +7,7 @@ import os
 import queue
 
 from fastapi import Body, File, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from services.paths import VOICE_RUNTIME, voices_dir
 from services.auth.scope import scoped_operator_id
@@ -91,6 +91,37 @@ def register_agent_routes(app) -> None:
             instruct=instruct,
             operator_id=_operator_id(request) or None,
         )
+
+    @app.post(f"{prefix}/tts")
+    def agent_tts(request: Request, data: dict = Body(...)):
+        payload = data or {}
+        instruct = str(payload.get("instruct", "") or "").strip() or None
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            return JSONResponse({"ok": False, "error": "empty text"}, status_code=400)
+        if not hub.ready or hub.agent is None:
+            return JSONResponse(
+                {"ok": False, "error": hub.last_error or "agent not ready"},
+                status_code=503,
+            )
+        voice = hub.agent.voice
+        if voice is None or not getattr(voice, "available", True):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": getattr(voice, "degrade_reason", "TTS unavailable"),
+                },
+                status_code=503,
+            )
+        try:
+            wav_bytes, _sr = hub.render_speech(
+                text,
+                instruct=instruct,
+                operator_id=_operator_id(request) or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        return Response(content=wav_bytes, media_type="audio/wav")
 
     @app.post(f"{prefix}/webllm/ready")
     def webllm_ready(data: dict = Body(default_factory=dict)) -> dict:

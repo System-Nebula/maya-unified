@@ -52,7 +52,9 @@ class SharedMic:
         self._lock = threading.Lock()
 
     def start(self) -> None:
-        import sounddevice as sd
+        from player import load_sounddevice
+
+        sd = load_sounddevice()
 
         if self._stream is not None:
             return

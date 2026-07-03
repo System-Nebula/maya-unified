@@ -121,6 +121,8 @@ class STTConfig:
 
 @dataclass
 class TTSConfig:
+    # Set VA_TTS_ENABLED=0 to skip TTS model load (text/Discord still work).
+    enabled: bool = field(default_factory=lambda: _env_bool("VA_TTS_ENABLED", True))
     # "clone" = voice cloning from a reference clip (ICL).
     # "custom" = built-in CustomVoice speaker IDs (no reference clip needed).
     mode: str = field(default_factory=lambda: _env_str("VA_TTS_MODE", "clone"))

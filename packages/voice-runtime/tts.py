@@ -21,6 +21,68 @@ import numpy as np
 
 from config import CONFIG, TTSConfig
 
+_TTS_SETUP_HINT = (
+    "Install voice deps from the repo root: make setup\n"
+    "Or set VA_TTS_ENABLED=0 to run without voice output."
+)
+
+
+class NullTTS:
+    """No-op TTS when disabled or when the model/package failed to load."""
+
+    available = False
+
+    def __init__(self, cfg: TTSConfig | None = None, *, reason: str = "TTS disabled") -> None:
+        self.cfg = cfg or CONFIG.tts
+        self.mode = self.cfg.mode.lower()
+        self.clone_capable = False
+        self.model_id = ""
+        self.sr: int | None = None
+        self.degrade_reason = reason
+
+    def stream(
+        self, text: str, stop: threading.Event | None = None, instruct: str | None = None
+    ) -> Iterator[Tuple[np.ndarray, int]]:
+        yield from ()
+
+    def warmup(self) -> None:
+        pass
+
+    def set_reference(self, ref_audio: str, ref_text: str = "", warm: bool = True) -> None:
+        raise RuntimeError(f"TTS unavailable: {self.degrade_reason}")
+
+    def list_speakers(self) -> list[str]:
+        return []
+
+
+def load_tts(cfg: TTSConfig | None = None) -> Qwen3TTS | NullTTS:
+    """Load Qwen3 TTS or return a stub when disabled/unavailable."""
+    effective = cfg or CONFIG.tts
+    if not effective.enabled:
+        print("[tts] WARNING: VA_TTS_ENABLED=0 — voice output disabled.")
+        return NullTTS(effective, reason="VA_TTS_ENABLED=0")
+
+    try:
+        return Qwen3TTS(effective)
+    except ImportError as exc:
+        reason = (
+            f"faster-qwen3-tts not installed ({exc}).\n"
+            f"{_TTS_SETUP_HINT}"
+        )
+        print(f"[tts] WARNING: {reason}")
+        return NullTTS(effective, reason=reason)
+    except FileNotFoundError as exc:
+        reason = str(exc)
+        print(f"[tts] WARNING: {reason}")
+        return NullTTS(effective, reason=reason)
+    except Exception as exc:  # noqa: BLE001 - CUDA/OOM/download failures
+        reason = (
+            f"Failed to load TTS model ({exc}).\n"
+            f"{_TTS_SETUP_HINT}"
+        )
+        print(f"[tts] WARNING: {reason}")
+        return NullTTS(effective, reason=reason)
+
 
 def _to_float32_mono(wav) -> np.ndarray:
     """Normalize a torch tensor / numpy array of shape [C, N] or [N] to float32 mono."""
@@ -50,6 +112,8 @@ def _resolve_dtype(name: str):
 
 
 class Qwen3TTS:
+    available = True
+
     def _try_load_ref_text_sidecar(self) -> None:
         if self.cfg.ref_text.strip():
             return

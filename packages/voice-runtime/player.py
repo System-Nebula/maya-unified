@@ -24,6 +24,29 @@ from config import CONFIG
 from eq import LiveEQ
 
 
+class AudioUnavailable(RuntimeError):
+    """Local audio I/O (PortAudio via sounddevice) is unavailable."""
+
+
+_AUDIO_UNAVAILABLE_UI = "Local audio unavailable. Run from nix develop."
+
+
+def load_sounddevice():
+    """Import sounddevice; raise AudioUnavailable with a short UI-safe message."""
+    try:
+        import sounddevice as sd
+
+        return sd
+    except OSError as exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "PortAudio unavailable (%s). Launch inside nix develop so libportaudio is on the path.",
+            exc,
+        )
+        raise AudioUnavailable(_AUDIO_UNAVAILABLE_UI) from exc
+
+
 class StreamPlayer:
     def __init__(self, channels: int = 1, dtype: str = "float32", aec=None):
         self.channels = channels
@@ -80,7 +103,7 @@ class StreamPlayer:
             else:
                 return
 
-        import sounddevice as sd
+        sd = load_sounddevice()
 
         self._sample_rate = sample_rate
         self._eq.set_sample_rate(sample_rate)

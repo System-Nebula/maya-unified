@@ -334,9 +334,15 @@ def run() -> None:
 
     install_logging_filter()
     port = int(os.getenv("PORT", "8090"))
+    reload = os.getenv("ENV", "production") == "development"
     uvicorn.run(
         "apps.gateway.main:app",
         host="0.0.0.0",
         port=port,
-        reload=os.getenv("ENV", "production") == "development",
+        reload=reload,
+        # Long-lived SSE streams (dashboard status/events) otherwise keep the
+        # graceful shutdown open forever, so a --reload restart wedges the port.
+        timeout_graceful_shutdown=5,
+        # Voice-runtime edits reload the heavy TTS model needlessly; skip them.
+        reload_excludes=["packages/voice-runtime/*"] if reload else None,
     )

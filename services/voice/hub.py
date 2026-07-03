@@ -286,6 +286,17 @@ class VoiceHub(Hub):
             self.current_voice = os.path.basename(CONFIG.tts.ref_audio)
             self.ready = True
             self.broadcast({"type": "ready", "value": True})
+            if agent.voice is not None and not getattr(agent.voice, "available", True):
+                reason = getattr(agent.voice, "degrade_reason", "TTS unavailable")
+                self.broadcast(
+                    {
+                        "type": "tts_degraded",
+                        "text": (
+                            "Voice output unavailable — text chat and Discord still work. "
+                            f"{reason}"
+                        ),
+                    }
+                )
             self.broadcast({"type": "status", "value": "idle"})
         except Exception as exc:  # noqa: BLE001
             self.ready = False
@@ -584,12 +595,28 @@ class VoiceHub(Hub):
         threading.Thread(target=_run, daemon=True, name="tts-preview").start()
         return {"ok": True}
 
+    def render_speech(
+        self, text: str, *, instruct: str | None = None, operator_id: str | None = None
+    ) -> tuple[bytes, int]:
+        if not self.ready or self.agent is None:
+            raise RuntimeError(self.last_error or "agent not ready")
+        voice = self.agent.voice
+        if voice is None or not getattr(voice, "available", True):
+            raise RuntimeError(getattr(voice, "degrade_reason", "TTS unavailable"))
+        if operator_id:
+            self.apply_operator_context(operator_id)
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("empty text")
+        instruct = (instruct or "").strip() or None
+        with _inference_lock:
+            return self.agent.render_speech(text, instruct=instruct)
+
     def start(self, operator_id: str | None = None) -> dict:
         if not self.ready or self.agent is None:
             return {"ok": False, "error": "agent not ready"}
         if not operator_id:
-            self.agent.start_session()
-            return {"ok": True}
+            return self._start_session_guarded()
         lease = VoiceLease(kind="operator", context_id=str(operator_id), speaker_id=str(operator_id))
         denied = self._acquire_lease(lease)
         if not denied.get("ok"):
@@ -599,8 +626,27 @@ class VoiceHub(Hub):
                 "owner": denied.get("owner"),
             }
         self.apply_operator_context(operator_id)
-        self.agent.start_session()
-        return {"ok": True}
+        result = self._start_session_guarded(operator_id=operator_id)
+        if not result.get("ok"):
+            self._release_lease(
+                kind="operator", context_id=str(operator_id), speaker_id=str(operator_id)
+            )
+        return result
+
+    def _start_session_guarded(self, operator_id: str | None = None) -> dict:
+        """Start the mic session, degrading gracefully if local audio is unavailable."""
+        from player import AudioUnavailable
+
+        try:
+            self.agent.start_session()
+            return {"ok": True}
+        except AudioUnavailable as exc:
+            msg = str(exc)
+            self.broadcast(
+                {"type": "status", "value": "idle"}, operator_id=operator_id
+            )
+            self.broadcast({"type": "audio_degraded", "text": msg}, operator_id=operator_id)
+            return {"ok": False, "error": msg}
 
     def stop(self, operator_id: str | None = None) -> dict:
         if operator_id:

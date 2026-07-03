@@ -16,9 +16,9 @@
       in {
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
+            # uv manages the Python toolchain + venv; we intentionally do NOT pull
+            # python311Packages.pip here (it drags in a broken sphinx on unstable).
             python311
-            python311Packages.pip
-            python311Packages.virtualenv
             ffmpeg
             sox
             pkg-config
@@ -26,14 +26,19 @@
             openssl
             git
             uv
+            stdenv.cc.cc.lib
+            zlib
           ];
 
           shellHook = ''
+            # PortAudio (sounddevice) + torch pip wheels need these on the loader path.
+            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib:${pkgs.portaudio}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
             echo "Maya Unified dev shell"
-            echo "  1. python -m venv .venv && source .venv/bin/activate"
-            echo "  2. pip install torch torchaudio -f https://download.pytorch.org/whl/cu124"
-            echo "  3. pip install -r requirements.txt"
-            echo "  4. cd .. && pip install -e . && ./launch.sh"
+            echo "  make setup     # uv sync (torch cu124 + faster-qwen3-tts + platform deps)"
+            echo "  make test      # pytest"
+            echo "  make tts-check # GPU smoke synth (optional)"
+            echo "  ./launch.sh    # start gateway + voice agent"
           '';
         };
       });

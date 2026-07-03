@@ -5,7 +5,6 @@ description = "Entity resolution + property-graph helpers. Generic + public-safe
 requires-python = ">=3.11"
 dependencies = [
     "maya-contracts",
-    "maya-tools",
     "rapidfuzz>=3.6",
     "asyncpg>=0.29",
 ]
@@ -19,4 +18,3 @@ packages = ["src/maya_graph"]
 
 [tool.uv.sources]
 maya-contracts = { workspace = true }
-maya-tools = { workspace = true }
