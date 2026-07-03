@@ -43,7 +43,10 @@ def register_agent_routes(app) -> None:
     @app.get(f"{prefix}/status")
     def agent_status(request: Request) -> dict:
         oid = _operator_id(request)
-        llm = hub.llm_status(oid or None) if hub.ready else {"ok": False, "error": "agent still loading"}
+        snap = hub.agent_capabilities(oid or None)
+        llm = hub.llm_status(oid or None)
+        health = snap["health"]
+        capabilities = snap["capabilities"]
         session_running = False
         if hub.ready and hub.agent is not None and oid:
             lease = hub.voice_lease
@@ -60,10 +63,13 @@ def register_agent_routes(app) -> None:
             "session_running": session_running,
             "error": getattr(hub, "last_error", "") or None,
             "llm_ok": llm.get("ok", False),
+            "llm_ready": snap["llm_ready"],
             "llm_error": llm.get("error"),
             "llm_base_url": llm.get("base_url"),
             "llm_model": llm.get("model"),
             "llm_provider": llm.get("provider"),
+            "llm_health": health,
+            "capabilities": capabilities,
             **hub.lease_status(),
         }
 

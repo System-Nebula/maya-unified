@@ -25,6 +25,8 @@ _meter: Any = None
 _turn_counter: Any = None
 _tool_counter: Any = None
 _error_counter: Any = None
+_llm_probe_latency: Any = None
+_llm_probe_counter: Any = None
 
 
 class _JsonFormatter(logging.Formatter):
@@ -63,6 +65,7 @@ class _JsonFormatter(logging.Formatter):
 def setup_observability() -> None:
     """Configure stdlib logging and optional OpenTelemetry exporters."""
     global _configured, _tracer, _meter, _turn_counter, _tool_counter, _error_counter
+    global _llm_probe_latency, _llm_probe_counter
     if _configured:
         return
 
@@ -115,6 +118,7 @@ def setup_observability() -> None:
 
 def _setup_otel(obs, root: logging.Logger) -> None:
     global _tracer, _meter, _turn_counter, _tool_counter, _error_counter
+    global _llm_probe_latency, _llm_probe_counter
     try:
         from opentelemetry import metrics, trace
         from opentelemetry.sdk.resources import Resource
@@ -154,6 +158,15 @@ def _setup_otel(obs, root: logging.Logger) -> None:
             _turn_counter = _meter.create_counter("voice.turns", description="Completed user turns")
             _tool_counter = _meter.create_counter("voice.tool.calls", description="Tool invocations")
             _error_counter = _meter.create_counter("voice.errors", description="Handled errors")
+            _llm_probe_latency = _meter.create_histogram(
+                "llm.health.latency",
+                unit="ms",
+                description="LLM health-probe latency",
+            )
+            _llm_probe_counter = _meter.create_counter(
+                "llm.health.checks",
+                description="LLM health probes",
+            )
         except Exception as exc:  # noqa: BLE001
             root.warning("OTEL metrics disabled: %s", exc)
 
@@ -246,6 +259,9 @@ class _NoOpSpan:
     def set_attribute(self, key: str, value: Any) -> None:
         pass
 
+    def add_event(self, name: str, attributes: dict[str, Any] | None = None) -> None:
+        pass
+
     def record_exception(self, exc: BaseException) -> None:
         pass
 
@@ -281,3 +297,27 @@ def record_error(component: str, **attrs: Any) -> None:
         labels = {"component": component}
         labels.update({k: str(v) for k, v in attrs.items() if v is not None})
         _error_counter.add(1, labels)
+
+
+def record_llm_probe(
+    latency_ms: float,
+    *,
+    status: str,
+    provider: str,
+    model: str,
+    phase: str,
+    error_type: str | None = None,
+) -> None:
+    """Record LLM health-probe latency and outcome (metadata only, no payloads)."""
+    attrs: dict[str, str | bool] = {
+        "llm.provider": provider,
+        "llm.model": model,
+        "llm.health.status": status,
+        "llm.health.phase": phase,
+    }
+    if error_type:
+        attrs["error.type"] = error_type
+    if _llm_probe_latency is not None:
+        _llm_probe_latency.record(latency_ms, attrs)
+    if _llm_probe_counter is not None:
+        _llm_probe_counter.add(1, attrs)

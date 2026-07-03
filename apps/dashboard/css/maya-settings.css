@@ -46,6 +46,16 @@
   color: #ff453a;
   background: rgba(255, 69, 58, 0.08);
 }
+.ms-toast.warn {
+  border-color: #5c4a2d;
+  color: #ff9f0a;
+  background: rgba(255, 159, 10, 0.08);
+}
+.llm-health-badge svg {
+  width: 24px;
+  height: 24px;
+  display: block;
+}
 .ms-shell.mv-shell {
   min-height: 640px;
 }

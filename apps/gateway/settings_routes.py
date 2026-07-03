@@ -91,6 +91,19 @@ def settings_catalog(request: Request, llm: bool = True) -> dict:
     return {"ok": True, "catalog": catalog}
 
 
+@router.post("/health")
+def llm_health(request: Request) -> dict:
+    """Run passive /models + active 'Hi' probe against the reasoning LLM profile."""
+    from services.llm.health import check_llm_health, invalidate_llm_health_cache
+
+    oid = _operator_id(request)
+    settings = load_effective_settings(oid or None)
+    reasoning = settings.get("reasoning", {})
+    invalidate_llm_health_cache()
+    health = check_llm_health(reasoning if isinstance(reasoning, dict) else {})
+    return {"ok": True, "health": health}
+
+
 @router.post("")
 def patch_settings(request: Request, data: dict = Body(...)) -> dict:
     patch = data.get("settings", data) if isinstance(data, dict) else {}

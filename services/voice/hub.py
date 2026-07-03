@@ -315,6 +315,10 @@ class VoiceHub(Hub):
         from services.discord.unified_bot import apply_discord_env
 
         apply_discord_env(merged)
+        if _section_changed(previous, merged, "reasoning"):
+            from services.llm.health import invalidate_llm_health_cache
+
+            invalidate_llm_health_cache()
         needs_reload = any(_section_changed(previous, merged, s) for s in _RELOAD_SECTIONS)
         if needs_reload and (self.ready or self.agent is not None):
             self.request_agent_reload()
@@ -383,44 +387,110 @@ class VoiceHub(Hub):
             **self.lease_status(),
         }
 
-    def llm_status(self, operator_id: str | None = None) -> dict:
-        from config import CONFIG
+    def _reasoning_settings(self, operator_id: str | None = None) -> dict:
+        settings = load_effective_settings(operator_id)
+        return settings.get("reasoning", {}) or {}
 
-        if operator_id:
-            from services.operator_voice import context as op_ctx
+    def agent_capabilities(self, operator_id: str | None = None) -> dict[str, Any]:
+        from services.llm.health import build_agent_capabilities, get_cached_llm_health
 
-            settings = op_ctx.load_settings(operator_id)
-        else:
-            settings = load_global_settings()
-        reasoning = settings.get("reasoning", {})
-        provider = str(reasoning.get("provider", "lm_studio"))
-        if is_webllm_provider():
+        reasoning = self._reasoning_settings(operator_id)
+        provider = str(reasoning.get("provider", "lm_studio")).lower()
+        if provider == "webllm":
             from services.llm import webllm_broker
 
             webllm = reasoning.get("webllm") or {}
-            ready = webllm_broker.browser_ready()
+            browser_ready = webllm_broker.browser_ready()
+            health = {
+                "status": "ok" if browser_ready else "skipped",
+                "provider": "webllm",
+                "model": str(webllm.get("model_id") or ""),
+                "detail": None if browser_ready else "Keep this dashboard open — WebLLM loads in the browser.",
+                "latency_ms": None,
+                "models_found": 0,
+            }
+            caps = build_agent_capabilities(self.ready, health)
+            # WebLLM chat is routed through the voice agent bridge, not server-side LLM.
+            caps["text_chat"] = self.ready and browser_ready
+            caps["text_chat_enriched"] = caps["text_chat"]
+            return {"health": health, "capabilities": caps, "llm_ready": caps["text_chat"]}
+        else:
+            health = get_cached_llm_health(reasoning if isinstance(reasoning, dict) else {})
+        caps = build_agent_capabilities(self.ready, health)
+        return {"health": health, "capabilities": caps, "llm_ready": caps["text_chat"]}
+
+    def llm_status(self, operator_id: str | None = None) -> dict:
+        from config import CONFIG
+
+        snap = self.agent_capabilities(operator_id)
+        health = snap["health"]
+        reasoning = self._reasoning_settings(operator_id)
+        provider = str(reasoning.get("provider", "lm_studio"))
+        if provider == "webllm":
             return {
-                "ok": ready,
+                "ok": snap["llm_ready"],
                 "provider": "webllm",
                 "base_url": None,
-                "model": str(webllm.get("model_id") or ""),
-                "error": None if ready else "Keep this dashboard open — WebLLM loads in the browser.",
+                "model": health.get("model") or "",
+                "error": None if snap["llm_ready"] else health.get("detail"),
             }
-        ok, err = _ping_llm(CONFIG.llm.base_url, CONFIG.llm.api_key)
         return {
-            "ok": ok,
+            "ok": snap["llm_ready"],
             "provider": provider,
             "base_url": CONFIG.llm.base_url,
-            "model": CONFIG.llm.model,
-            "error": err or None,
+            "model": health.get("model") or CONFIG.llm.model,
+            "error": None if snap["llm_ready"] else (health.get("detail") or "LLM unavailable"),
         }
 
+    def _chat_text_basic(self, text: str, operator_id: str | None = None) -> dict:
+        """Text chat via create_llm_client when VoiceAgent is still loading."""
+        from config import CONFIG
+
+        from services.llm.health import get_cached_llm_health, llm_ready_from_health
+        from services.llm.provider import create_llm_client
+
+        reasoning = self._reasoning_settings(operator_id)
+        provider = str(reasoning.get("provider", "lm_studio")).lower()
+        if provider == "webllm":
+            return {
+                "ok": False,
+                "error": "WebLLM runs in the browser — use the Conversation page with WebLLM enabled.",
+            }
+        if operator_id:
+            self.apply_operator_context(operator_id)
+        apply_to_config({"reasoning": reasoning})
+        health = get_cached_llm_health(reasoning, run_probe=True)
+        if not llm_ready_from_health(health):
+            return {"ok": False, "error": health.get("detail") or "LLM unavailable"}
+        try:
+            self.broadcast({"type": "status", "value": "thinking"}, operator_id=operator_id)
+            self.broadcast({"type": "user", "text": text}, operator_id=operator_id)
+            system = (CONFIG.llm.system_prompt or "You are Maya, a helpful assistant.").strip()
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": text},
+            ]
+            client = create_llm_client()
+            parts: list[str] = []
+            with _inference_lock:
+                for chunk in client.stream_messages(messages):
+                    parts.append(chunk)
+                    self.broadcast({"type": "ai", "text": chunk}, operator_id=operator_id)
+            reply = "".join(parts).strip()
+            self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
+            return {"ok": True, "text": reply, "mode": "basic"}
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc)
+            self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
+            self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
+            return {"ok": False, "error": msg}
+
     def chat_text(self, text: str, operator_id: str | None = None) -> dict:
-        if not self.ready or self.agent is None:
-            return {"ok": False, "error": self.last_error or "agent not ready"}
         text = (text or "").strip()
         if not text:
             return {"ok": False, "error": "empty message"}
+        if not self.ready or self.agent is None:
+            return self._chat_text_basic(text, operator_id=operator_id)
         from config import CONFIG
 
         history_override = None
@@ -430,9 +500,9 @@ class VoiceHub(Hub):
 
             history_override = op_ctx.get_history_messages(operator_id)
         if not is_webllm_provider():
-            llm_ok, llm_err = _ping_llm(CONFIG.llm.base_url, CONFIG.llm.api_key)
-            if not llm_ok:
-                return {"ok": False, "error": llm_err}
+            llm = self.llm_status(operator_id)
+            if not llm.get("ok"):
+                return {"ok": False, "error": llm.get("error") or "LLM unavailable"}
         try:
             self.broadcast({"type": "status", "value": "thinking"}, operator_id=operator_id)
             self.broadcast({"type": "user", "text": text}, operator_id=operator_id)

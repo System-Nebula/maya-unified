@@ -108,6 +108,7 @@ document.addEventListener("alpine:init", () => {
     useWebLLM: false,
     sending: false,
     _hydrated: false,
+    _basicChatNoted: false,
 
     persist() {
       _persistConversation(this);
@@ -243,39 +244,38 @@ document.addEventListener("alpine:init", () => {
       const text = this.draft.trim();
       if (!text || this.sending) return;
       const shell = Alpine.store("mayaShell");
-      const agentReady = shell?.ready || false;
-      const llmOk = shell?.llmOk !== false && shell?.ready;
+      const caps = shell?.capabilities || {};
+      const textChat = caps.text_chat === true || shell?.llmReady === true;
       this.sending = true;
       this.draft = "";
       this.step = "reason";
       try {
-        if (agentReady && llmOk) {
-          const r = await fetch("/api/voice/agent/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text }),
-          });
-          const data = await r.json();
-          if (!data.ok) {
-            this.turns.push({ role: "system", text: data.error || "Chat failed" });
-            this.persist();
-            _scrollTranscript();
-          }
-        } else {
+        if (!textChat) {
           this.turns.push({ role: "operator", text });
+          const detail =
+            shell?.llmHealth?.detail ||
+            shell?.llmError ||
+            "LLM unavailable — check Settings → Reasoning.";
+          this.turns.push({ role: "system", text: detail });
+          this.persist();
+          _scrollTranscript();
+          return;
+        }
+        if (!caps.text_chat_enriched && !this._basicChatNoted) {
+          this._basicChatNoted = true;
           this.turns.push({
             role: "system",
-            text: "Demo mode — agent still loading. Using rule-based /api/voice/turn (not your LLM).",
+            text: "Basic LLM replies — full agent (personality, memory, voice) still loading.",
           });
-          const r = await fetch("/api/voice/turn", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ transcript: text }),
-          });
-          if (r.ok) {
-            const data = await r.json();
-            this.turns.push({ role: "maya", text: data.maya_turn });
-          }
+        }
+        const r = await fetch("/api/voice/agent/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const data = await r.json();
+        if (!data.ok) {
+          this.turns.push({ role: "system", text: data.error || "Chat failed" });
           this.persist();
           _scrollTranscript();
         }
@@ -307,7 +307,15 @@ document.addEventListener("alpine:init", () => {
       return Alpine.store("mayaShell")?.error || "";
     },
     get llmOk() {
-      return Alpine.store("mayaShell")?.llmOk !== false && Alpine.store("mayaShell")?.ready;
+      const shell = Alpine.store("mayaShell");
+      return !!(shell?.llmReady || shell?.llmOk);
+    },
+    get textChatReady() {
+      const shell = Alpine.store("mayaShell");
+      return shell?.capabilities?.text_chat === true || shell?.llmReady === true;
+    },
+    get enrichedChatReady() {
+      return Alpine.store("mayaShell")?.capabilities?.text_chat_enriched === true;
     },
     get llmError() {
       return Alpine.store("mayaShell")?.llmError || "";

@@ -11,9 +11,12 @@ document.addEventListener("alpine:init", () => {
     filter: "",
     saved: false,
     error: "",
+    warn: "",
     loading: true,
     agentReady: false,
     currentVoice: "",
+    health: null,
+    healthTesting: false,
     _saveTimer: null,
 
     user: { id: "", username: "", display_name: "", role: "operator", avatar_color: "#0a84ff" },
@@ -321,6 +324,14 @@ document.addEventListener("alpine:init", () => {
       }
 
       this.loadExtras();
+      if (this.s.reasoning?.provider !== "webllm") {
+        this.testConnection();
+      } else {
+        this.health = {
+          status: "skipped",
+          detail: "WebLLM runs in the browser — validate on the Conversation page.",
+        };
+      }
     },
 
     async loadExtras() {
@@ -376,6 +387,46 @@ document.addEventListener("alpine:init", () => {
         await window.mayaWebLLMBridge.unload();
       }
       this.save();
+      if (this.s.reasoning?.provider === "webllm") {
+        this.health = {
+          status: "skipped",
+          detail: "WebLLM runs in the browser — validate on the Conversation page.",
+        };
+        this.warn = this.health.detail;
+        this.error = "";
+      } else {
+        this.testConnection();
+      }
+    },
+
+    async testConnection() {
+      if (this.s.reasoning?.provider === "webllm") {
+        this.health = {
+          status: "skipped",
+          detail: "WebLLM runs in the browser — validate on the Conversation page.",
+        };
+        this.warn = this.health.detail;
+        return;
+      }
+      this.healthTesting = true;
+      this.warn = "";
+      this.error = "";
+      try {
+        const r = await fetch("/api/voice/settings/health", { method: "POST" });
+        if (!r.ok) throw new Error("Health check failed");
+        const data = await r.json();
+        this.health = data.health || null;
+        if (this.health?.status === "error") {
+          this.error = this.health.detail || "LLM connection error";
+        } else if (this.health?.status === "warn" || this.health?.status === "skipped") {
+          this.warn = this.health.detail || "LLM connection degraded";
+        }
+      } catch (e) {
+        this.error = String(e.message || e);
+        this.health = { status: "error", detail: String(e.message || e) };
+      } finally {
+        this.healthTesting = false;
+      }
     },
 
     save() {

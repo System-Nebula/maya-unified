@@ -28,9 +28,19 @@ document.addEventListener("alpine:init", () => {
     status: "loading",
     error: "",
     llmOk: false,
+    llmReady: false,
     llmError: "",
     llmModel: "",
     llmProvider: "",
+    llmHealth: null,
+    capabilities: {
+      text_chat: false,
+      text_chat_enriched: false,
+      voice_session: false,
+      tts_preview: false,
+      eq_live: false,
+      tools: false,
+    },
     webllmBridgeStatus: "",
     voiceAvailable: true,
     voiceOwnerName: "",
@@ -45,21 +55,25 @@ document.addEventListener("alpine:init", () => {
 
     label() {
       if (this.error) return "agent error";
-      if (!this.ready) {
+      if (this.llmProvider === "webllm") {
+        if (!this.llmReady && !this.ready) return "loading";
+        if (!this.llmOk) return "experimental mode";
+        return this.ready ? "experimental agent ready" : "chat ready";
+      }
+      if (this.llmReady && !this.ready) return "chat ready";
+      if (!this.llmReady && !this.ready) {
         if (this.status === "loading") return "loading models";
         return this.status || "connecting";
       }
-      if (this.llmProvider === "webllm") {
-        if (!this.llmOk) return "experimental mode";
-        return "experimental agent ready";
-      }
-      if (!this.llmOk) return "llm offline";
-      return "agent ready";
+      if (this.ready && !this.llmOk) return "llm offline";
+      if (this.ready && this.llmOk) return "agent ready";
+      return this.status || "connecting";
     },
 
     chipClass() {
       if (this.error) return "error";
       if (this.llmProvider === "webllm" && this.ready && this.llmOk) return "ready experimental";
+      if (this.llmReady && !this.ready) return "ready";
       if (this.ready && !this.llmOk) return "loading";
       if (this.ready) return "ready";
       return "loading";
@@ -69,25 +83,33 @@ document.addEventListener("alpine:init", () => {
       if (this.error) return this.error.slice(0, 140);
       if (this.llmProvider === "webllm") {
         const model = this.shortWebLLMModel();
+        if (!this.llmReady && !this.ready) {
+          return (this.webllmBridgeStatus || this.llmError || "loading in browser…").slice(0, 140);
+        }
         if (this.ready && !this.llmOk) {
           const st = this.webllmBridgeStatus || this.llmError || "loading in browser…";
           return `webllm: ${model} — ${st}`.slice(0, 140);
         }
-        if (this.ready && this.llmOk) {
-          return `webllm: ${model}`;
-        }
+        if (this.llmReady && !this.ready) return `webllm: ${model} — voice loading`;
+        if (this.ready && this.llmOk) return `webllm: ${model}`;
+      }
+      if (this.llmReady && !this.ready) {
+        return "Voice loading — text chat available".slice(0, 140);
+      }
+      if (!this.llmReady && !this.ready) {
+        const detail = this.llmHealth?.detail || this.llmError;
+        if (detail) return String(detail).slice(0, 140);
       }
       if (this.ready && !this.llmOk) {
-        return (this.llmError || "Start LM Studio and load a model.").slice(0, 140);
+        return (this.llmError || "Configure LLM in Settings → Reasoning.").slice(0, 140);
       }
       if (!this.ready && this.loadStarted) {
         const s = Math.floor((Date.now() - this.loadStarted) / 1000);
         if (s > 30) return "First load downloads TTS weights — can take several minutes.";
         if (s > 10) return "Loading STT + TTS on GPU…";
       }
-      if (this.ready && this.llmOk && this.llmModel) {
-        return this.llmModel;
-      }
+      if (this.llmReady && this.llmModel) return this.llmModel;
+      if (this.ready && this.llmOk && this.llmModel) return this.llmModel;
       return "";
     },
   });
@@ -200,9 +222,14 @@ document.addEventListener("alpine:init", () => {
           }
         }
         this.s.llmOk = !!d.llm_ok;
+        this.s.llmReady = !!d.llm_ready;
         this.s.llmError = d.llm_error || "";
         this.s.llmModel = d.llm_model || "";
         this.s.llmProvider = d.llm_provider || "";
+        this.s.llmHealth = d.llm_health || null;
+        if (d.capabilities && typeof d.capabilities === "object") {
+          this.s.capabilities = { ...this.s.capabilities, ...d.capabilities };
+        }
         this.s.voiceAvailable = d.voice_available !== false;
         const owner = d.voice_owner;
         this.s.voiceOwnerName = owner?.speaker_name || owner?.context_id || "";

@@ -53,7 +53,13 @@
       <div class="md-banner error" x-show="agentError" x-text="agentError"></div>
       <div class="md-banner error" x-show="agentReady && !llmOk && $store.mayaConversation.useWebLLM" x-text="llmError || 'WebLLM loading — keep this tab open in Chrome/Edge with WebGPU.'"></div>
       <div class="md-banner error" x-show="agentReady && !llmOk && !$store.mayaConversation.useWebLLM" x-text="llmError || 'LLM offline — configure model in Settings.'"></div>
-      <div class="md-banner" x-show="!agentReady && !agentError">Agent loading — voice session unlocks when the status chip shows ready.</div>
+      <div class="md-banner" x-show="textChatReady && !agentReady && !agentError">
+        Text chat is live. Voice, TTS, and EQ unlock when models finish loading.
+      </div>
+      <div class="md-banner error" x-show="!textChatReady && !agentReady && !agentError">
+        <span x-text="($store.mayaShell?.llmHealth?.detail || llmError || 'LLM unavailable')"></span>
+        — <a href="/settings?tab=reasoning" style="color:var(--mv-accent)">Settings → Reasoning</a>
+      </div>
 
       <div class="md-pipeline">
         <span class="md-step" :class="{ on: $store.mayaConversation.step === 'listen' }">01 Listen</span>
@@ -192,9 +198,9 @@
               <p class="mv-desc" style="margin-top:8px" x-text="webllmTroubleshoot"></p>
             </div>
 
-            <textarea class="md-textarea mv-input" x-model="$store.mayaConversation.draft" :placeholder="agentReady && llmOk ? 'Message Maya…' : ($store.mayaConversation.useWebLLM ? 'Waiting for WebLLM…' : 'Waiting for agent / LLM…')" @keydown="$store.mayaConversation.onKeydown($event)"></textarea>
+            <textarea class="md-textarea mv-input" x-model="$store.mayaConversation.draft" :placeholder="textChatReady ? 'Message Maya…' : ($store.mayaConversation.useWebLLM ? 'Waiting for WebLLM…' : 'Waiting for LLM…')" @keydown="$store.mayaConversation.onKeydown($event)"></textarea>
             <div style="margin-top:10px;display:flex;gap:8px">
-              <button class="mv-btn mv-btn-primary" @click="$store.mayaConversation.sendServer()" :disabled="$store.mayaConversation.sending || ($store.mayaConversation.useWebLLM && !llmOk)">Send</button>
+              <button class="mv-btn mv-btn-primary" @click="$store.mayaConversation.sendServer()" :disabled="$store.mayaConversation.sending || !textChatReady">Send</button>
               <button class="mv-btn" @click="$store.mayaConversation.reset()">Clear transcript</button>
             </div>
 

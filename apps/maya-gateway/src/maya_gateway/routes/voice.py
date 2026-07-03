@@ -5,8 +5,9 @@ These back the drop-in voice SDK:
 - ``GET  /api/voice/settings/defaults`` — catalog + default operator settings
   used to populate the settings panel (audio, detection engine, Wispr-Flow,
   reasoning model).
-- ``POST /api/voice/turn`` — run the reasoning step of the pipeline:
-  transcript -> intent -> Maya's conversational turn.
+- ``POST /api/voice/turn`` — **deprecated** offline pipeline demo (rule-based stub).
+  Dashboard chat uses ``POST /api/voice/agent/chat`` with the configured reasoning LLM.
+  Kept for SDK/kitchen-sink fixtures only — not production Maya.
 
 All routes are DB-free and demo-safe.
 """
@@ -40,5 +41,5 @@ async def settings_defaults() -> VoiceDefaultsResponse:
 
 @router.post("/turn", response_model=VoiceTurnResponse)
 async def voice_turn(req: VoiceTurnRequest) -> VoiceTurnResponse:
-    """listen -> reasoning model -> Maya's conversational turn."""
+    """Deprecated offline stub — deterministic rule-based replies for SDK demos only."""
     return generate_turn(req)
