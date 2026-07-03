@@ -9,6 +9,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "audio": {
         "input_device": None,
         "output_device": None,
+        "output_sink": "browser",
         "output_volume": 1.0,
         "eq_enabled": True,
         "eq_preset": "off",
@@ -98,6 +99,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "mouth_gain": 6.0,
         "mouth_smoothing": 0.5,
         "mouth_fps": 60,
+    },
+    "vrm": {
+        "enabled": True,
+        "model": "1556438947145020822.vrm",
+        "lip_sync_mode": "viseme",
+        "mouth_gain": 6.0,
+        "mouth_smoothing": 0.5,
+        "look_at_camera": True,
+        "camera_distance": 1.8,
+        "idle_enabled": True,
+        "idle_animation": "Idle.fbx",
     },
     "delivery": {
         "tts_mode": "clone",

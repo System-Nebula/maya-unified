@@ -1,0 +1,101 @@
+/* VRM pop-out — draggable floating avatar window */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: var(--mv-font, Inter, system-ui, sans-serif);
+  user-select: none;
+}
+.vp-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: rgba(12, 12, 16, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+.vp-drag {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: grab;
+  flex-shrink: 0;
+}
+.vp-drag:active {
+  cursor: grabbing;
+}
+.vp-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+}
+.vp-actions {
+  display: flex;
+  gap: 6px;
+}
+.vp-btn {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.85);
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.vp-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.vp-btn-danger {
+  border-color: rgba(255, 69, 58, 0.35);
+  color: #ff8a84;
+}
+.vp-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.vp-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+.vp-stage canvas:active {
+  cursor: grabbing;
+}
+.vp-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  pointer-events: none;
+}
+.vp-overlay[hidden] {
+  display: none !important;
+}
+.vp-foot {
+  padding: 6px 10px 8px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.vp-error {
+  color: #ff8a84;
+  padding: 8px 10px;
+  font-size: 11px;
+}

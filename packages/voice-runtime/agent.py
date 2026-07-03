@@ -223,7 +223,10 @@ TOOL_GUIDE = (
     "automatically during Discord conversations. "
     "Use the skill tool for repeatable workflows: when the user teaches steps, "
     "a tool sequence, or a format you should follow again, write or update a skill "
-    "(name + markdown). Read skills before executing unfamiliar procedures."
+    "(name + markdown). Read skills before executing unfamiliar procedures. "
+    "For physical gestures on the VRM avatar use list_avatar_animations then "
+    "play_avatar_animation (wave, dance, bow, etc.) — match the user's request "
+    "to an available clip; one-shot clips return to idle automatically."
 )
 
 
@@ -288,6 +291,8 @@ class VoiceAgent:
             log.info("AEC enabled (full-duplex mode)")
 
         self.playback = StreamPlayer(aec=self.aec)
+        self.playback.set_output_sink(CONFIG.audio.output_sink)
+        self.playback.set_emitter(self._emit_raw)
         self.playback.set_output_volume(CONFIG.audio.output_volume)
 
         self.stt = None
@@ -410,6 +415,14 @@ class VoiceAgent:
                 log.info("web tools enabled (search, weather)")
             except Exception as exc:  # noqa: BLE001
                 log.warning("web disabled (load failed): %s", exc)
+
+        try:
+            from tools.animation import build_animation_tools
+
+            registry.register_many(build_animation_tools(self._emit))
+            log.info("avatar animation tools enabled")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("avatar animation tools disabled: %s", exc)
 
         self.registry = registry
         if CONFIG.tools.enabled and len(registry) > 0:
@@ -2654,6 +2667,12 @@ class VoiceAgent:
         self.playback.set_output_volume(CONFIG.audio.output_volume)
         pct = int(round(CONFIG.audio.output_volume * 100))
         self._emit(type="settings", output_volume=CONFIG.audio.output_volume, output_volume_percent=pct)
+
+    def set_output_sink(self, sink: str) -> None:
+        mode = "browser" if str(sink or "").strip().lower() == "browser" else "system"
+        CONFIG.audio.output_sink = mode
+        self.playback.set_output_sink(mode)
+        self._emit(type="settings", output_sink=mode)
 
     def set_discord_music_volume(self, level: float) -> None:
         CONFIG.discord.music_volume = max(0.0, min(2.0, float(level)))

@@ -17,6 +17,11 @@ document.addEventListener("alpine:init", () => {
     currentVoice: "",
     health: null,
     healthTesting: false,
+    voiceUploadName: "",
+    voiceUploadBusy: false,
+    llmModelsLoading: false,
+    llmModelsHint: "",
+    _llmFetchTimer: null,
     _saveTimer: null,
 
     user: { id: "", username: "", display_name: "", role: "operator", avatar_color: "#0a84ff" },
@@ -33,6 +38,8 @@ document.addEventListener("alpine:init", () => {
     catalog: {
       eq_presets: [],
       voices: [],
+      vrm_models: [],
+      animations: [],
       barge_modes: ["smart", "instant", "off"],
       delivery_modes: ["full", "hybrid", "off"],
       tts_modes: ["clone", "custom"],
@@ -53,7 +60,7 @@ document.addEventListener("alpine:init", () => {
       personas: ["maya", "operator", "assistant", "technical"],
     },
     s: {
-      audio: { output_volume: 1, eq_enabled: true, eq_preset: "off", aec_enabled: true },
+      audio: { output_sink: "browser", output_volume: 1, eq_enabled: true, eq_preset: "off", aec_enabled: true },
       detection: {
         barge_mode: "smart", barge_in: true, vad_aggressiveness: 2,
         silence_ms: 500, min_speech_ms: 250, detection_mode: "vad",
@@ -85,6 +92,11 @@ document.addEventListener("alpine:init", () => {
         enabled: false, host: "127.0.0.1", port: 8001,
         expressions: true, auto_express: true, mouth_gain: 6, mouth_smoothing: 0.5, mouth_fps: 60,
       },
+      vrm: {
+        enabled: true, model: "1556438947145020822.vrm", lip_sync_mode: "viseme",
+        mouth_gain: 6, mouth_smoothing: 0.5, look_at_camera: true, camera_distance: 1.8,
+        idle_enabled: true, idle_animation: "Idle.fbx",
+      },
       discord: {
         enabled: false, token: "", guild_id: 0, auto_reply: true,
         music_volume: 0.85, imagine_enabled: false, comfyui_url: "http://localhost:3000",
@@ -112,7 +124,7 @@ document.addEventListener("alpine:init", () => {
         items: [
           { id: "voice", label: "Voice", hint: "Clone · speaker" },
           { id: "delivery", label: "Delivery", hint: "Flow · instruct" },
-          { id: "expressions", label: "Expressions", hint: "VTube Studio" },
+          { id: "expressions", label: "Expressions", hint: "VRM · VTube Studio" },
         ],
       },
       {
@@ -161,6 +173,14 @@ document.addEventListener("alpine:init", () => {
       const p = this.s.voice?.ref_audio || "";
       const base = p.split(/[/\\]/).pop() || "";
       return base || this.currentVoice || "";
+    },
+
+    get voiceSelectValue() {
+      return this.voiceFileName();
+    },
+
+    set voiceSelectValue(v) {
+      if (v) this.selectVoiceFile(v);
     },
 
     setTab(id) {
@@ -251,15 +271,73 @@ document.addEventListener("alpine:init", () => {
     },
 
     async refreshCatalog() {
+      await this.refreshLlmModels();
       try {
-        const r = await fetch("/api/voice/settings/catalog?llm=1");
+        const r = await fetch("/api/voice/settings/catalog?llm=0");
         if (!r.ok) throw new Error("catalog failed");
         const data = await r.json();
-        this.catalog = { ...this.catalog, ...(data.catalog || {}) };
+        const llmModels = this.catalog.llm_models;
+        this.catalog = { ...this.catalog, ...(data.catalog || {}), llm_models: llmModels };
         this.ensureCatalogDefaults();
       } catch (e) {
         this.error = String(e.message || e);
       }
+    },
+
+    _llmCatalogUrl() {
+      const provider = this.s.reasoning?.provider || "lm_studio";
+      if (provider === "webllm") return "";
+      const base = (this.s.reasoning?.base_url || "").trim();
+      if (!base) return "";
+      const params = new URLSearchParams({ llm: "1", base_url: base });
+      const key = (this.s.reasoning?.api_key || "").trim();
+      if (key) params.set("api_key", key);
+      return `/api/voice/settings/catalog?${params}`;
+    },
+
+    async refreshLlmModels() {
+      const provider = this.s.reasoning?.provider || "lm_studio";
+      if (provider === "webllm") {
+        this.llmModelsHint = "";
+        return;
+      }
+      const url = this._llmCatalogUrl();
+      if (!url) {
+        this.llmModelsHint = "Set a base URL to load models from LM Studio.";
+        return;
+      }
+      this.llmModelsLoading = true;
+      this.llmModelsHint = "";
+      try {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`Could not reach LLM server (HTTP ${r.status})`);
+        const data = await r.json();
+        const models = data.catalog?.llm_models || [];
+        this.catalog.llm_models = models;
+        if (!models.length) {
+          this.llmModelsHint = "No models returned — open LM Studio and load a model.";
+        } else {
+          this.llmModelsHint = `${models.length} model${models.length === 1 ? "" : "s"} from server`;
+          const current = this.s.reasoning?.model || "";
+          if (current && !models.some((m) => m.id === current)) {
+            this.s.reasoning.model = models[0].id;
+            this.save();
+          }
+        }
+      } catch (e) {
+        this.llmModelsHint = String(e.message || e);
+      } finally {
+        this.llmModelsLoading = false;
+      }
+    },
+
+    onReasoningUrlInput() {
+      if (this._llmFetchTimer) clearTimeout(this._llmFetchTimer);
+      this._llmFetchTimer = setTimeout(() => this.refreshLlmModels(), 600);
+    },
+
+    onApiKeyInput() {
+      this.onReasoningUrlInput();
     },
 
     ensureCatalogDefaults() {
@@ -354,6 +432,11 @@ document.addEventListener("alpine:init", () => {
           const cfg = await cfgR.json();
           this.currentVoice = cfg.current_voice || cfg.voice || "";
         }
+        await this.loadVrmModels();
+        await this.loadAnimations();
+        if (this.s.reasoning?.provider !== "webllm") {
+          await this.refreshLlmModels();
+        }
       } catch (e) {
         if (!this.error) this.error = String(e.message || e);
       }
@@ -395,6 +478,7 @@ document.addEventListener("alpine:init", () => {
         this.warn = this.health.detail;
         this.error = "";
       } else {
+        await this.refreshLlmModels();
         this.testConnection();
       }
     },
@@ -456,17 +540,19 @@ document.addEventListener("alpine:init", () => {
       if (!file) return;
       this.s.voice.ref_audio = file.includes("/") ? file : `voices/${file}`;
       await this._saveNow();
+      const base = file.split(/[/\\]/).pop();
+      this.currentVoice = base.replace(/\.[^.]+$/, "");
       if (!this.agentReady) return;
       try {
-        const base = file.split(/[/\\]/).pop();
         const r = await fetch("/api/voice/agent/select-voice", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ file: base }),
         });
         const data = await r.json();
-        if (!data.ok) this.error = data.error || "Voice switch failed";
-        else this.currentVoice = base.replace(/\.[^.]+$/, "");
+        if (!data.ok) {
+          this.error = data.error || "Voice switch failed";
+        }
       } catch (e) {
         this.error = String(e.message || e);
       }
@@ -475,21 +561,102 @@ document.addEventListener("alpine:init", () => {
     async uploadVoice(ev) {
       const file = ev.target?.files?.[0];
       if (!file) return;
+      if (this.voiceUploadBusy) return;
+      const fd = new FormData();
+      fd.append("file", file);
+      const label = (this.voiceUploadName || "").trim();
+      if (label) fd.append("name", label);
+      this.error = "";
+      this.voiceUploadBusy = true;
+      try {
+        const r = await fetch("/api/voice/agent/upload-voice", {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+        });
+        let data = {};
+        try {
+          data = await r.json();
+        } catch (_) {
+          this.error = `Upload failed (HTTP ${r.status})`;
+          return;
+        }
+        if (!r.ok || !data.ok) {
+          this.error = data.error || data.detail || `Upload failed (HTTP ${r.status})`;
+          return;
+        }
+        this.catalog.voices = data.voices || this.catalog.voices;
+        const uploaded = data.file || data.name;
+        if (uploaded) {
+          const fname = String(uploaded).includes(".") ? uploaded : `${uploaded}.wav`;
+          this.s.voice.ref_audio = fname.includes("/") ? fname : `voices/${fname}`;
+          await this._saveNow();
+          this.currentVoice = data.name || fname.replace(/\.[^.]+$/, "");
+          if (this.agentReady) {
+            try {
+              const sel = await fetch("/api/voice/agent/select-voice", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "same-origin",
+                body: JSON.stringify({ file: fname.split(/[/\\]/).pop() }),
+              });
+              const selData = await sel.json();
+              if (!selData.ok) {
+                this.error = selData.error || "Voice saved but activation failed — pick it from the list.";
+              }
+            } catch (_) {
+              this.error = "Voice saved — pick it from Reference clip when the agent is ready.";
+            }
+          }
+        }
+        this.saved = true;
+        setTimeout(() => { this.saved = false; }, 2500);
+        this.voiceUploadName = "";
+      } catch (e) {
+        this.error = String(e.message || e);
+      } finally {
+        this.voiceUploadBusy = false;
+        ev.target.value = "";
+      }
+    },
+
+    async loadVrmModels() {
+      try {
+        const r = await fetch("/api/voice/agent/vrm/models");
+        if (!r.ok) return;
+        const data = await r.json();
+        this.catalog.vrm_models = data.models || [];
+      } catch (_) {}
+    },
+
+    async loadAnimations() {
+      try {
+        const r = await fetch("/api/voice/agent/animations");
+        if (!r.ok) return;
+        const data = await r.json();
+        this.catalog.animations = (data.catalog || []).map((c) => c.file || c).length
+          ? (data.catalog || []).map((c) => (typeof c === "string" ? c : c.file))
+          : (data.animations || []);
+      } catch (_) {}
+    },
+
+    async uploadVrm(ev) {
+      const file = ev.target?.files?.[0];
+      if (!file) return;
       const fd = new FormData();
       fd.append("file", file);
       try {
-        const r = await fetch("/api/voice/agent/upload-voice", { method: "POST", body: fd });
+        const r = await fetch("/api/voice/agent/upload-vrm", { method: "POST", body: fd });
         const data = await r.json();
         if (!data.ok) {
-          this.error = data.error || "Upload failed";
+          this.error = data.error || "VRM upload failed";
           return;
         }
-        const catR = await fetch("/api/voice/settings/catalog");
-        if (catR.ok) {
-          const c = await catR.json();
-          this.catalog.voices = c.catalog?.voices || this.catalog.voices;
+        this.catalog.vrm_models = data.models || this.catalog.vrm_models;
+        if (data.file) {
+          this.s.vrm.model = data.file;
+          await this._saveNow();
         }
-        if (data.file) await this.selectVoiceFile(data.file);
       } catch (e) {
         this.error = String(e.message || e);
       }

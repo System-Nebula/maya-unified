@@ -191,7 +191,15 @@
             </div>
             <div class="mv-card">
               <div class="mv-list-row">
-                <div class="lhs"><div class="mv-row-label">Output volume</div><div class="mv-row-sub">0.0 – 2.0</div></div>
+                <div class="lhs"><div class="mv-row-label">Output device</div><div class="mv-row-sub">Browser tab vs system speakers</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.audio.output_sink" @change="save()">
+                    <option value="browser">Browser (this tab)</option>
+                    <option value="system">System speakers</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
                 <div class="rhs">
                   <input type="range" class="mv-range" min="0" max="2" step="0.05" x-model.number="s.audio.output_volume" @change="save()" />
                   <span class="mv-num" x-text="(s.audio.output_volume).toFixed(2)"></span>
@@ -301,16 +309,20 @@
               <div class="mv-list-row" x-show="s.delivery.tts_mode === 'clone'">
                 <div class="lhs"><div class="mv-row-label">Reference clip</div><div class="mv-row-sub">~10–20s clean speech</div></div>
                 <div class="rhs">
-                  <select class="mv-select" style="min-width:200px" :value="voiceFileName()" @change="selectVoiceFile($event.target.value)">
+                  <select class="mv-select" style="min-width:200px" x-model="voiceSelectValue">
                     <template x-for="v in catalog.voices" :key="v.file">
-                      <option :value="v.file" x-text="v.name" :selected="v.file === voiceFileName() || v.name === currentVoice"></option>
+                      <option :value="v.file" x-text="v.name"></option>
                     </template>
                   </select>
                 </div>
               </div>
               <div class="mv-list-row" x-show="s.delivery.tts_mode === 'clone'">
-                <div class="lhs"><div class="mv-row-label">Upload clip</div></div>
-                <div class="rhs"><input type="file" accept="audio/*" @change="uploadVoice($event)" /></div>
+                <div class="lhs"><div class="mv-row-label">Upload clip</div><div class="mv-row-sub">Name it, then pick WAV/FLAC (~10–20s)</div></div>
+                <div class="rhs" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+                  <input class="mv-input" x-model="voiceUploadName" placeholder="Voice name" style="min-width:140px;max-width:200px" :disabled="voiceUploadBusy" />
+                  <input type="file" accept="audio/*" @change="uploadVoice($event)" :disabled="voiceUploadBusy" />
+                  <span class="mv-num" x-show="voiceUploadBusy">Uploading…</span>
+                </div>
               </div>
               <div class="mv-list-row" x-show="s.delivery.tts_mode === 'clone'">
                 <div class="lhs"><div class="mv-row-label">Clone model</div></div>
@@ -396,8 +408,91 @@
           <!-- EXPRESSIONS / VTS -->
           <div x-show="tab === 'expressions'">
             <div class="ms-panel-head">
-              <p class="mv-eyebrow">Voice</p>
+              <p class="mv-eyebrow">Avatar</p>
               <h2 class="mv-title">Expressions</h2>
+              <p class="mv-desc">In-browser VRM avatar on the dashboard, or VTube Studio for external live2D/3D apps.</p>
+            </div>
+
+            <div class="ms-subhead">
+              <h3 class="ms-subtitle">Browser VRM</h3>
+              <p class="mv-desc">Three.js viewer on the Conversation page — lip-sync follows Maya’s TTS output.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">VRM avatar enabled</div><div class="mv-row-sub">Show viewer on Conversation</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.vrm.enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Model</div><div class="mv-row-sub">Uploaded models in data/vrm/</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.vrm.model" @change="save()">
+                    <option value="">Default (1556438947145020822.vrm)</option>
+                    <template x-for="m in catalog.vrm_models" :key="m">
+                      <option :value="m" x-text="m"></option>
+                    </template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Lip-sync mode</div><div class="mv-row-sub">Viseme mixes A/I/U/E/O from spectrum</div></div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.vrm.lip_sync_mode" @change="save()">
+                    <option value="viseme">Viseme (A/I/U/E/O)</option>
+                    <option value="amplitude">Amplitude (jaw only)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Upload .vrm</div></div>
+                <div class="rhs"><input type="file" accept=".vrm,model/vrm" @change="uploadVrm($event)" /></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Idle animation</div><div class="mv-row-sub">Mixamo FBX loop when not speaking</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.vrm.idle_enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row" x-show="s.vrm.idle_enabled">
+                <div class="lhs">
+                  <div class="mv-row-label">Idle clip</div>
+                  <div class="mv-row-sub"><a href="/animations" style="color:var(--mv-accent)">Upload &amp; preview animations</a></div>
+                </div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.vrm.idle_animation" @change="save()">
+                    <option value="Idle.fbx">Idle.fbx</option>
+                    <template x-for="a in catalog.animations" :key="a">
+                      <option :value="a" x-text="a"></option>
+                    </template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Look at camera</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.vrm.look_at_camera" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Lip-sync gain</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="1" max="12" step="0.5" x-model.number="s.vrm.mouth_gain" @change="save()" />
+                  <span class="mv-num" x-text="(s.vrm.mouth_gain).toFixed(1)"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Mouth smoothing</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="0" max="0.95" step="0.05" x-model.number="s.vrm.mouth_smoothing" @change="save()" />
+                  <span class="mv-num" x-text="(s.vrm.mouth_smoothing).toFixed(2)"></span>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Camera distance</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="1" max="3.5" step="0.1" x-model.number="s.vrm.camera_distance" @change="save()" />
+                  <span class="mv-num" x-text="(s.vrm.camera_distance).toFixed(1)"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="ms-subhead" style="margin-top:24px">
+              <h3 class="ms-subtitle">VTube Studio</h3>
               <p class="mv-desc">VTube Studio lip-sync and emotion hotkeys. VTube Studio must be running with the plugin API enabled.</p>
             </div>
             <div class="mv-card">
@@ -524,8 +619,8 @@
                 </div>
               </div>
               <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
-                <div class="lhs"><div class="mv-row-label">Base URL</div></div>
-                <div class="rhs"><input class="mv-input" style="width:300px" x-model="s.reasoning.base_url" @change="save()" /></div>
+                <div class="lhs"><div class="mv-row-label">Base URL</div><div class="mv-row-sub">Models auto-load from LM Studio when this changes</div></div>
+                <div class="rhs"><input class="mv-input" style="width:300px" x-model="s.reasoning.base_url" @input="onReasoningUrlInput()" @change="save()" placeholder="http://localhost:1234/v1" /></div>
               </div>
               <div class="mv-list-row" x-show="s.reasoning.provider === 'litellm'">
                 <div class="lhs"><div class="mv-row-label">LiteLLM mode</div></div>
@@ -546,16 +641,17 @@
               </div>
               <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
                 <div class="lhs"><div class="mv-row-label">Model</div>
-                  <div class="mv-row-sub" x-show="!catalog.llm_models.length">Start LM Studio, then Refresh models</div></div>
+                  <div class="mv-row-sub" x-show="llmModelsLoading">Loading models…</div>
+                  <div class="mv-row-sub" x-show="!llmModelsLoading && llmModelsHint" x-text="llmModelsHint"></div></div>
                 <div class="rhs">
-                  <select class="mv-select" style="min-width:240px" x-model="s.reasoning.model" @change="save()">
+                  <select class="mv-select" style="min-width:240px" x-model="s.reasoning.model" @change="save()" :disabled="llmModelsLoading">
                     <template x-for="m in catalog.llm_models" :key="m.id"><option :value="m.id" x-text="m.label"></option></template>
                   </select>
                 </div>
               </div>
               <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
                 <div class="lhs"><div class="mv-row-label">API key</div></div>
-                <div class="rhs"><input class="mv-input" type="password" style="width:200px" x-model="s.reasoning.api_key" @change="save()" /></div>
+                <div class="rhs"><input class="mv-input" type="password" style="width:200px" x-model="s.reasoning.api_key" @input="onApiKeyInput()" @change="save()" /></div>
               </div>
               <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
                 <div class="lhs">

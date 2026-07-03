@@ -162,6 +162,8 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
         CONFIG.tts.device = str(voice["device"])
 
     audio = settings.get("audio", {})
+    if audio.get("output_sink"):
+        CONFIG.audio.output_sink = str(audio["output_sink"]).strip().lower()
     if audio.get("output_volume") is not None:
         CONFIG.audio.output_volume = float(audio["output_volume"])
     if audio.get("eq_enabled") is not None:

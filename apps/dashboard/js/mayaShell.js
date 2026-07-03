@@ -44,6 +44,7 @@ document.addEventListener("alpine:init", () => {
     webllmBridgeStatus: "",
     voiceAvailable: true,
     voiceOwnerName: "",
+    browserAudioHint: "",
     page: "",
     loadStarted: 0,
 
@@ -127,6 +128,7 @@ document.addEventListener("alpine:init", () => {
       if (path === "/" || path === "/conversation") this.s.page = "dashboard";
       else if (path.startsWith("/settings")) this.s.page = "settings";
       else if (path.startsWith("/memory")) this.s.page = "memory";
+      else if (path.startsWith("/animations")) this.s.page = "animations";
       else if (path.startsWith("/admin")) this.s.page = "admin";
       else if (path.startsWith("/rooms")) this.s.page = "rooms";
       else if (path.startsWith("/experimental")) this.s.page = "experimental";
@@ -135,6 +137,7 @@ document.addEventListener("alpine:init", () => {
         window.mayaConversationStore.ensureHydrated();
       }
       this.pollStatus();
+      this.refreshBrowserAudioHint();
       this._unsub = window.mayaAgentEvents.subscribe((ev) => this.onAgentEvent(ev));
       if (this.s.page !== "settings") {
         this.syncSettingsToSdk();
@@ -202,6 +205,9 @@ document.addEventListener("alpine:init", () => {
       if (ev.type === "status") this.s.status = ev.value || this.s.status;
       if (ev.type === "error" && ev.text) this.s.error = ev.text;
       if (ev.type === "settings") this.initWebLLMBridge();
+      if (ev.type === "settings" && window.mayaBrowserAudioOutput) {
+        window.mayaBrowserAudioOutput.handleEvent(ev);
+      }
       if (ev.type === "webllm_unload" && window.mayaWebLLMBridge?.unload) {
         window.mayaWebLLMBridge.unload().then(() => this.refreshBridgeStatus());
       }
@@ -235,6 +241,26 @@ document.addEventListener("alpine:init", () => {
         this.s.voiceOwnerName = owner?.speaker_name || owner?.context_id || "";
         this.refreshBridgeStatus();
         if (d.error) this.s.error = d.error;
+        this.refreshBrowserAudioHint();
+      } catch (_) {}
+    },
+
+    async refreshBrowserAudioHint() {
+      try {
+        const r = await fetch("/api/voice/settings");
+        if (!r.ok) return;
+        const audio = (await r.json()).settings?.audio || {};
+        const sink = audio.output_sink === "system" ? "system" : "browser";
+        if (sink !== "browser") {
+          this.s.browserAudioHint = "";
+          return;
+        }
+        const out = window.mayaBrowserAudioOutput;
+        if (out?.isUnlocked?.()) {
+          this.s.browserAudioHint = "";
+        } else {
+          this.s.browserAudioHint = "Browser audio: click anywhere on the page once, then use Speak — Chrome blocks sound until you interact.";
+        }
       } catch (_) {}
     },
 

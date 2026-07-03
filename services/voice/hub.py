@@ -64,6 +64,10 @@ def _build_live_diff(previous: dict, merged: dict) -> dict:
         live["eq_enabled"] = bool(_nested_get(merged, "audio", "eq_enabled"))
     if _nested_changed(previous, merged, "audio", "output_volume"):
         live["output_volume"] = float(_nested_get(merged, "audio", "output_volume") or 1.0)
+    if _nested_changed(previous, merged, "audio", "output_sink"):
+        sink = _nested_get(merged, "audio", "output_sink")
+        if sink:
+            live["output_sink"] = str(sink)
     if _nested_changed(previous, merged, "detection", "barge_mode"):
         mode = _nested_get(merged, "detection", "barge_mode")
         if mode:
@@ -148,7 +152,7 @@ class VoiceHub(Hub):
             event = {**event, "room_id": ev_room}
         with self._lock:
             subs = list(self._scoped_subscribers)
-        global_types = frozenset({"ready", "status", "error"})
+        global_types = frozenset({"ready", "status", "error", "audio", "audio_begin", "audio_stop"})
         for sub in subs:
             if ev_room:
                 if sub.room_id and sub.room_id != ev_room:
@@ -213,6 +217,10 @@ class VoiceHub(Hub):
         os.environ["VA_DATA_DIR"] = str(data_dir)
         settings = load_effective_settings(operator_id)
         apply_to_config(settings, operator_id=operator_id)
+        if self.ready and self.agent is not None:
+            from config import CONFIG
+
+            self.agent.playback.set_output_sink(CONFIG.audio.output_sink)
         self._active_operator_id = str(operator_id)
         self._active_room_id = None
         pers = load_operator_personalities_file(operator_id)
@@ -283,6 +291,7 @@ class VoiceHub(Hub):
             patch_voice_agent(agent)
             from config import CONFIG
 
+            agent.playback.set_output_sink(CONFIG.audio.output_sink)
             self.current_voice = os.path.basename(CONFIG.tts.ref_audio)
             self.ready = True
             self.broadcast({"type": "ready", "value": True})
@@ -305,6 +314,11 @@ class VoiceHub(Hub):
             self.broadcast({"type": "status", "value": "error"})
 
     def _agent_event(self, event: dict) -> None:
+        # PCM chunks must reach every dashboard tab for the active operator.
+        if event.get("type") in ("audio", "audio_begin", "audio_stop"):
+            op = self._active_operator_id
+            self.broadcast(event, operator_id=op, room_id=None)
+            return
         op = self._active_operator_id
         room = self._active_room_id
         self.broadcast(event, operator_id=op, room_id=room)
@@ -338,6 +352,9 @@ class VoiceHub(Hub):
         if self.ready and self.agent is not None:
             if operator_id:
                 self.apply_operator_context(operator_id)
+            from config import CONFIG
+
+            self.agent.playback.set_output_sink(CONFIG.audio.output_sink)
             if _section_changed(previous, merged, "reasoning"):
                 swap_agent_llm(self.agent)
             live = _build_live_diff(previous, merged)
@@ -578,6 +595,10 @@ class VoiceHub(Hub):
             return {"ok": False, "error": self.last_error or "agent not ready"}
         if operator_id:
             self.apply_operator_context(operator_id)
+        from config import CONFIG
+
+        self.agent.playback.set_output_sink(CONFIG.audio.output_sink)
+        self.agent.playback.set_output_volume(CONFIG.audio.output_volume)
         text = (text or "").strip()
         if not text:
             return {"ok": False, "error": "empty text"}

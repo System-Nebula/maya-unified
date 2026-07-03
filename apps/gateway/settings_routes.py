@@ -32,7 +32,12 @@ def get_settings(request: Request) -> dict:
 
 
 @router.get("/catalog")
-def settings_catalog(request: Request, llm: bool = True) -> dict:
+def settings_catalog(
+    request: Request,
+    llm: bool = True,
+    base_url: str = "",
+    api_key: str = "",
+) -> dict:
     catalog: dict = {
         "barge_modes": ["smart", "instant", "off"],
         "delivery_modes": ["full", "hybrid", "off"],
@@ -58,12 +63,10 @@ def settings_catalog(request: Request, llm: bool = True) -> dict:
     oid = _operator_id(request)
     settings = load_effective_settings(oid or None)
     reasoning = settings.get("reasoning", {})
+    llm_base = (base_url or "").strip() or str(reasoning.get("base_url", ""))
+    llm_key = (api_key or "").strip() or str(reasoning.get("api_key", ""))
     if llm:
-        catalog["llm_models"] = fetch_openai_models(
-            str(reasoning.get("base_url", "")),
-            str(reasoning.get("api_key", "")),
-            timeout=0.75,
-        )
+        catalog["llm_models"] = fetch_openai_models(llm_base, llm_key)
     else:
         catalog["llm_models"] = []
     if not catalog["llm_models"] and reasoning.get("model"):

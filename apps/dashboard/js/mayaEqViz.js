@@ -174,6 +174,16 @@ document.addEventListener("alpine:init", () => {
     startSpectrumPoll() {
       if (this._specTimer) return;
       this._specTimer = setInterval(async () => {
+        const browser = window.mayaBrowserAudioOutput;
+        if (browser?.isBrowserSink?.()) {
+          const frame = browser.getAudioFrame?.() || {};
+          this._viz?.setSpectrumFrame(Array.isArray(frame.bands) ? frame.bands : []);
+          if (frame.speaking || frame.level > 0.002) {
+            this.speaking = true;
+            this._viz?.setSpeaking(true);
+          }
+          return;
+        }
         try {
           const r = await fetch("/api/voice/agent/spectrum");
           const d = await r.json();

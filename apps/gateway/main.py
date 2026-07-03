@@ -50,7 +50,7 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 # Auth guard middleware — redirect unauthenticated HTML; 401 JSON for protected APIs
 # ---------------------------------------------------------------------------
-_GUARDED_PREFIXES = ("/", "/memory", "/settings", "/panel", "/admin", "/rooms")
+_GUARDED_PREFIXES = ("/", "/memory", "/settings", "/animations", "/panel", "/admin", "/rooms")
 _OPEN_PREFIXES = (
     "/login", "/setup", "/static", "/sdk", "/dashboard", "/docs", "/redoc",
     "/openapi", "/health", "/favicon", "/room",
@@ -256,6 +256,14 @@ def memory_page():
     raise HTTPException(404, "memory.html not found")
 
 
+@app.get("/animations")
+def animations_page():
+    page = _dashboard_dir / "animations.html"
+    if page.is_file():
+        return FileResponse(page)
+    raise HTTPException(404, "animations.html not found")
+
+
 @app.get("/settings")
 def settings_page():
     page = _dashboard_dir / "settings.html"
@@ -309,6 +317,14 @@ def admin_users_page():
     if page.is_file():
         return FileResponse(page)
     raise HTTPException(404, "admin-users.html not found")
+
+
+@app.get("/avatar/popout")
+def vrm_popout_page():
+    page = _dashboard_dir / "vrm-popout.html"
+    if page.is_file():
+        return FileResponse(page)
+    raise HTTPException(404, "vrm-popout.html not found")
 
 
 @app.get("/rooms")

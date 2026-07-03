@@ -14,9 +14,11 @@ gaplessly without restarting the stream.
 
 from __future__ import annotations
 
+import base64
 import queue
 import threading
-from typing import Optional
+import time
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -87,13 +89,74 @@ class StreamPlayer:
         )
         self._output_volume = max(0.0, min(2.0, float(CONFIG.audio.output_volume)))
 
+        self._output_sink = "system"
+        self._emitter: Optional[Callable[[dict], None]] = None
+        self._browser_deadline = 0.0
+        self._browser_deadline_lock = threading.Lock()
+        self._browser_idle_timer: Optional[threading.Timer] = None
+
         # Optional AEC — we feed it a copy of every block we send to the DAC
         # so the echo canceller knows what the speakers are outputting.
         self._aec = aec
 
+    def set_output_sink(self, sink: str) -> None:
+        self._output_sink = "browser" if str(sink or "").strip().lower() == "browser" else "system"
+        if self._output_sink == "browser" and self._stream is not None:
+            try:
+                self._stream.close()
+            finally:
+                self._stream = None
+
+    def set_emitter(self, fn: Optional[Callable[[dict], None]]) -> None:
+        self._emitter = fn
+
+    def _process_for_output(self, chunk: np.ndarray) -> np.ndarray:
+        out = self._eq.process(np.array(chunk, dtype=np.float32, copy=True))
+        if self._gain < 0.999:
+            out *= self._gain
+        if self._output_volume != 1.0:
+            out *= self._output_volume
+        return out
+
+    def _extend_browser_deadline(self, samples: int, sample_rate: int) -> None:
+        dur = float(samples) / max(int(sample_rate), 1)
+        with self._browser_deadline_lock:
+            now = time.monotonic()
+            base = max(now, self._browser_deadline)
+            self._browser_deadline = base + dur
+            delay = self._browser_deadline - now
+        self._schedule_browser_idle(delay)
+
+    def _schedule_browser_idle(self, delay: float) -> None:
+        if self._browser_idle_timer is not None:
+            self._browser_idle_timer.cancel()
+        timer = threading.Timer(max(0.05, float(delay)), self._browser_idle_fire)
+        timer.daemon = True
+        self._browser_idle_timer = timer
+        timer.start()
+
+    def _browser_idle_fire(self) -> None:
+        with self._browser_deadline_lock:
+            if time.monotonic() < self._browser_deadline - 0.02:
+                delay = self._browser_deadline - time.monotonic()
+                self._schedule_browser_idle(delay)
+                return
+            self._browser_deadline = 0.0
+        self._idle.set()
+        self._level = 0.0
+
+    def _emit_browser(self, event: dict) -> None:
+        if self._emitter is not None:
+            try:
+                self._emitter(event)
+            except Exception:  # noqa: BLE001
+                pass
+
     # ----- stream lifecycle -------------------------------------------------
 
     def _ensure_stream(self, sample_rate: int) -> None:
+        if self._output_sink == "browser":
+            return
         if self._stream is not None:
             if sample_rate != self._sample_rate:
                 # Qwen3-TTS uses one codec sample rate per session; if it ever
@@ -283,11 +346,18 @@ class StreamPlayer:
             self._pending = np.zeros((0, self.channels), dtype=np.float32)
         self._stop.clear()
         self._idle.set()
+        with self._browser_deadline_lock:
+            self._browser_deadline = 0.0
+        if self._browser_idle_timer is not None:
+            self._browser_idle_timer.cancel()
+            self._browser_idle_timer = None
         # Reset volume to full for the new turn.
         self._gain = 1.0
         self._target_gain = 1.0
         self._gain_step = 0.0
         self._stop_after_fade = False
+        if self._output_sink == "browser":
+            self._emit_browser({"type": "audio_begin"})
 
     def submit(self, wav: np.ndarray, sample_rate: int) -> None:
         if self._stop.is_set():
@@ -295,9 +365,26 @@ class StreamPlayer:
         chunk = self._reshape(wav)
         if chunk.shape[0] == 0:
             return
-        self._ensure_stream(sample_rate)
+        self._sample_rate = int(sample_rate)
+        self._eq.set_sample_rate(self._sample_rate)
+        processed = self._process_for_output(chunk)
         self._idle.clear()
-        self._queue.put(chunk)
+        self._update_meters(processed)
+
+        if self._output_sink == "browser":
+            mono = processed[:, 0] if processed.ndim == 2 else processed.reshape(-1)
+            self._emit_browser({
+                "type": "audio",
+                "format": "f32le",
+                "sr": self._sample_rate,
+                "channels": 1,
+                "data": base64.b64encode(mono.astype(np.float32, copy=False).tobytes()).decode("ascii"),
+            })
+            self._extend_browser_deadline(int(mono.shape[0]), self._sample_rate)
+            return
+
+        self._ensure_stream(sample_rate)
+        self._queue.put(processed)
 
     def stop(self) -> None:
         """Hard stop: discard queued audio and silence the current output now."""
@@ -309,6 +396,13 @@ class StreamPlayer:
         self._drain()
         with self._lock:
             self._pending = np.zeros((0, self.channels), dtype=np.float32)
+        with self._browser_deadline_lock:
+            self._browser_deadline = 0.0
+        if self._browser_idle_timer is not None:
+            self._browser_idle_timer.cancel()
+            self._browser_idle_timer = None
+        if self._output_sink == "browser":
+            self._emit_browser({"type": "audio_stop"})
         self._idle.set()
         self._level = 0.0
 
@@ -366,6 +460,11 @@ class StreamPlayer:
             pass
 
     def is_playing(self) -> bool:
+        if self._output_sink == "browser":
+            if self._stop.is_set():
+                return False
+            with self._browser_deadline_lock:
+                return time.monotonic() < self._browser_deadline
         return not self._idle.is_set()
 
     def wait_until_idle(self, timeout: Optional[float] = None) -> bool:

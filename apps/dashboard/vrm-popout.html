@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Maya Avatar</title>
+    <link rel="stylesheet" href="/dashboard/css/maya-vrm-popout.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+          "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.4.2/lib/three-vrm.module.min.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div class="vp-root" id="vp-root">
+      <div class="vp-drag" id="vp-drag">
+        <span class="vp-title">Maya Avatar</span>
+        <div class="vp-actions">
+          <button type="button" class="vp-btn" id="vp-always" title="Keep on top (browser-dependent)">Pin</button>
+          <button type="button" class="vp-btn vp-btn-danger" id="vp-close">Close</button>
+        </div>
+      </div>
+      <div class="vp-stage" id="vp-stage">
+        <canvas id="vp-canvas"></canvas>
+        <div class="vp-overlay" id="vp-loading">Loading avatar…</div>
+      </div>
+      <p class="vp-error" id="vp-error" hidden></p>
+      <p class="vp-foot">Drag title bar to move · drag avatar to orbit · lip-sync from dashboard</p>
+    </div>
+    <script type="module" src="/dashboard/js/mayaVrmPopout.js"></script>
+  </body>
+</html>

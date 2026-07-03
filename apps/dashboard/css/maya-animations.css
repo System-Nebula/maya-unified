@@ -1,0 +1,330 @@
+/* Animations manager — Mixamo library + live VRM preview */
+.ma-page {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+.ma-hero {
+  margin-bottom: 24px;
+}
+
+.ma-hero h1 {
+  font-family: var(--mv-font-display, "Chakra Petch", sans-serif);
+  font-size: 28px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  letter-spacing: -0.02em;
+}
+
+.ma-hero p {
+  margin: 0;
+  color: var(--mv-muted);
+  font-size: 14px;
+  max-width: 56ch;
+}
+
+.ma-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 420px);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .ma-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ma-panel {
+  background: var(--mv-surface, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--mv-border, rgba(255, 255, 255, 0.08));
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.ma-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--mv-border, rgba(255, 255, 255, 0.08));
+}
+
+.ma-panel-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--mv-muted);
+}
+
+.ma-preview-wrap {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  min-height: 360px;
+  background: radial-gradient(ellipse at 50% 30%, rgba(120, 140, 255, 0.08), transparent 55%),
+    rgba(0, 0, 0, 0.25);
+}
+
+.ma-preview-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.ma-preview-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 8, 12, 0.55);
+  font-size: 13px;
+  color: var(--mv-muted);
+  pointer-events: none;
+}
+
+.ma-preview-badge {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  color: var(--mv-muted);
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ma-preview-badge strong {
+  color: var(--mv-fg, #fff);
+  font-weight: 600;
+}
+
+.ma-upload {
+  padding: 16px;
+  border-bottom: 1px solid var(--mv-border, rgba(255, 255, 255, 0.08));
+}
+
+.ma-drop {
+  border: 1.5px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 20px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ma-drop:hover,
+.ma-drop.dragover {
+  border-color: var(--mv-accent, #7c8cff);
+  background: rgba(124, 140, 255, 0.06);
+}
+
+.ma-drop p {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.ma-drop span {
+  font-size: 12px;
+  color: var(--mv-muted);
+}
+
+.ma-upload-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ma-upload-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--mv-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ma-upload-fields input {
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--mv-border);
+  background: rgba(0, 0, 0, 0.2);
+  color: inherit;
+}
+
+.ma-library {
+  max-height: min(62vh, 640px);
+  overflow-y: auto;
+}
+
+.ma-empty {
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--mv-muted);
+  font-size: 13px;
+}
+
+.ma-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--mv-border, rgba(255, 255, 255, 0.06));
+  transition: background 0.12s;
+}
+
+.ma-card:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ma-card.playing {
+  background: rgba(124, 140, 255, 0.08);
+  border-left: 3px solid var(--mv-accent, #7c8cff);
+  padding-left: 13px;
+}
+
+.ma-card.idle-mark {
+  box-shadow: inset 0 0 0 1px rgba(124, 255, 180, 0.2);
+}
+
+.ma-card-main {
+  min-width: 0;
+}
+
+.ma-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ma-card-file {
+  font-size: 11px;
+  font-family: var(--mv-mono, "DM Mono", monospace);
+  color: var(--mv-muted);
+  margin: 0 0 6px;
+}
+
+.ma-card-desc {
+  font-size: 12px;
+  color: var(--mv-muted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.ma-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.ma-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--mv-muted);
+}
+
+.ma-tag.idle {
+  background: rgba(124, 255, 180, 0.12);
+  color: #9dffc4;
+}
+
+.ma-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.ma-btn {
+  font-size: 12px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--mv-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.ma-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.ma-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ma-btn.primary {
+  background: var(--mv-accent, #7c8cff);
+  border-color: transparent;
+  color: #0a0a10;
+  font-weight: 600;
+}
+
+.ma-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.ma-btn.danger {
+  color: #ff8a8a;
+  border-color: rgba(255, 120, 120, 0.25);
+}
+
+.ma-banner {
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.ma-banner.error {
+  background: rgba(255, 80, 80, 0.12);
+  border: 1px solid rgba(255, 80, 80, 0.25);
+  color: #ffb0b0;
+}
+
+.ma-banner.ok {
+  background: rgba(124, 255, 180, 0.08);
+  border: 1px solid rgba(124, 255, 180, 0.2);
+  color: #9dffc4;
+}
+
+.ma-tools-hint {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(124, 140, 255, 0.06);
+  border: 1px solid rgba(124, 140, 255, 0.15);
+  font-size: 12px;
+  color: var(--mv-muted);
+  line-height: 1.5;
+}
+
+.ma-tools-hint code {
+  font-family: var(--mv-mono, "DM Mono", monospace);
+  font-size: 11px;
+  color: var(--mv-fg, #fff);
+}

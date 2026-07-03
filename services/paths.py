@@ -17,6 +17,20 @@ def voices_dir() -> Path:
     return VOICE_RUNTIME / "voices"
 
 
+def vrm_dir() -> Path:
+    """Directory for uploaded VRM avatar models."""
+    path = DATA_DIR / "vrm"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def animations_dir() -> Path:
+    """Directory for FBX / VRMA idle and gesture clips."""
+    path = DATA_DIR / "animations"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def resolve_voice_ref(path: str) -> str:
     """Resolve settings-relative voice paths to absolute files under voice-runtime."""
     raw = (path or "").strip()

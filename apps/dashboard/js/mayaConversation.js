@@ -4,6 +4,77 @@ function _storageKey() {
   return `maya.conversation.v1.${uid}`;
 }
 
+function _detailedStorageKey() {
+  const uid = window._mayaCurrentUser?.id || "anonymous";
+  return `maya.conversation.detailed.v1.${uid}`;
+}
+
+function _formatDuration(ms) {
+  if (ms == null || ms < 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
+function _formatSentAt(ts) {
+  try {
+    return new Date(ts).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch (_) {
+    return "";
+  }
+}
+
+function _lastMayaTurnIdx(store) {
+  for (let i = store.turns.length - 1; i >= 0; i--) {
+    if (store.turns[i]?.role === "maya") return i;
+  }
+  return -1;
+}
+
+function _endStreaming(store) {
+  const last = store.turns[store.turns.length - 1];
+  if (last?._streaming) last._streaming = false;
+}
+
+function _finalizeChatMs(store) {
+  if (!store._chatPendingAt) return;
+  const idx = _lastMayaTurnIdx(store);
+  if (idx < 0) return;
+  const turn = store.turns[idx];
+  if (!turn || turn.role !== "maya" || turn.chatMs != null) return;
+  turn.chatMs = Date.now() - store._chatPendingAt;
+  store._chatPendingAt = null;
+}
+
+function _onTtsStart(store) {
+  if (store._ttsPreviewOnly) return;
+  const idx = store._ttsTargetIdx ?? _lastMayaTurnIdx(store);
+  if (idx < 0) return;
+  const turn = store.turns[idx];
+  if (!turn || turn.role !== "maya") return;
+  store.playingTurnIdx = idx;
+  if (turn.ttsMs != null || store._ttsPendingAt != null) return;
+  store._ttsPendingAt = Date.now();
+  store._ttsPendingIdx = idx;
+}
+
+function _clearPlayingTurn(store) {
+  store.playingTurnIdx = null;
+}
+
+function _onFirstAudio(store) {
+  if (store._ttsPreviewOnly || store._ttsPendingAt == null || store._ttsPendingIdx == null) return;
+  const turn = store.turns[store._ttsPendingIdx];
+  if (!turn || turn.ttsMs != null) return;
+  turn.ttsMs = Date.now() - store._ttsPendingAt;
+  store._ttsPendingAt = null;
+  store._ttsPendingIdx = null;
+  store._ttsTargetIdx = null;
+}
+
 function _persistConversation(store) {
   try {
     sessionStorage.setItem(
@@ -43,32 +114,61 @@ function _applyAgentEvent(store, ev) {
     store.statusLabel = v;
     if (v === "listening" || v === "hearing") {
       store.step = "listen";
-      if (store.ttsBusy) store.ttsBusy = false;
+      _endStreaming(store);
+      _finalizeChatMs(store);
+      if (!store._ttsPreviewOnly) _clearPlayingTurn(store);
+      if (store.ttsBusy) {
+        store.ttsBusy = false;
+        store._ttsPreviewOnly = false;
+      }
     } else if (v === "transcribing") store.step = "detect";
     else if (v === "thinking") store.step = "reason";
-    else if (v === "speaking") store.step = "maya";
-    else if (v === "idle") {
-      const last = store.turns[store.turns.length - 1];
-      if (last && last._streaming) last._streaming = false;
-      if (store.ttsBusy) store.ttsBusy = false;
+    else if (v === "speaking") {
+      store.step = "maya";
+      _endStreaming(store);
+      _finalizeChatMs(store);
+      _onTtsStart(store);
+    } else if (v === "idle") {
+      _endStreaming(store);
+      _finalizeChatMs(store);
+      if (!store._ttsPreviewOnly) _clearPlayingTurn(store);
+      if (store.ttsBusy) {
+        store.ttsBusy = false;
+        store._ttsPreviewOnly = false;
+      }
     }
+    _persistConversation(store);
+    return;
+  }
+  if (ev.type === "audio_stop") {
+    if (!store._ttsPreviewOnly) _clearPlayingTurn(store);
+    return;
+  }
+  if (ev.type === "audio" && ev.data) {
+    _onFirstAudio(store);
     _persistConversation(store);
     return;
   }
   if (ev.type === "error" && ev.text && store.ttsBusy) {
     store.ttsError = ev.text;
     store.ttsBusy = false;
+    store._ttsPreviewOnly = false;
     return;
   }
   if (ev.type === "tts_error" && ev.text) {
     store.ttsError = ev.text;
     store.ttsBusy = false;
+    store._ttsPreviewOnly = false;
     return;
   }
   if (ev.type === "user" && ev.text) {
     const last = store.turns[store.turns.length - 1];
     if (last && last.role === "operator" && last.text === ev.text) return;
-    store.turns.push({ role: "operator", text: ev.text });
+    store.turns.push({ role: "operator", text: ev.text, sentAt: Date.now() });
+    store._chatPendingAt = Date.now();
+    store._ttsPendingAt = null;
+    store._ttsPendingIdx = null;
+    store._ttsTargetIdx = null;
     _persistConversation(store);
     _scrollTranscript();
     return;
@@ -107,15 +207,45 @@ document.addEventListener("alpine:init", () => {
     turns: [],
     useWebLLM: false,
     sending: false,
+    detailed: false,
+    playingTurnIdx: null,
     _hydrated: false,
     _basicChatNoted: false,
+    _chatPendingAt: null,
+    _ttsPendingAt: null,
+    _ttsPendingIdx: null,
+    _ttsTargetIdx: null,
+    _ttsPreviewOnly: false,
 
     persist() {
       _persistConversation(this);
     },
 
+    persistDetailed() {
+      try {
+        sessionStorage.setItem(_detailedStorageKey(), this.detailed ? "1" : "0");
+      } catch (_) {}
+    },
+
     restore() {
       _restoreConversation(this);
+      try {
+        this.detailed = sessionStorage.getItem(_detailedStorageKey()) === "1";
+      } catch (_) {}
+    },
+
+    formatSentAt(ts) {
+      return _formatSentAt(ts);
+    },
+
+    formatMayaMeta(turn) {
+      const parts = [];
+      if (turn.chatMs != null) parts.push(`chat ${_formatDuration(turn.chatMs)}`);
+      const tts = turn.ttsMs != null ? _formatDuration(turn.ttsMs) : "—";
+      let ttsPart = `TTS ${tts}`;
+      if (turn.ttsReplay && turn.ttsMs != null) ttsPart += " (cached)";
+      parts.push(ttsPart);
+      return parts.join(" · ");
     },
 
     handleAgentEvent(ev) {
@@ -189,11 +319,68 @@ document.addEventListener("alpine:init", () => {
       this.persist();
     },
 
+    async toggleTurnPlay(idx) {
+      if (this.playingTurnIdx === idx) {
+        this.pauseTurn();
+        return;
+      }
+      if (this.playingTurnIdx != null) this.pauseTurn();
+      await this.playTurn(idx);
+    },
+
+    pauseTurn() {
+      window.mayaBrowserAudioOutput?.stop?.();
+      this.playingTurnIdx = null;
+      this._ttsTargetIdx = null;
+      this._ttsPendingAt = null;
+      this._ttsPendingIdx = null;
+    },
+
+    async playTurn(idx) {
+      const turn = this.turns[idx];
+      if (!turn || turn.role !== "maya" || !turn.text?.trim()) return;
+      if (turn.ttsMs != null) turn.ttsReplay = true;
+      this._ttsTargetIdx = idx;
+      this._ttsPendingAt = null;
+      this._ttsPendingIdx = null;
+      window.mayaBrowserAudioOutput?.resumeOutput?.();
+      window.mayaBrowserAudioOutput?.resume?.();
+      try {
+        const r = await fetch("/api/voice/agent/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: turn.text.trim() }),
+        });
+        let data = {};
+        try {
+          data = await r.json();
+        } catch (_) {
+          data = {};
+        }
+        if (!r.ok || !data.ok) {
+          this.turns.push({
+            role: "system",
+            text: data.detail || data.error || `Speak failed (HTTP ${r.status})`,
+          });
+          this.persist();
+          _scrollTranscript();
+          this._ttsTargetIdx = null;
+        }
+      } catch (e) {
+        this.turns.push({ role: "system", text: String(e.message || e) });
+        this.persist();
+        _scrollTranscript();
+        this._ttsTargetIdx = null;
+      }
+    },
+
     async speakPreview() {
       const text = this.ttsDraft.trim();
       if (!text || this.ttsBusy || !Alpine.store("mayaShell")?.ready) return;
+      window.mayaBrowserAudioOutput?.resume?.();
       this.ttsBusy = true;
       this.ttsError = "";
+      this._ttsPreviewOnly = true;
       this.step = "maya";
       try {
         const body = { text };
@@ -218,6 +405,7 @@ document.addEventListener("alpine:init", () => {
               ? "TTS API not found — restart launch.py to load the new route."
               : `Speak failed (HTTP ${r.status})`);
           this.ttsBusy = false;
+          this._ttsPreviewOnly = false;
           this.step = "listen";
           return;
         }
@@ -227,6 +415,7 @@ document.addEventListener("alpine:init", () => {
         audio.onended = () => {
           URL.revokeObjectURL(url);
           this.ttsBusy = false;
+          this._ttsPreviewOnly = false;
           this.step = "listen";
         };
         audio.onerror = () => {
@@ -239,6 +428,7 @@ document.addEventListener("alpine:init", () => {
       } catch (e) {
         this.ttsError = String(e.message || e);
         this.ttsBusy = false;
+        this._ttsPreviewOnly = false;
         this.step = "listen";
       }
     },
@@ -304,6 +494,11 @@ document.addEventListener("alpine:init", () => {
 
     reset() {
       this.turns = [];
+      this._chatPendingAt = null;
+      this._ttsPendingAt = null;
+      this._ttsPendingIdx = null;
+      this._ttsTargetIdx = null;
+      this.playingTurnIdx = null;
       this.persist();
       _scrollTranscript(false);
     },

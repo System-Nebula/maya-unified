@@ -136,6 +136,7 @@ class Hub:
             "tools_enabled": CONFIG.tools.enabled,
             "output_volume": CONFIG.audio.output_volume,
             "output_volume_percent": int(round(CONFIG.audio.output_volume * 100)),
+            "output_sink": CONFIG.audio.output_sink,
             "discord_music_volume": CONFIG.discord.music_volume,
             "discord_music_volume_percent": int(round(CONFIG.discord.music_volume * 100)),
             "web_tools_enabled": CONFIG.web.enabled,
@@ -175,6 +176,8 @@ class Hub:
             self.agent.set_write_approval(bool(data["memory_write_approval"]))
         if "output_volume" in data:
             self.agent.set_output_volume(float(data["output_volume"]))
+        if "output_sink" in data and isinstance(data["output_sink"], str):
+            self.agent.set_output_sink(data["output_sink"])
         if "discord_music_volume" in data:
             self.agent.set_discord_music_volume(float(data["discord_music_volume"]))
         return self.get_config()
@@ -334,7 +337,7 @@ class Hub:
             self.agent.stop_session()
         return {"ok": True}
 
-    def set_voice(self, path: str) -> dict:
+    def set_voice(self, path: str, *, warm: bool = True) -> dict:
         if not self.ready or self.agent is None:
             return {"ok": False, "error": "agent not ready"}
         voice = self.agent.voice
@@ -355,7 +358,7 @@ class Hub:
 
         self.broadcast({"type": "status", "value": "loading"})
         try:
-            voice.set_reference(path, ref_text=ref_text, warm=True)
+            voice.set_reference(path, ref_text=ref_text, warm=warm)
         except Exception as exc:  # noqa: BLE001
             self.broadcast({"type": "status", "value": "idle"})
             return {"ok": False, "error": str(exc)}
@@ -365,7 +368,7 @@ class Hub:
         self.broadcast({"type": "voice", "name": self.current_voice})
         if was_running:
             self.agent.start_session()
-        return {"ok": True, "name": self.current_voice}
+        return {"ok": True, "name": self.current_voice, "file": self.current_voice}
 
 
 AUDIO_EXTS = {".wav", ".flac", ".ogg", ".mp3", ".m4a", ".webm"}
@@ -393,18 +396,53 @@ def _safe_voice_path(filename: str) -> str | None:
 
 
 def _audio_duration(path: str) -> float | None:
+    """Fast duration probe for upload validation — never fully decodes large files."""
+    ext = os.path.splitext(path)[1].lower()
     try:
         import soundfile as sf
 
         info = sf.info(path)
-        return info.frames / float(info.samplerate)
+        if info.samplerate:
+            return info.frames / float(info.samplerate)
     except Exception:  # noqa: BLE001
+        pass
+    if ext == ".wav":
         try:
-            import librosa
+            import wave
 
-            return float(librosa.get_duration(path=path))
+            with wave.open(path, "rb") as wf:
+                rate = wf.getframerate()
+                if rate:
+                    return wf.getnframes() / float(rate)
         except Exception:  # noqa: BLE001
-            return None
+            pass
+    if ext in {".mp3", ".m4a", ".ogg", ".flac", ".webm"}:
+        try:
+            import json as _json
+            import subprocess
+
+            proc = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "quiet",
+                    "-print_format",
+                    "json",
+                    "-show_format",
+                    path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                dur = float(_json.loads(proc.stdout)["format"]["duration"])
+                if dur > 0:
+                    return dur
+        except Exception:  # noqa: BLE001
+            pass
+    return None
 
 
 hub = Hub()

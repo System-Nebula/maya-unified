@@ -250,6 +250,8 @@ class AudioConfig:
     aec_step_size: float = field(default_factory=lambda: _env_float("VA_AEC_STEP_SIZE", 0.15))
     # Agent TTS output multiplier (0.0–2.0).
     output_volume: float = field(default_factory=lambda: _env_float("VA_OUTPUT_VOLUME", 1.0))
+    # "system" = local speakers via sounddevice; "browser" = stream PCM to dashboard tab.
+    output_sink: str = field(default_factory=lambda: _env_str("VA_OUTPUT_SINK", "browser"))
 
 
 @dataclass

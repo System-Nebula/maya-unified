@@ -215,6 +215,20 @@
   text-shadow: 0 0 12px color-mix(in srgb, var(--mv-accent) 35%, transparent);
 }
 
+.ms-subhead {
+  margin: 0 0 10px;
+}
+.ms-subhead .ms-subtitle {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mv-text);
+}
+.ms-subhead .mv-desc {
+  margin: 0;
+  font-size: 12px;
+}
+
 [x-cloak] { display: none !important; }
 
 /* Prevent Alpine pre-init flash without blocking interaction after init */

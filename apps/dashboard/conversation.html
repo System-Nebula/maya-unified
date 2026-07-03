@@ -14,12 +14,22 @@
     <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-dashboard.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+          "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.4.2/lib/three-vrm.module.min.js"
+        }
+      }
+    </script>
   </head>
   <body x-init="$store.mayaTheme && $store.mayaTheme.init()">
     <header class="mu-shell" x-data="mayaShell()" x-init="init()">
       <div class="mu-brand">Maya <span>Unified</span></div>
       <nav class="mu-nav">
         <a href="/" :class="{ active: s.page === 'dashboard' }">Dashboard</a>
+        <a href="/animations" :class="{ active: s.page === 'animations' }">Animations</a>
         <a href="/rooms" :class="{ active: s.page === 'rooms' }">Rooms</a>
         <a href="/memory" :class="{ active: s.page === 'memory' }">Memory</a>
         <a href="/docs" target="_blank" rel="noopener">API</a>
@@ -60,6 +70,7 @@
         <span x-text="($store.mayaShell?.llmHealth?.detail || llmError || 'LLM unavailable')"></span>
         — <a href="/settings?tab=reasoning" style="color:var(--mv-accent)">Settings → Reasoning</a>
       </div>
+      <div class="md-banner" x-show="agentReady && $store.mayaShell?.browserAudioHint" style="margin-bottom:10px" x-text="$store.mayaShell.browserAudioHint"></div>
 
       <div class="md-pipeline">
         <span class="md-step" :class="{ on: $store.mayaConversation.step === 'listen' }">01 Listen</span>
@@ -199,16 +210,38 @@
             </div>
 
             <textarea class="md-textarea mv-input" x-model="$store.mayaConversation.draft" :placeholder="textChatReady ? 'Message Maya…' : ($store.mayaConversation.useWebLLM ? 'Waiting for WebLLM…' : 'Waiting for LLM…')" @keydown="$store.mayaConversation.onKeydown($event)"></textarea>
-            <div style="margin-top:10px;display:flex;gap:8px">
+            <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
               <button class="mv-btn mv-btn-primary" @click="$store.mayaConversation.sendServer()" :disabled="$store.mayaConversation.sending || !textChatReady">Send</button>
               <button class="mv-btn" @click="$store.mayaConversation.reset()">Clear transcript</button>
+              <label class="md-detailed-toggle">
+                <input type="checkbox" x-model="$store.mayaConversation.detailed" @change="$store.mayaConversation.persistDetailed()" />
+                Detailed
+              </label>
             </div>
 
             <div class="md-log md-scroll">
               <template x-for="(t, i) in $store.mayaConversation.turns" :key="i">
                 <div class="md-turn" :class="t.role">
                   <div class="role" x-text="t.role"></div>
-                  <div x-text="t.text"></div>
+                  <div class="md-turn-body" x-text="t.text"></div>
+                  <div
+                    class="md-turn-meta"
+                    x-show="$store.mayaConversation.detailed && t.role === 'operator' && t.sentAt"
+                    x-text="'sent ' + $store.mayaConversation.formatSentAt(t.sentAt)"
+                  ></div>
+                  <div class="md-turn-meta md-turn-meta-maya" x-show="$store.mayaConversation.detailed && t.role === 'maya'">
+                    <button
+                      type="button"
+                      class="md-turn-play"
+                      :class="{ 'is-playing': $store.mayaConversation.playingTurnIdx === i }"
+                      @click="$store.mayaConversation.toggleTurnPlay(i)"
+                      :aria-label="$store.mayaConversation.playingTurnIdx === i ? 'Pause Maya reply' : 'Play Maya reply'"
+                      :title="$store.mayaConversation.playingTurnIdx === i ? 'Pause' : 'Play TTS'"
+                    >
+                      <span class="md-turn-play-icon" aria-hidden="true"></span>
+                    </button>
+                    <span x-text="$store.mayaConversation.formatMayaMeta(t)"></span>
+                  </div>
                 </div>
               </template>
               <p class="mv-desc" x-show="!$store.mayaConversation.turns.length" style="padding:12px 0">Transcript appears here during voice or chat turns.</p>
@@ -217,6 +250,49 @@
         </div>
 
         <aside class="md-col-side md-scroll">
+          <div
+            class="md-vrm-card"
+            x-data="mayaVrmViewer()"
+            x-init="init()"
+            x-show="enabled"
+            x-cloak
+          >
+            <div class="md-vrm-head">
+              <div>
+                <p class="mv-eyebrow">Avatar</p>
+                <h2 class="mv-title md-vrm-title">VRM</h2>
+              </div>
+              <div class="md-vrm-badges">
+                <span class="mv-chip live" x-show="speaking && !poppedOut"><span class="ind"></span>Lip-sync</span>
+                <span class="mv-chip md-vrm-chip-muted" x-show="poppedOut">Popped out</span>
+                <span class="mv-chip md-vrm-chip-muted" x-show="loading && !poppedOut">Loading…</span>
+                <span class="mv-chip md-vrm-chip-muted" x-show="!loading && !agentReady && !poppedOut">Waiting</span>
+                <button type="button" class="mv-btn md-vrm-pop-btn" @click="openPopout()" x-show="!poppedOut" title="Open floating avatar window">Pop out</button>
+              </div>
+            </div>
+            <div class="md-vrm-stage-wrap" x-show="!poppedOut">
+              <div class="md-vrm-stage" :class="{ 'md-vrm-speaking': speaking }">
+                <canvas x-ref="vrmCanvas"></canvas>
+                <div class="md-vrm-stage-overlay" x-show="loading">
+                  <span>Loading VRM…</span>
+                </div>
+              </div>
+            </div>
+            <p class="mv-desc md-vrm-meta" x-show="poppedOut">
+              Avatar is in a separate window — drag it by the title bar. Close that window to embed again.
+            </p>
+            <p class="mv-desc md-vrm-meta" x-show="!loadError && !poppedOut">
+              <span x-text="modelLabel"></span>
+              <span class="md-vrm-dot">·</span>
+              <span x-text="lipSyncMode === 'viseme' ? 'Viseme sync' : 'Jaw sync'"></span>
+              <span class="md-vrm-dot">·</span>
+              <a href="/settings?tab=expressions">Configure</a>
+            </p>
+            <p class="mv-desc md-vrm-visemes" x-show="lipSyncLabel && !loadError" x-text="lipSyncLabel"></p>
+            <p class="md-banner error md-vrm-error" x-show="loadError" x-text="loadError"></p>
+            <p class="mv-desc md-vrm-hint">Powered by <a href="https://github.com/pixiv/three-vrm" target="_blank" rel="noopener">three-vrm</a> — drag to orbit</p>
+          </div>
+
           <div class="md-tools-card" x-data="mayaToolsPanel()" x-init="init()">
             <div class="md-tools-head">
               <div>
@@ -323,8 +399,10 @@
     <script defer src="/dashboard/js/mayaWebLLM.js"></script>
     <script defer src="/dashboard/js/mayaConversation.js"></script>
     <script defer src="/dashboard/js/mayaShell.js"></script>
+    <script defer src="/dashboard/js/mayaBrowserAudio.js"></script>
     <script defer src="/dashboard/js/mayaEqViz.js"></script>
     <script defer src="/dashboard/js/mayaToolsPanel.js"></script>
+    <script defer src="/dashboard/js/mayaVrmViewer.js" type="module"></script>
     <script defer src="/sdk/vendor/alpine.min.js"></script>
   </body>
 </html>
