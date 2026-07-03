@@ -11,6 +11,14 @@ from config import CONFIG, LLMConfig
 from llm import AUTO_INSTRUCT_GUIDE, LLMResponse, ToolCall, ToolsUnsupported, sanitize_llm_output
 
 _CONTROL_TOKEN_RE = re.compile(r"\s*/no[-_]think\b", re.I)
+_PLACEHOLDER_API_KEYS = frozenset({"", "lm-studio", "vllm-local", "local-model"})
+
+
+def _effective_api_key(api_key: str | None) -> str | None:
+    key = (api_key or "").strip()
+    if key.lower() in _PLACEHOLDER_API_KEYS:
+        return None
+    return key or None
 
 
 @dataclass
@@ -43,15 +51,29 @@ class LiteLLMAdapter:
       return system
 
   def _completion_kwargs(self, messages: list[dict], *, stream: bool, max_tokens: int | None, model: str | None):
-      return dict(
-          model=model or self.litellm_model,
+      resolved_model = model or self.litellm_model
+      kwargs = dict(
+          model=resolved_model,
           messages=messages,
           stream=stream,
           temperature=self.cfg.temperature,
           top_p=self.cfg.top_p,
           max_tokens=max_tokens or self.cfg.max_tokens,
-          api_key=self.cfg.api_key or None,
+          api_key=_effective_api_key(self.cfg.api_key),
       )
+      model_lc = resolved_model.lower()
+      effort = (self.cfg.reasoning_effort or "").strip().lower()
+      if "deepseek-v4" in model_lc:
+          extra = dict(kwargs.get("extra_body") or {})
+          reasoning = dict(extra.get("reasoning") or {})
+          if effort in ("none", "minimal", "low", "medium", "high", "xhigh"):
+              reasoning["effort"] = effort
+          elif self.cfg.disable_thinking:
+              reasoning["effort"] = "none"
+          if reasoning:
+              extra["reasoning"] = reasoning
+              kwargs["extra_body"] = extra
+      return kwargs
 
   def stream_reply(self, user_text: str, history: list[dict] | None = None) -> Iterator[str]:
       import litellm

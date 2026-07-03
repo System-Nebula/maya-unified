@@ -10,6 +10,8 @@ from typing import Any
 from services.paths import DATA_DIR, ROOT, VOICE_RUNTIME, agent_data_dir, resolve_voice_ref, resolve_runtime_file
 from services.settings.schema import DEFAULT_SETTINGS, deep_merge
 
+_PLACEHOLDER_API_KEYS = frozenset({"", "lm-studio", "vllm-local", "local-model"})
+
 
 def _path() -> str:
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -39,6 +41,18 @@ def load_settings() -> dict[str, Any]:
     return deepcopy(DEFAULT_SETTINGS)
 
 
+def _redact_reasoning_api_key(settings: dict[str, Any]) -> None:
+    """Never persist real provider keys to settings.json — keep them in .env only."""
+    reasoning = settings.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return
+    key = str(reasoning.get("api_key") or "").strip()
+    if not key or key.lower() in _PLACEHOLDER_API_KEYS:
+        return
+    if key.startswith("sk-"):
+        reasoning["api_key"] = "lm-studio"
+
+
 def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
     current = load_settings()
     merged = deep_merge(current, patch)
@@ -47,6 +61,7 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
         webllm = dict(reasoning.get("webllm") or {})
         webllm["enabled"] = True
         merged["reasoning"] = {**reasoning, "webllm": webllm}
+    _redact_reasoning_api_key(merged)
     with open(_path(), "w", encoding="utf-8") as fh:
         json.dump(merged, fh, indent=2, ensure_ascii=False)
     return merged
@@ -233,20 +248,49 @@ def _load_ref_text_sidecar(tts_cfg) -> None:
                 pass
 
 
+def _apply_reasoning_env(reasoning: dict[str, Any], *, provider: str, litellm_mode: str, litellm_model: str, base_url: str, model: str, api_key: str) -> None:
+    if provider:
+        reasoning["provider"] = provider
+    if litellm_mode:
+        litellm_cfg = dict(reasoning.get("litellm") or {})
+        litellm_cfg["mode"] = litellm_mode
+        reasoning["litellm"] = litellm_cfg
+    if litellm_model:
+        litellm_cfg = dict(reasoning.get("litellm") or {})
+        litellm_cfg["model"] = litellm_model
+        reasoning["model"] = litellm_model
+        reasoning["litellm"] = litellm_cfg
+    if base_url:
+        reasoning["base_url"] = base_url
+    if model and not litellm_model:
+        reasoning["model"] = model
+    if api_key:
+        reasoning["api_key"] = api_key
+
+
 def _overlay_env_vars(settings: dict[str, Any]) -> None:
     """Apply VA_* process env onto settings (gateway loads .env at startup)."""
     reasoning = settings.setdefault("reasoning", {})
     discord = settings.setdefault("discord", {})
 
+    provider = os.environ.get("VA_LLM_PROVIDER", "").strip()
+    litellm_mode = os.environ.get("VA_LLM_LITELLM_MODE", "").strip()
+    litellm_model = os.environ.get("VA_LLM_LITELLM_MODEL", "").strip()
     base_url = os.environ.get("VA_LLM_BASE_URL", "").strip()
-    if base_url:
-        reasoning["base_url"] = base_url
     model = os.environ.get("VA_LLM_MODEL", "").strip()
-    if model:
-        reasoning["model"] = model
-    api_key = os.environ.get("VA_LLM_API_KEY", "").strip()
-    if api_key:
-        reasoning["api_key"] = api_key
+    api_key = (
+        os.environ.get("OPENROUTER_API_KEY", "").strip()
+        or os.environ.get("VA_LLM_API_KEY", "").strip()
+    )
+    _apply_reasoning_env(
+        reasoning,
+        provider=provider,
+        litellm_mode=litellm_mode,
+        litellm_model=litellm_model,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+    )
 
     token = os.environ.get("VA_DISCORD_TOKEN", "").strip()
     if token:
@@ -276,6 +320,13 @@ def _overlay_env_vars(settings: dict[str, Any]) -> None:
 def _overlay_env_file(settings: dict[str, Any], env_path) -> None:
     if not env_path.is_file():
         return
+    reasoning = settings.setdefault("reasoning", {})
+    provider = ""
+    litellm_mode = ""
+    litellm_model = ""
+    base_url = ""
+    model = ""
+    api_key = ""
     for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -283,12 +334,20 @@ def _overlay_env_file(settings: dict[str, Any], env_path) -> None:
         key, _, val = line.partition("=")
         key = key.strip()
         val = val.strip().strip('"').strip("'")
-        if key == "VA_LLM_BASE_URL" and val:
-            settings.setdefault("reasoning", {})["base_url"] = val
+        if key == "VA_LLM_PROVIDER" and val:
+            provider = val
+        elif key == "VA_LLM_LITELLM_MODE" and val:
+            litellm_mode = val
+        elif key == "VA_LLM_LITELLM_MODEL" and val:
+            litellm_model = val
+        elif key == "VA_LLM_BASE_URL" and val:
+            base_url = val
         elif key == "VA_LLM_MODEL" and val:
-            settings.setdefault("reasoning", {})["model"] = val
-        elif key == "VA_LLM_API_KEY" and val:
-            settings.setdefault("reasoning", {})["api_key"] = val
+            model = val
+        elif key == "OPENROUTER_API_KEY" and val:
+            api_key = val
+        elif key == "VA_LLM_API_KEY" and val and not api_key:
+            api_key = val
         elif key == "VA_DISCORD_TOKEN" and val:
             disc = settings.setdefault("discord", {})
             disc["token"] = val
@@ -298,6 +357,15 @@ def _overlay_env_file(settings: dict[str, Any], env_path) -> None:
                 settings.setdefault("discord", {})["guild_id"] = int(val)
             except ValueError:
                 pass
+    _apply_reasoning_env(
+        reasoning,
+        provider=provider,
+        litellm_mode=litellm_mode,
+        litellm_model=litellm_model,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+    )
 
 
 def seed_env_defaults() -> dict[str, Any]:
