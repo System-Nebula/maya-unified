@@ -67,6 +67,7 @@ export class MayaVrmEngine {
     this.clock = new THREE.Clock();
     this.vrm = null;
     this._loader = new GLTFLoader();
+    this._loader.setWithCredentials(true);
     this._loader.register((parser) => new VRMLoaderPlugin(parser));
     this._mixer = null;
     this._idleAction = null;

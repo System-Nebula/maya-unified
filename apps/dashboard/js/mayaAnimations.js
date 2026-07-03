@@ -2,7 +2,9 @@
 document.addEventListener("alpine:init", () => {
   Alpine.data("mayaAnimations", () => ({
     catalog: [],
-    loading: true,
+    catalogLoading: false,
+    previewLoading: false,
+    previewReady: false,
     uploading: false,
     playing: "",
     error: "",
@@ -24,8 +26,8 @@ document.addEventListener("alpine:init", () => {
 
     async init() {
       await this.$nextTick();
-      await Promise.all([this.loadCatalog(), this.loadSettings()]);
-      await this.bootPreview();
+      await this.loadSettings();
+      await Promise.all([this.loadCatalog(), this.bootPreview()]);
       this._unsub = window.mayaAgentEvents?.subscribe((ev) => this.onAgentEvent(ev));
     },
 
@@ -55,10 +57,11 @@ document.addEventListener("alpine:init", () => {
     },
 
     async loadCatalog() {
-      this.loading = true;
+      this.catalogLoading = true;
       this.error = "";
       try {
-        const r = await fetch("/api/voice/agent/animations");
+        const r = await fetch("/api/voice/agent/animations", { credentials: "same-origin" });
+        if (!r.ok) throw new Error(`Could not list animations (HTTP ${r.status})`);
         const data = await r.json();
         this.catalog = data.catalog || (data.animations || []).map((f) => ({
           file: f,
@@ -70,17 +73,28 @@ document.addEventListener("alpine:init", () => {
       } catch (e) {
         this.error = String(e.message || e);
       } finally {
-        this.loading = false;
+        this.catalogLoading = false;
       }
+    },
+
+    async loadPreviewModel() {
+      const { resolveVrmUrl } = await import("/dashboard/js/mayaVrmEngine.js");
+      const r = await fetch("/api/voice/settings", { credentials: "same-origin" });
+      const data = r.ok ? await r.json() : {};
+      const vrm = data.settings?.vrm || {};
+      const model = vrm.model || "1556438947145020822.vrm";
+      this.modelLabel = model.replace(/^.*[/\\]/, "");
+      if (vrm.idle_animation) this.idleAnimation = vrm.idle_animation;
+      return resolveVrmUrl(model);
     },
 
     async ensureEngine() {
       if (this._engine) return this._engine;
       if (this._enginePromise) return this._enginePromise;
       this._enginePromise = (async () => {
-        const { MayaVrmEngine, resolveVrmUrl } = await import("/dashboard/js/mayaVrmEngine.js");
+        const { MayaVrmEngine } = await import("/dashboard/js/mayaVrmEngine.js");
         const canvas = this.$refs.previewCanvas;
-        if (!canvas) throw new Error("Preview canvas not ready");
+        if (!canvas) throw new Error("Preview canvas not ready — refresh the page");
         const engine = new MayaVrmEngine(canvas, {
           lookAtCamera: true,
           cameraDistance: 1.75,
@@ -89,26 +103,39 @@ document.addEventListener("alpine:init", () => {
         });
         engine.watchResize();
         engine.start();
-        const r = await fetch("/api/voice/settings");
-        const data = r.ok ? await r.json() : {};
-        const model = data.settings?.vrm?.model || "";
-        await engine.loadModel(resolveVrmUrl(model));
+        const modelUrl = await this.loadPreviewModel();
+        await engine.loadModel(modelUrl);
         this._engine = engine;
+        this.previewReady = true;
         return engine;
       })();
       try {
         return await this._enginePromise;
-      } finally {
+      } catch (e) {
         this._enginePromise = null;
+        throw e;
       }
     },
 
     async bootPreview() {
+      this.previewLoading = true;
+      this.previewReady = false;
+      this.error = "";
       try {
         await this.ensureEngine();
       } catch (e) {
-        this.error = String(e.message || e);
+        this.error = `Avatar preview failed: ${e.message || e}`;
+        this.previewReady = false;
+      } finally {
+        this.previewLoading = false;
       }
+    },
+
+    async reloadPreview() {
+      this._engine?.dispose();
+      this._engine = null;
+      this._enginePromise = null;
+      await this.bootPreview();
     },
 
     isIdle(item) {
@@ -116,6 +143,10 @@ document.addEventListener("alpine:init", () => {
     },
 
     async playItem(item, loop = null) {
+      if (!this.previewReady) {
+        this.error = "Wait for the avatar preview to finish loading";
+        return;
+      }
       const engine = await this.ensureEngine();
       if (!engine) return;
       const useLoop = loop != null ? loop : !!item.loop;
@@ -196,9 +227,16 @@ document.addEventListener("alpine:init", () => {
           body: fd,
           credentials: "same-origin",
         });
-        const data = await r.json();
+        let data = {};
+        const raw = await r.text();
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch (_) {
+          this.error = raw?.slice(0, 200) || `Upload failed (HTTP ${r.status})`;
+          return;
+        }
         if (!r.ok || !data.ok) {
-          this.error = data.error || data.detail || `Upload failed (${r.status})`;
+          this.error = data.error || data.detail || `Upload failed (HTTP ${r.status})`;
           return;
         }
         this.catalog = data.catalog || this.catalog;
@@ -206,6 +244,7 @@ document.addEventListener("alpine:init", () => {
         this.uploadLabel = "";
         this.uploadDesc = "";
         this.showToast(`Uploaded ${data.file}`);
+        if (!this.previewReady) await this.bootPreview();
         const added = this.catalog.find((c) => c.file === data.file);
         if (added) await this.playItem(added);
       } catch (e) {

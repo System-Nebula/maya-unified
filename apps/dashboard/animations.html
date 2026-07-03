@@ -66,12 +66,15 @@
         <section class="ma-panel">
           <div class="ma-panel-head">
             <h2>Live preview</h2>
-            <button type="button" class="ma-btn" @click="stopPlayback()" x-show="playing">Stop</button>
+            <div style="display:flex;gap:8px">
+              <button type="button" class="ma-btn" @click="reloadPreview()" x-show="!previewLoading">Reload</button>
+              <button type="button" class="ma-btn" @click="stopPlayback()" x-show="playing">Stop</button>
+            </div>
           </div>
           <div class="ma-preview-wrap">
             <canvas x-ref="previewCanvas" aria-label="VRM animation preview"></canvas>
-            <div class="ma-preview-overlay" x-show="loading">Loading avatar…</div>
-            <div class="ma-preview-badge" x-show="!loading">
+            <div class="ma-preview-overlay" x-show="previewLoading">Loading avatar…</div>
+            <div class="ma-preview-badge" x-show="previewReady && !previewLoading">
               <span x-text="modelLabel"></span>
               · idle: <strong x-text="idleAnimation"></strong>
             </div>
@@ -86,7 +89,7 @@
         <section class="ma-panel">
           <div class="ma-panel-head">
             <h2>Library</h2>
-            <button type="button" class="ma-btn" @click="loadCatalog()" :disabled="loading">Refresh</button>
+            <button type="button" class="ma-btn" @click="loadCatalog()" :disabled="catalogLoading">Refresh</button>
           </div>
 
           <div class="ma-upload">
@@ -117,8 +120,8 @@
           </div>
 
           <div class="ma-library">
-            <div class="ma-empty" x-show="!loading && !catalog.length">No animations yet — upload a Mixamo FBX (With Skin is fine; we retarget to your VRM).</div>
-            <div class="ma-empty" x-show="loading">Loading library…</div>
+            <div class="ma-empty" x-show="!catalogLoading && !catalog.length">No animations yet — upload a Mixamo FBX (With Skin is fine; we retarget to your VRM).</div>
+            <div class="ma-empty" x-show="catalogLoading">Loading library…</div>
             <template x-for="item in catalog" :key="item.file">
               <article
                 class="ma-card"
@@ -147,8 +150,8 @@
       </div>
     </div>
 
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
-    <script type="module" src="/dashboard/js/mayaShell.js"></script>
-    <script type="module" src="/dashboard/js/mayaAnimations.js"></script>
+    <script defer src="/dashboard/js/mayaShell.js"></script>
+    <script defer src="/dashboard/js/mayaAnimations.js"></script>
+    <script defer src="/sdk/vendor/alpine.min.js"></script>
   </body>
 </html>

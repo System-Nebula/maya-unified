@@ -91,6 +91,7 @@ export function resolveAnimationUrl(name) {
 export async function loadMixamoClipForVrm(vrm, url) {
   if (!vrm?.humanoid || !url) return null;
   const loader = new FBXLoader();
+  loader.setWithCredentials(true);
   const asset = await loader.loadAsync(url);
   const clip =
     THREE.AnimationClip.findByName(asset.animations, "mixamo.com") || asset.animations?.[0];
