@@ -82,7 +82,7 @@
       </div>
 
       <div class="md-grid" :class="{ 'sidebar-collapsed': !$store.mayaConversation.sidebarOpen }">
-        <div class="md-col-main" x-data="mayaVrmViewer()" x-init="init()">
+        <div class="md-col-main" :class="{ 'md-col-main--immersive': immersive && enabled && !poppedOut }" x-data="mayaVrmViewer()" x-init="init()">
           <div class="md-main-banners">
             <div class="md-banner error" x-show="agentError" x-text="agentError"></div>
             <div class="md-banner error" x-show="agentReady && !llmOk && $store.mayaConversation.useWebLLM" x-text="llmError || 'WebLLM loading — keep this tab open in Chrome/Edge with WebGPU.'"></div>
@@ -174,8 +174,11 @@
                 <button class="mv-btn mv-btn-primary" @click="$store.mayaConversation.sendServer()" :disabled="$store.mayaConversation.sending || !textChatReady">Send</button>
                 <button class="mv-btn" @click="$store.mayaConversation.reset()">Clear transcript</button>
                 <label class="md-detailed-toggle">
-                  <input type="checkbox" x-model="$store.mayaConversation.detailed" @change="$store.mayaConversation.persistDetailed()" />
-                  Detailed
+                  <span class="md-detailed-toggle-label">Detailed</span>
+                  <span class="mv-switch">
+                    <input type="checkbox" x-model="$store.mayaConversation.detailed" @change="$store.mayaConversation.persistDetailed()" />
+                    <span class="slider"></span>
+                  </span>
                 </label>
                 <button
                   type="button"
@@ -192,7 +195,7 @@
             </div>
           </div>
 
-          <!-- Immersive VRM left tray (fixed; engine relocates here when active) -->
+          <!-- Immersive VRM left column (in-flow beside transcript when active) -->
           <div
             class="md-vrm-immersive"
             x-show="immersive && enabled && !poppedOut"
@@ -496,12 +499,15 @@
                 <div class="md-group-body" x-show="isOpen('avatar')" x-cloak>
                   <div class="md-row md-row-end md-vrm-actions" x-show="!$store.mayaVrm.poppedOut">
                     <label class="md-immersive-setting">
-                      <input
-                        type="checkbox"
-                        :checked="$store.mayaVrm.immersive"
-                        @change="$store.mayaVrm.toggleImmersive($event.target.checked)"
-                      />
                       <span>Immersive view</span>
+                      <span class="mv-switch">
+                        <input
+                          type="checkbox"
+                          :checked="$store.mayaVrm.immersive"
+                          @change="$store.mayaVrm.toggleImmersive($event.target.checked)"
+                        />
+                        <span class="slider"></span>
+                      </span>
                     </label>
                     <button type="button" class="mv-btn md-vrm-pop-btn" @click="$store.mayaVrm.openPopout()" title="Open floating avatar window">Pop out</button>
                   </div>
