@@ -174,14 +174,6 @@ async def get_conversation_turns(
         else:
             entry["role"] = role
             turns.append(entry)
-    # #region agent log
-    try:
-        import json as _json, time as _time
-        with open("/home/warby/Workspace-git/maya-unified/.cursor/debug-3692cd.log", "a") as _f:
-            _f.write(_json.dumps({"sessionId": "3692cd", "runId": "post-fix", "hypothesisId": "A", "location": "store.py:get_conversation_turns", "message": "get_conversation_turns ran with current corr_id code", "data": {"row_count": len(turns)}, "timestamp": int(_time.time() * 1000)}) + "\n")
-    except Exception:
-        pass
-    # #endregion
     return turns
 
 

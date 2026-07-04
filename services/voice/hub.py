@@ -730,14 +730,6 @@ class VoiceHub(Hub):
             return {"ok": True, "text": reply, "mode": "basic", "corr_id": corr_id}
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            # #region agent log
-            try:
-                import json as _json, time as _time, traceback as _tb
-                with open("/home/warby/Workspace-git/maya-unified/.cursor/debug-3692cd.log", "a") as _f:
-                    _f.write(_json.dumps({"sessionId": "3692cd", "hypothesisId": "A_B_D", "location": "hub.py:_chat_text_basic", "message": "chat_text_basic exception", "data": {"exc_type": type(exc).__name__, "exc": msg, "traceback": _tb.format_exc()}, "timestamp": int(_time.time() * 1000)}) + "\n")
-            except Exception:
-                pass
-            # #endregion
             self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
             self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
             return {"ok": False, "error": msg}
@@ -916,25 +908,9 @@ class VoiceHub(Hub):
                     reply_message_id,
                     completion_id or "",
                 )
-            # #region agent log
-            try:
-                import json as _json, time as _time
-                with open("/home/warby/Workspace-git/maya-unified/.cursor/debug-3692cd.log", "a") as _f:
-                    _f.write(_json.dumps({"sessionId": "3692cd", "runId": "post-fix", "hypothesisId": "A", "location": "hub.py:chat_text/enriched", "message": "chat_text enriched success (current corr_id code ran)", "data": {"corr_id": corr_id, "reply_len": len(reply)}, "timestamp": int(_time.time() * 1000)}) + "\n")
-            except Exception:
-                pass
-            # #endregion
             return {"ok": True, "text": reply, "corr_id": corr_id}
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            # #region agent log
-            try:
-                import json as _json, time as _time, traceback as _tb
-                with open("/home/warby/Workspace-git/maya-unified/.cursor/debug-3692cd.log", "a") as _f:
-                    _f.write(_json.dumps({"sessionId": "3692cd", "hypothesisId": "A_B_C", "location": "hub.py:chat_text/enriched", "message": "chat_text enriched exception", "data": {"exc_type": type(exc).__name__, "exc": msg, "traceback": _tb.format_exc()}, "timestamp": int(_time.time() * 1000)}) + "\n")
-            except Exception:
-                pass
-            # #endregion
             self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
             self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
             return {"ok": False, "error": msg}
