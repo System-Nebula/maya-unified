@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import structlog
 
@@ -15,6 +16,34 @@ from services.ids import new_corr_id, new_message_id
 
 log = structlog.get_logger("maya-unified.cmd")
 
+_LONG_RUNNING_CMDS = frozenset({"imagine", "blend"})
+_LONG_CMD_TIMEOUT_SEC = 300.0
+_CMD_ACK_TEXT = {
+    "imagine": (
+        "Generating image… Z-Image Turbo may take up to a minute while models load."
+    ),
+    "blend": "Running Blender…",
+}
+
+
+def _format_cmd_exception(exc: BaseException, *, cmd_id: str, timeout_sec: float) -> str:
+    if isinstance(exc, TimeoutError):
+        return (
+            f"{cmd_id} timed out after {int(timeout_sec)}s waiting for the gateway event loop"
+        )
+    msg = str(exc).strip()
+    if msg:
+        return msg
+    return f"{cmd_id} failed: {type(exc).__name__}"
+
+
+def _resolve_cmd_error_text(reply: CmdResult, *, cmd_id: str | None = None) -> str:
+    label = cmd_id or "command"
+    err = (reply.error or reply.text or "").strip()
+    if err:
+        return err
+    return f"{label} failed with no details"
+
 
 def _chat_event(payload: dict, *, corr_id: str, message_id: str | None = None) -> dict:
     out = dict(payload)
@@ -24,23 +53,65 @@ def _chat_event(payload: dict, *, corr_id: str, message_id: str | None = None) -
     return out
 
 
+def _persist_cmd_turns(
+    *,
+    operator_id: str | None,
+    text: str,
+    reply: CmdResult,
+    corr_id: str,
+    reply_message_id: str,
+    skip_user: bool,
+) -> None:
+    if not operator_id:
+        return
+    from services.operator_voice import context as op_ctx
+
+    try:
+        if not skip_user and text.strip():
+            op_ctx.append_turn(operator_id, "user", text, corr_id=corr_id)
+        if reply.ok:
+            body = (reply.text or "").strip()
+            if body:
+                op_ctx.append_turn(
+                    operator_id,
+                    "assistant",
+                    body,
+                    message_id=reply_message_id,
+                    corr_id=corr_id,
+                )
+        else:
+            err = _resolve_cmd_error_text(reply)
+            op_ctx.append_turn(operator_id, "system", err, corr_id=corr_id)
+    except Exception:
+        log.exception("cmd_persist_failed", corr_id=corr_id, operator_id=operator_id)
+
+
 def _broadcast_cmd_turn(
     *,
     text: str,
     reply: CmdResult,
     operator_id: str | None,
+    corr_id: str | None = None,
+    skip_user: bool = False,
+    cmd_id: str | None = None,
 ) -> dict:
     from services.voice.hub import hub
 
-    corr_id = new_corr_id()
+    corr_id = corr_id or new_corr_id()
     user_message_id = new_message_id()
     reply_message_id = new_message_id()
-    hub.broadcast(
-        _chat_event({"type": "user", "text": text}, corr_id=corr_id, message_id=user_message_id),
-        operator_id=operator_id,
-    )
+    if not skip_user:
+        hub.broadcast(
+            _chat_event({"type": "user", "text": text}, corr_id=corr_id, message_id=user_message_id),
+            operator_id=operator_id,
+        )
     if reply.ok:
-        ai_payload: dict = {"type": "ai", "text": reply.text, "mode": "cmd"}
+        ai_payload: dict = {
+            "type": "ai",
+            "text": reply.text,
+            "mode": "cmd",
+            "cmd_phase": "done",
+        }
         if reply.artifacts:
             ai_payload["artifacts"] = reply.artifacts
         hub.broadcast(
@@ -52,7 +123,7 @@ def _broadcast_cmd_turn(
             operator_id=operator_id,
         )
     else:
-        err_text = reply.error or reply.text or "command failed"
+        err_text = _resolve_cmd_error_text(reply, cmd_id=cmd_id)
         err_payload: dict = {
             "type": "error",
             "text": err_text,
@@ -74,13 +145,73 @@ def _broadcast_cmd_turn(
             error=err_text,
         )
     hub.broadcast(_chat_event({"type": "status", "value": "idle"}, corr_id=corr_id), operator_id=operator_id)
+    _persist_cmd_turns(
+        operator_id=operator_id,
+        text=text,
+        reply=reply,
+        corr_id=corr_id,
+        reply_message_id=reply_message_id,
+        skip_user=skip_user,
+    )
     out = reply.to_chat_response()
+    if not reply.ok:
+        out["error"] = _resolve_cmd_error_text(reply, cmd_id=cmd_id)
     out["corr_id"] = corr_id
     if reply.trace_id:
         out["trace_id"] = reply.trace_id
     if reply.job_id:
         out["job_id"] = reply.job_id
     return out
+
+
+def _immediate_pending_response(*, corr_id: str, cmd_id: str) -> dict:
+    ack = _CMD_ACK_TEXT.get(cmd_id, "Working on it…")
+    return {
+        "ok": True,
+        "mode": "cmd",
+        "cmd_phase": "ack",
+        "pending": True,
+        "text": ack,
+        "corr_id": corr_id,
+    }
+
+
+def _run_long_cmd_background(
+    *,
+    parsed: ParsedCmd,
+    ctx: CmdContext,
+    text: str,
+    corr_id: str,
+    operator_id: str | None,
+) -> None:
+    from services.async_bridge import run_sync
+
+    try:
+        result = run_sync(
+            dispatch_cmd_async(parsed, ctx),
+            timeout=_LONG_CMD_TIMEOUT_SEC,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("long_cmd_background_failed", cmd_id=parsed.cmd_id, corr_id=corr_id)
+        result = CmdResult(
+            ok=False,
+            error=_format_cmd_exception(
+                exc,
+                cmd_id=parsed.cmd_id,
+                timeout_sec=_LONG_CMD_TIMEOUT_SEC,
+            ),
+        )
+    try:
+        _broadcast_cmd_turn(
+            text=text,
+            reply=result,
+            operator_id=operator_id,
+            corr_id=corr_id,
+            skip_user=True,
+            cmd_id=parsed.cmd_id,
+        )
+    except Exception:
+        log.exception("long_cmd_broadcast_failed", corr_id=corr_id, cmd_id=parsed.cmd_id)
 
 
 def try_dispatch_chat_cmd(text: str, *, operator_id: str | None = None) -> dict | None:
@@ -92,15 +223,36 @@ def try_dispatch_chat_cmd(text: str, *, operator_id: str | None = None) -> dict 
     if parsed is None:
         return None
     ctx = CmdContext(operator_id=operator_id, surface=CmdSurface.DASHBOARD, raw_text=text)
-    from services.voice.hub import hub
+    corr_id = new_corr_id()
+    long_running = parsed.cmd_id in _LONG_RUNNING_CMDS
+    if long_running:
+        from services.voice.hub import hub
 
-    if parsed.cmd_id in {"imagine", "blend"}:
         hub.broadcast(
-            _chat_event({"type": "status", "value": "thinking"}, corr_id=new_corr_id()),
+            _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
             operator_id=operator_id,
         )
+        thread = threading.Thread(
+            target=_run_long_cmd_background,
+            kwargs={
+                "parsed": parsed,
+                "ctx": ctx,
+                "text": text,
+                "corr_id": corr_id,
+                "operator_id": operator_id,
+            },
+            daemon=True,
+            name=f"cmd-{parsed.cmd_id}-{corr_id}",
+        )
+        thread.start()
+        return _immediate_pending_response(corr_id=corr_id, cmd_id=parsed.cmd_id)
     result = asyncio.run(dispatch_cmd_async(parsed, ctx))
-    return _broadcast_cmd_turn(text=text, reply=result, operator_id=operator_id)
+    return _broadcast_cmd_turn(
+        text=text,
+        reply=result,
+        operator_id=operator_id,
+        cmd_id=parsed.cmd_id,
+    )
 
 
 async def dispatch_cmd_request(

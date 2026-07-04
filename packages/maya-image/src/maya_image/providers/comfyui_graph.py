@@ -195,14 +195,87 @@ async def _query_gpu_processes() -> list[dict[str, Any]]:
         return []
 
 
+def _is_html_error_body(body: str) -> bool:
+    head = (body or "").lstrip()[:240].lower()
+    return head.startswith("<!doctype") or "<html" in head or "_next/static" in head
+
+
+def _truncate_summary(text: str, limit: int = 200) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
+
+
+_MODEL_MOUNT_MISMATCH_MSG = (
+    "ComfyUI cannot see local model files. Weights may exist on the host but the "
+    "container mount likely targets the wrong path (/app/ComfyUI vs /opt/ComfyUI). "
+    "See infra/comfyui/README.md."
+)
+
+
+def _extract_node_errors(body: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    node_errors = data.get("node_errors")
+    if node_errors:
+        return node_errors if isinstance(node_errors, dict) else None
+    message = str(data.get("message", ""))
+    start = message.find("{")
+    if start == -1:
+        return None
+    try:
+        nested = json.loads(message[start:])
+    except Exception:
+        return None
+    nested_errors = nested.get("node_errors")
+    return nested_errors if isinstance(nested_errors, dict) else None
+
+
+def _is_model_mount_mismatch(node_errors: dict[str, Any] | None) -> bool:
+    if not node_errors:
+        return False
+    loader_types = {"VAELoader", "UNETLoader", "CLIPLoader"}
+    for node_err in node_errors.values():
+        if not isinstance(node_err, dict):
+            continue
+        if node_err.get("class_type") not in loader_types:
+            continue
+        for err in node_err.get("errors") or []:
+            if not isinstance(err, dict) or err.get("type") != "value_not_in_list":
+                continue
+            details = str(err.get("details") or "")
+            extra = err.get("extra_info") or {}
+            received = str(extra.get("received_value") or "")
+            if "not in []" in details:
+                return True
+            if (
+                node_err.get("class_type") == "VAELoader"
+                and received.endswith(".safetensors")
+                and "pixel_space" in details
+            ):
+                return True
+    return False
+
+
 def _summarize_comfy_error(
-    body: str, *, workflow_name: str = "", vllm_hint: bool = False
+    body: str,
+    *,
+    workflow_name: str = "",
+    vllm_hint: bool = False,
+    status_code: int | None = None,
 ) -> str:
     """Pull node-level detail out of a comfyui-api error body when present.
 
     comfyui-api wraps the real ComfyUI failure as a stringified JSON inside ``message``
     (e.g. ``"Failed to queue prompt: {... node_errors ...}"``), so dig into that.
     """
+    if _is_html_error_body(body):
+        code = status_code if status_code is not None else "?"
+        api_url = os.getenv("COMFYUI_API_URL", "http://127.0.0.1:3000").rstrip("/")
+        return _truncate_summary(
+            f"COMFYUI_API_URL ({api_url}) returned HTML {code} — "
+            "is comfyui-api running? (curl $COMFYUI_API_URL/docs should not be a web app 404 page)"
+        )
+
     details = _extract_execution_error(body)
     if _is_oom_error(body, details, workflow_name=workflow_name):
         return _oom_user_message(workflow_name=workflow_name, vllm_hint=vllm_hint)
@@ -210,21 +283,26 @@ def _summarize_comfy_error(
     try:
         data = json.loads(body)
     except Exception:
-        return body[:300]
-    node_errors = data.get("node_errors")
+        return _truncate_summary(body)
+    node_errors = _extract_node_errors(body, data)
+    if node_errors and _is_model_mount_mismatch(node_errors):
+        return _truncate_summary(_MODEL_MOUNT_MISMATCH_MSG)
     if not node_errors:
         message = str(data.get("message", ""))
-        start = message.find("{")
-        if start != -1:
-            try:
-                node_errors = json.loads(message[start:]).get("node_errors")
-            except Exception:
-                node_errors = None
-        if not node_errors:
-            if _GENERIC_OUTPUT_FAIL in message and "krea2" in workflow_name.lower():
-                return _oom_user_message(workflow_name=workflow_name, vllm_hint=vllm_hint)
-            return (message or json.dumps(data))[:300]
-    return json.dumps(node_errors)[:400]
+        if _GENERIC_OUTPUT_FAIL in message and "krea2" in workflow_name.lower():
+            return _oom_user_message(workflow_name=workflow_name, vllm_hint=vllm_hint)
+        return _truncate_summary(message or json.dumps(data))
+    return _truncate_summary(json.dumps(node_errors))
+
+
+def _summarize_comfy_unreachable(*, workflow_name: str = "", cause: Exception | None = None) -> str:
+    api_url = os.getenv("COMFYUI_API_URL", "http://127.0.0.1:3000").rstrip("/")
+    cause_text = f" ({cause})" if cause else ""
+    return _truncate_summary(
+        f"cannot connect to COMFYUI_API_URL ({api_url}) — "
+        f"is comfyui-api running?{cause_text} "
+        "(curl $COMFYUI_API_URL/docs should not be a web app 404 page)"
+    )
 
 
 def _set_comfy_error_span_attrs(span: trace.Span, body: str) -> dict[str, str | None]:
@@ -242,6 +320,7 @@ KREA2_MIN_VRAM_FREE_BYTES = int(os.getenv("COMFYUI_KREA2_MIN_VRAM_FREE", str(2 *
 KREA2_REQUIRED_VRAM_BYTES = int(os.getenv("COMFYUI_KREA2_REQUIRED_VRAM", str(18 * 1024**3)))
 COMFYUI_GRAPH_CONNECT_TIMEOUT_SEC = float(os.getenv("COMFYUI_GRAPH_CONNECT_TIMEOUT_SEC", "5"))
 COMFYUI_GRAPH_SUBMIT_TIMEOUT_SEC = float(os.getenv("COMFYUI_GRAPH_SUBMIT_TIMEOUT_SEC", "90"))
+COMFYUI_ZIMAGE_SUBMIT_TIMEOUT_SEC = float(os.getenv("COMFYUI_ZIMAGE_SUBMIT_TIMEOUT_SEC", "180"))
 COMFYUI_GRAPH_KREA2_SUBMIT_TIMEOUT_SEC = float(
     os.getenv("COMFYUI_GRAPH_KREA2_SUBMIT_TIMEOUT_SEC", "120")
 )
@@ -257,6 +336,13 @@ def _submit_timeout_sec(workflow, request: ImageJobInput | None = None) -> float
         return MAYA_ARENA_SUBMIT_TIMEOUT_SEC
     model_key = str((getattr(workflow, "params", None) or {}).get("model_key") or "")
     workflow_name = str(getattr(workflow, "name", "")).lower()
+    workflow_id = str(getattr(workflow, "id", "")).lower()
+    if (
+        workflow_id == "z-image-turbo-t2i"
+        or "z-image" in workflow_name
+        or model_key == "z-image-turbo"
+    ):
+        return COMFYUI_ZIMAGE_SUBMIT_TIMEOUT_SEC
     if model_key in VRAM_HEAVY_MODEL_KEYS or "krea2" in workflow_name:
         return COMFYUI_GRAPH_KREA2_SUBMIT_TIMEOUT_SEC
     if model_key in {"flux2", "ideogram/4.0"} or "flux2" in workflow_name or "ideogram" in workflow_name:
@@ -572,6 +658,11 @@ class ComfyUIGraphProvider:
                     stage="post_prompt", timeout_sec=read_sec, workflow_name=workflow.name
                 )
             ) from exc
+        except (httpx.ConnectError, httpx.NetworkError) as exc:
+            summary = _summarize_comfy_unreachable(workflow_name=workflow.name, cause=exc)
+            raise RuntimeError(
+                f"comfyui-api /prompt failed for {workflow.name}: {summary}"
+            ) from exc
         elapsed_ms = int((time.monotonic() - started) * 1000)
         span.set_attribute("comfyui.post_prompt_ms", elapsed_ms)
         if resp.status_code >= 400:
@@ -650,7 +741,10 @@ class ComfyUIGraphProvider:
                 if resp.status_code >= 400:
                     vllm_hint = bool(self._last_vram_contention.get("vllm_detected"))
                     summary = _summarize_comfy_error(
-                        resp.text, workflow_name=workflow.name, vllm_hint=vllm_hint
+                        resp.text,
+                        workflow_name=workflow.name,
+                        vllm_hint=vllm_hint,
+                        status_code=resp.status_code,
                     )
                     logger.error(
                         "comfyui_graph_submit_failed",
