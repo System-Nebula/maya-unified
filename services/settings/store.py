@@ -8,6 +8,7 @@ from copy import deepcopy
 from typing import Any
 
 from services.paths import DATA_DIR, ROOT, VOICE_RUNTIME, agent_data_dir, resolve_voice_ref, resolve_runtime_file
+from services.imagine.settings import migrate_imagine_settings
 from services.settings.schema import DEFAULT_SETTINGS, deep_merge
 
 _PLACEHOLDER_API_KEYS = frozenset({"", "lm-studio", "vllm-local", "local-model"})
@@ -51,10 +52,10 @@ def load_settings() -> dict[str, Any]:
                 webllm = dict(reasoning.get("webllm") or {})
                 webllm["enabled"] = True
                 merged["reasoning"] = {**reasoning, "webllm": webllm}
-            return merged
+            return migrate_imagine_settings(merged)
     except (OSError, TypeError, ValueError):
         pass
-    return deepcopy(DEFAULT_SETTINGS)
+    return migrate_imagine_settings(deepcopy(DEFAULT_SETTINGS))
 
 
 def _redact_reasoning_api_key(settings: dict[str, Any]) -> None:
@@ -80,6 +81,7 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
     _redact_reasoning_api_key(merged)
     if isinstance(merged.get("discord"), dict):
         merged["discord"] = _normalize_discord_settings(dict(merged["discord"]))
+    merged = migrate_imagine_settings(merged)
     with open(_path(), "w", encoding="utf-8") as fh:
         json.dump(merged, fh, indent=2, ensure_ascii=False)
     return merged

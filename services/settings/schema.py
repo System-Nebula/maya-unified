@@ -73,6 +73,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "max_rounds": 3,
         "mcp_enabled": True,
     },
+    "imagine": {
+        "enabled": False,
+        "comfyui_url": "http://127.0.0.1:3030",
+    },
     "discord": {
         "enabled": False,
         "token": "",
@@ -80,8 +84,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "auto_reply": True,
         "attach_voice": True,
         "music_volume": 0.85,
-        "imagine_enabled": False,
-        "comfyui_url": "http://localhost:3000",
         "voice_channel_aliases": {},
         "default_voice_channel": "",
         "youtube_cookies_browser": "",

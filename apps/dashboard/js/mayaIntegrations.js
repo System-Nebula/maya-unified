@@ -1,4 +1,4 @@
-/** Settings → Integrations — Google connect and permission management. */
+/** Settings → Integrations — Google connect and ComfyUI status. */
 document.addEventListener("alpine:init", () => {
   Alpine.data("mayaIntegrations", () => ({
     loading: true,
@@ -10,6 +10,9 @@ document.addEventListener("alpine:init", () => {
       permissions: {},
       connected_at: null,
     },
+    imagineHealth: null,
+    imagineHealthTesting: false,
+    imagineCapability: null,
     permissionKeys: [
       "mailbox_read",
       "mailbox_send",
@@ -36,7 +39,7 @@ document.addEventListener("alpine:init", () => {
     },
 
     async init() {
-      await this.refresh();
+      await Promise.all([this.refresh(), this.refreshImagine()]);
     },
 
     async refresh() {
@@ -62,6 +65,69 @@ document.addEventListener("alpine:init", () => {
       } finally {
         this.loading = false;
       }
+    },
+
+    async refreshImagine() {
+      try {
+        const [healthR, statusR] = await Promise.all([
+          fetch("/api/voice/settings/imagine-health", { method: "POST" }),
+          fetch("/api/voice/agent/status"),
+        ]);
+        if (healthR.ok) {
+          const data = await healthR.json();
+          this.imagineHealth = data.health || null;
+        }
+        if (statusR.ok) {
+          const st = await statusR.json();
+          this.imagineCapability = st.capabilities?.imagine ?? null;
+          if (!this.imagineHealth && st.imagine_health) {
+            this.imagineHealth = st.imagine_health;
+          }
+        }
+      } catch (_) {
+        /* non-fatal — card shows offline */
+      }
+    },
+
+    async testImagineConnection() {
+      this.imagineHealthTesting = true;
+      try {
+        const r = await fetch("/api/voice/settings/imagine-health", { method: "POST" });
+        if (!r.ok) throw new Error("ComfyUI health check failed");
+        const data = await r.json();
+        this.imagineHealth = data.health || null;
+      } catch (e) {
+        this.imagineHealth = { status: "error", detail: String(e.message || e) };
+      } finally {
+        this.imagineHealthTesting = false;
+      }
+    },
+
+    openImagineSettings() {
+      if (this.$root?.tab != null) {
+        this.$root.tab = "imagine";
+        const url = new URL(window.location.href);
+        url.searchParams.set("tab", "imagine");
+        window.history.replaceState({}, "", url);
+        return;
+      }
+      window.location.href = "/settings?tab=imagine";
+    },
+
+    imagineStatusLabel() {
+      const h = this.imagineHealth;
+      if (!h) return "Unknown";
+      if (h.status === "ok") return "Connected";
+      if (h.status === "warn") return "Degraded";
+      if (h.status === "skipped") return "Skipped";
+      return "Offline";
+    },
+
+    imagineStatusClass() {
+      const h = this.imagineHealth;
+      if (!h) return "";
+      if (h.status === "ok") return "operator";
+      return "";
     },
 
     connectUrl(permissions) {

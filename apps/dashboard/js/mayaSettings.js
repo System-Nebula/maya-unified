@@ -23,6 +23,8 @@ document.addEventListener("alpine:init", () => {
     currentVoice: "",
     health: null,
     healthTesting: false,
+    imagineHealth: null,
+    imagineHealthTesting: false,
     voiceUploadName: "",
     vrmUploadName: "",
     voiceUploadBusy: false,
@@ -106,9 +108,10 @@ document.addEventListener("alpine:init", () => {
         mouth_gain: 6, mouth_smoothing: 0.5, look_at_camera: true, camera_distance: 1.8,
         idle_enabled: true, idle_animation: "Idle.fbx",
       },
+      imagine: { enabled: false, comfyui_url: "http://127.0.0.1:3030" },
       discord: {
         enabled: false, token: "", guild_id: "", auto_reply: true, attach_voice: true,
-        music_volume: 0.85, imagine_enabled: false, comfyui_url: "http://localhost:3000",
+        music_volume: 0.85,
         default_voice_channel: "", voice_channel_aliases: {},
         youtube_cookies_browser: "", youtube_cookies_file: "",
       },
@@ -155,6 +158,7 @@ document.addEventListener("alpine:init", () => {
         title: "Connect",
         items: [
           { id: "discord", label: "Discord", hint: "Bot · music" },
+          { id: "imagine", label: "Imagine", hint: "ComfyUI · /imagine" },
           { id: "integrations", label: "Integrations", hint: "Google · mailbox" },
           { id: "platform", label: "Platform", hint: "DB · telemetry" },
         ],
@@ -544,6 +548,20 @@ document.addEventListener("alpine:init", () => {
         this.health = { status: "error", detail: String(e.message || e) };
       } finally {
         this.healthTesting = false;
+      }
+    },
+
+    async testImagineConnection() {
+      this.imagineHealthTesting = true;
+      try {
+        const r = await fetch("/api/voice/settings/imagine-health", { method: "POST" });
+        if (!r.ok) throw new Error("ComfyUI health check failed");
+        const data = await r.json();
+        this.imagineHealth = data.health || null;
+      } catch (e) {
+        this.imagineHealth = { status: "error", detail: String(e.message || e) };
+      } finally {
+        this.imagineHealthTesting = false;
       }
     },
 

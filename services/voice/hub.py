@@ -455,6 +455,12 @@ class VoiceHub(Hub):
             from services.llm.health import invalidate_llm_health_cache
 
             invalidate_llm_health_cache()
+        if _section_changed(previous, merged, "discord") or _section_changed(previous, merged, "imagine"):
+            from services.discovery.registry import refresh_comfyui
+            from services.imagine.health import invalidate_comfyui_health_cache
+
+            invalidate_comfyui_health_cache()
+            refresh_comfyui(merged)
         needs_reload = any(_section_changed(previous, merged, s) for s in _RELOAD_SECTIONS)
         tts_reload = _tts_engine_changed(previous, merged)
         if (needs_reload or tts_reload) and (self.ready or self.agent is not None):
@@ -543,8 +549,16 @@ class VoiceHub(Hub):
         return settings.get("reasoning", {}) or {}
 
     def agent_capabilities(self, operator_id: str | None = None) -> dict[str, Any]:
+        from services.discovery.policy import imagine_capability_ready
+        from services.discovery.registry import snapshot as services_snapshot
+        from services.imagine.health import get_cached_comfyui_health
         from services.llm.health import build_agent_capabilities, get_cached_llm_health
 
+        settings = load_effective_settings(operator_id)
+        imagine_health = get_cached_comfyui_health(
+            settings, run_probe=False, operator_id=operator_id
+        )
+        imagine_ready = imagine_capability_ready(imagine_health, settings=settings)
         reasoning = self._reasoning_settings(operator_id)
         provider = str(reasoning.get("provider", "lm_studio")).lower()
         if provider == "webllm":
@@ -560,15 +574,28 @@ class VoiceHub(Hub):
                 "latency_ms": None,
                 "models_found": 0,
             }
-            caps = build_agent_capabilities(self.ready, health)
+            caps = build_agent_capabilities(
+                self.ready, health, imagine_ready=imagine_ready
+            )
             # WebLLM chat is routed through the voice agent bridge, not server-side LLM.
             caps["text_chat"] = self.ready and browser_ready
             caps["text_chat_enriched"] = caps["text_chat"]
-            return {"health": health, "capabilities": caps, "llm_ready": caps["text_chat"]}
-        else:
-            health = get_cached_llm_health(reasoning if isinstance(reasoning, dict) else {})
-        caps = build_agent_capabilities(self.ready, health)
-        return {"health": health, "capabilities": caps, "llm_ready": caps["text_chat"]}
+            return {
+                "health": health,
+                "capabilities": caps,
+                "llm_ready": caps["text_chat"],
+                "imagine_health": imagine_health,
+                "services": services_snapshot(),
+            }
+        health = get_cached_llm_health(reasoning if isinstance(reasoning, dict) else {})
+        caps = build_agent_capabilities(self.ready, health, imagine_ready=imagine_ready)
+        return {
+            "health": health,
+            "capabilities": caps,
+            "llm_ready": caps["text_chat"],
+            "imagine_health": imagine_health,
+            "services": services_snapshot(),
+        }
 
     def llm_status(self, operator_id: str | None = None) -> dict:
         from config import CONFIG

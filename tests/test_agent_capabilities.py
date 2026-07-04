@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,10 +26,37 @@ def test_build_agent_capabilities_progressive():
     assert partial["tts_preview"] is False
     assert partial["eq_live"] is False
     assert partial["tools"] is False
+    assert partial["imagine"] is True
 
-    full = build_agent_capabilities(voice_ready=True, health=health)
+    full = build_agent_capabilities(voice_ready=True, health=health, imagine_ready=False)
     assert full["text_chat_enriched"] is True
     assert full["voice_session"] is True
+    assert full["imagine"] is False
+
+
+def test_status_poll_imagine_ready_when_cached_comfyui_ok(monkeypatch) -> None:
+    from services.discovery.policy import imagine_capability_ready
+
+    monkeypatch.setenv("ENV", "development")
+    monkeypatch.delenv("MAYA_FAKE_COMFY", raising=False)
+    settings = {"imagine": {"enabled": True, "comfyui_url": "http://127.0.0.1:3030"}}
+    cached_ok = {
+        "status": "ok",
+        "detail": "comfyui-api reachable at http://127.0.0.1:3030",
+        "url": "http://127.0.0.1:3030",
+    }
+
+    with patch(
+        "services.imagine.health.get_cached_comfyui_health",
+        return_value=cached_ok,
+    ):
+        health = cached_ok
+        imagine_ready = imagine_capability_ready(health, settings=settings)
+        caps = build_agent_capabilities(True, {"status": "ok"}, imagine_ready=imagine_ready)
+
+    assert health["status"] == "ok"
+    assert health["detail"] != "Probe skipped"
+    assert caps["imagine"] is True
 
 
 def test_hub_chat_text_delegates_to_basic_when_not_ready():

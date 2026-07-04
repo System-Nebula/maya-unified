@@ -77,7 +77,12 @@ def llm_ready_from_health(result: dict[str, Any]) -> bool:
     return str(result.get("status", "")).lower() in ("ok", "warn")
 
 
-def build_agent_capabilities(voice_ready: bool, health: dict[str, Any]) -> dict[str, bool]:
+def build_agent_capabilities(
+    voice_ready: bool,
+    health: dict[str, Any],
+    *,
+    imagine_ready: bool = True,
+) -> dict[str, bool]:
     """Capability matrix for progressive UI disclosure."""
     llm_ready = llm_ready_from_health(health)
     return {
@@ -87,6 +92,7 @@ def build_agent_capabilities(voice_ready: bool, health: dict[str, Any]) -> dict[
         "tts_preview": voice_ready,
         "eq_live": voice_ready,
         "tools": voice_ready,
+        "imagine": imagine_ready,
     }
 
 

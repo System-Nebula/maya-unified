@@ -107,6 +107,20 @@ def llm_health(request: Request) -> dict:
     return {"ok": True, "health": health}
 
 
+@router.post("/imagine-health")
+def imagine_health(request: Request) -> dict:
+    """Probe comfyui-api reachability at the configured ComfyUI URL."""
+    from services.discovery.registry import refresh_comfyui
+    from services.imagine.health import apply_comfyui_url_from_settings, invalidate_comfyui_health_cache
+
+    oid = _operator_id(request)
+    settings = load_effective_settings(oid or None)
+    invalidate_comfyui_health_cache()
+    apply_comfyui_url_from_settings(settings)
+    health = refresh_comfyui(settings)
+    return {"ok": True, "health": health}
+
+
 @router.post("")
 def patch_settings(request: Request, data: dict = Body(...)) -> dict:
     patch = data.get("settings", data) if isinstance(data, dict) else {}

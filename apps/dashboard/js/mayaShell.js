@@ -33,6 +33,7 @@ document.addEventListener("alpine:init", () => {
     llmModel: "",
     llmProvider: "",
     llmHealth: null,
+    imagineHealth: null,
     capabilities: {
       text_chat: false,
       text_chat_enriched: false,
@@ -40,6 +41,7 @@ document.addEventListener("alpine:init", () => {
       tts_preview: false,
       eq_live: false,
       tools: false,
+      imagine: false,
     },
     webllmBridgeStatus: "",
     voiceAvailable: true,
@@ -203,7 +205,7 @@ document.addEventListener("alpine:init", () => {
         }
       }
       if (ev.type === "status") this.s.status = ev.value || this.s.status;
-      if (ev.type === "error" && ev.text) this.s.error = ev.text;
+      if (ev.type === "error" && ev.text && ev.mode !== "cmd") this.s.error = ev.text;
       if (ev.type === "settings") this.initWebLLMBridge();
       if (ev.type === "settings" && window.mayaBrowserAudioOutput) {
         window.mayaBrowserAudioOutput.handleEvent(ev);
@@ -233,6 +235,7 @@ document.addEventListener("alpine:init", () => {
         this.s.llmModel = d.llm_model || "";
         this.s.llmProvider = d.llm_provider || "";
         this.s.llmHealth = d.llm_health || null;
+        this.s.imagineHealth = d.imagine_health || null;
         if (d.capabilities && typeof d.capabilities === "object") {
           this.s.capabilities = { ...this.s.capabilities, ...d.capabilities };
         }
