@@ -27,6 +27,9 @@ _tool_counter: Any = None
 _error_counter: Any = None
 _llm_probe_latency: Any = None
 _llm_probe_counter: Any = None
+_tts_ttfa_latency: Any = None
+_tts_synth_latency: Any = None
+_tts_encode_latency: Any = None
 
 
 class _JsonFormatter(logging.Formatter):
@@ -66,6 +69,7 @@ def setup_observability() -> None:
     """Configure stdlib logging and optional OpenTelemetry exporters."""
     global _configured, _tracer, _meter, _turn_counter, _tool_counter, _error_counter
     global _llm_probe_latency, _llm_probe_counter
+    global _tts_ttfa_latency, _tts_synth_latency, _tts_encode_latency
     if _configured:
         return
 
@@ -119,6 +123,7 @@ def setup_observability() -> None:
 def _setup_otel(obs, root: logging.Logger) -> None:
     global _tracer, _meter, _turn_counter, _tool_counter, _error_counter
     global _llm_probe_latency, _llm_probe_counter
+    global _tts_ttfa_latency, _tts_synth_latency, _tts_encode_latency
     try:
         from opentelemetry import metrics, trace
         from opentelemetry.sdk.resources import Resource
@@ -166,6 +171,21 @@ def _setup_otel(obs, root: logging.Logger) -> None:
             _llm_probe_counter = _meter.create_counter(
                 "llm.health.checks",
                 description="LLM health probes",
+            )
+            _tts_ttfa_latency = _meter.create_histogram(
+                "tts.ttfa",
+                unit="ms",
+                description="TTS time-to-first-audio",
+            )
+            _tts_synth_latency = _meter.create_histogram(
+                "tts.synth",
+                unit="ms",
+                description="TTS synthesis wall time",
+            )
+            _tts_encode_latency = _meter.create_histogram(
+                "tts.encode",
+                unit="ms",
+                description="TTS WAV encode time",
             )
         except Exception as exc:  # noqa: BLE001
             root.warning("OTEL metrics disabled: %s", exc)
@@ -321,3 +341,13 @@ def record_llm_probe(
         _llm_probe_latency.record(latency_ms, attrs)
     if _llm_probe_counter is not None:
         _llm_probe_counter.add(1, attrs)
+
+
+def record_tts(timing: dict[str, float | int]) -> None:
+    """Record TTS latency histograms (metadata only)."""
+    if _tts_ttfa_latency is not None and timing.get("ttfa_ms") is not None:
+        _tts_ttfa_latency.record(float(timing["ttfa_ms"]))
+    if _tts_synth_latency is not None and timing.get("synth_ms") is not None:
+        _tts_synth_latency.record(float(timing["synth_ms"]))
+    if _tts_encode_latency is not None and timing.get("encode_ms") is not None:
+        _tts_encode_latency.record(float(timing["encode_ms"]))

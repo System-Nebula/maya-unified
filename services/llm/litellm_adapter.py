@@ -36,6 +36,7 @@ class LiteLLMAdapter:
   def __init__(self, cfg: LLMConfig | None = None, *, litellm_model: str | None = None):
       self.cfg = cfg or CONFIG.llm
       self.litellm_model = litellm_model or self.cfg.model
+      self.last_completion_id: str | None = None
 
   def base_system_prompt(self, *, include_style_cue: bool = True) -> str:
       system = self.cfg.system_prompt
@@ -84,7 +85,11 @@ class LiteLLMAdapter:
           messages.extend(history[-keep:])
       messages.append({"role": "user", "content": user_text})
       resp = litellm.completion(**self._completion_kwargs(messages, stream=True, max_tokens=None, model=None))
+      self.last_completion_id = None
       for chunk in resp:
+          chunk_id = getattr(chunk, "id", None)
+          if chunk_id:
+              self.last_completion_id = str(chunk_id)
           try:
               delta = chunk.choices[0].delta.content
           except (AttributeError, IndexError, TypeError):
@@ -96,7 +101,11 @@ class LiteLLMAdapter:
       import litellm
 
       resp = litellm.completion(**self._completion_kwargs(messages, stream=True, max_tokens=None, model=None))
+      self.last_completion_id = None
       for chunk in resp:
+          chunk_id = getattr(chunk, "id", None)
+          if chunk_id:
+              self.last_completion_id = str(chunk_id)
           try:
               delta = chunk.choices[0].delta.content
           except (AttributeError, IndexError, TypeError):

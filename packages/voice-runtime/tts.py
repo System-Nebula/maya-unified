@@ -13,13 +13,16 @@ the model keeps decoding. Checking `stop` between chunks makes barge-in cheap.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
-from typing import Iterator, Tuple
+from typing import Any, Iterator, Tuple
 
 import numpy as np
 
 from config import CONFIG, TTSConfig
+
+log = logging.getLogger("voice-agent.tts")
 
 _TTS_SETUP_HINT = (
     "Install voice deps from the repo root: make setup\n"
@@ -43,6 +46,11 @@ class NullTTS:
     def stream(
         self, text: str, stop: threading.Event | None = None, instruct: str | None = None
     ) -> Iterator[Tuple[np.ndarray, int]]:
+        yield from ()
+
+    def stream_timed(
+        self, text: str, stop: threading.Event | None = None, instruct: str | None = None
+    ) -> Iterator[Tuple[np.ndarray, int, dict[str, Any]]]:
         yield from ()
 
     def warmup(self) -> None:
@@ -228,6 +236,35 @@ class Qwen3TTS:
             do_sample=self.cfg.do_sample,
         )
 
+    def stream_timed(
+        self, text: str, stop: threading.Event | None = None, instruct: str | None = None
+    ) -> Iterator[Tuple[np.ndarray, int, dict[str, Any]]]:
+        """Yield (float32 mono audio, sample_rate, engine_timing) per chunk."""
+        text = text.strip()
+        if not text:
+            return
+        gen = self._generator(text, instruct=instruct)
+        first = True
+        try:
+            for audio_chunk, sr, timing in gen:
+                if stop is not None and stop.is_set():
+                    break
+                self.sr = int(sr)
+                timing = dict(timing or {})
+                if first and timing:
+                    log.info(
+                        "tts chunk0 prefill_ms=%.0f decode_ms=%.0f chunk_index=%s",
+                        float(timing.get("prefill_ms") or 0),
+                        float(timing.get("decode_ms") or 0),
+                        timing.get("chunk_index"),
+                    )
+                    first = False
+                yield _to_float32_mono(audio_chunk), int(sr), timing
+        finally:
+            close = getattr(gen, "close", None)
+            if callable(close):
+                close()
+
     def stream(
         self, text: str, stop: threading.Event | None = None, instruct: str | None = None
     ) -> Iterator[Tuple[np.ndarray, int]]:
@@ -237,25 +274,14 @@ class Qwen3TTS:
         synthesis mid-sentence instead of finishing the whole reply. `instruct`
         overrides the base voice description for this call only.
         """
-        text = text.strip()
-        if not text:
-            return
-        gen = self._generator(text, instruct=instruct)
-        try:
-            for audio_chunk, sr, _timing in gen:
-                if stop is not None and stop.is_set():
-                    break
-                self.sr = int(sr)
-                yield _to_float32_mono(audio_chunk), int(sr)
-        finally:
-            close = getattr(gen, "close", None)
-            if callable(close):
-                close()
+        for audio, sr, _timing in self.stream_timed(text, stop=stop, instruct=instruct):
+            yield audio, sr
 
-    def warmup(self) -> None:
+    def warmup(self, *, instruct: str | None = None) -> None:
         """One throwaway generation so the first real sentence isn't cold-start slow."""
         try:
-            for _ in self.stream("Warming up."):
+            eff = instruct if instruct is not None else self.cfg.instruct or None
+            for _ in self.stream("Warming up.", instruct=eff):
                 pass
             print("[tts] warmup complete.")
         except Exception as exc:  # noqa: BLE001 - warmup must never crash startup

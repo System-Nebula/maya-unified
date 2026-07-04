@@ -12,6 +12,7 @@ from typing import Any
 
 from server import Hub
 
+from services.ids import new_corr_id, new_message_id
 from services.llm.provider import create_llm_client, is_webllm_provider, swap_agent_llm
 from services.operator_voice.paths import operator_data_dir as op_data_dir
 from services.paths import DATA_DIR, VOICE_RUNTIME
@@ -19,7 +20,53 @@ from services.voice.data_migration import migrate_qwen3_data_to_unified
 from services.settings.store import apply_to_config, load_effective_settings, load_settings as load_global_settings, save_settings as save_global_settings
 
 _RELOAD_SECTIONS = frozenset({"discord", "tools", "memory", "runtime"})
-_inference_lock = threading.Lock()
+_llm_lock = threading.Lock()
+_tts_lock = threading.Lock()
+
+try:
+    from observability import get_logger, span
+except ImportError:  # pragma: no cover
+    import logging
+    from contextlib import contextmanager
+
+    get_logger = logging.getLogger
+
+    @contextmanager
+    def span(*_args, **_kwargs):
+        yield None
+
+
+log = get_logger("maya-unified.hub")
+
+
+def _chat_event(
+    base: dict,
+    *,
+    corr_id: str,
+    message_id: str | None = None,
+    completion_id: str | None = None,
+) -> dict:
+    ev = {**base, "corr_id": corr_id}
+    if message_id:
+        ev["message_id"] = message_id
+    if completion_id:
+        ev["completion_id"] = completion_id
+    return ev
+
+
+def _llm_completion_id(llm: Any) -> str | None:
+    cid = getattr(llm, "last_completion_id", None)
+    return str(cid) if cid else None
+
+
+def _voice_cue_filtered_stream(stream):
+    """Strip leading VOICE: delivery cues from an LLM token stream when enabled."""
+    from agent import strip_voice_cue_stream
+    from config import CONFIG
+
+    if CONFIG.wants_style_cue():
+        return strip_voice_cue_stream(stream)
+    return stream
 
 
 @dataclass
@@ -403,10 +450,19 @@ class VoiceHub(Hub):
             content = str(msg.get("content") or "").strip()
             if not content:
                 continue
+            turn: dict[str, Any] = {"text": content}
+            if msg.get("message_id"):
+                turn["message_id"] = msg["message_id"]
+            if msg.get("corr_id"):
+                turn["corr_id"] = msg["corr_id"]
+            if msg.get("completion_id"):
+                turn["completion_id"] = msg["completion_id"]
             if role == "user":
-                turns.append({"role": "operator", "text": content})
+                turn["role"] = "operator"
+                turns.append(turn)
             elif role == "assistant":
-                turns.append({"role": "maya", "text": content})
+                turn["role"] = "maya"
+                turns.append(turn)
         return {
             "ok": True,
             "session_running": self.agent.is_session_running(),
@@ -491,24 +547,85 @@ class VoiceHub(Hub):
         if not llm_ready_from_health(health):
             return {"ok": False, "error": health.get("detail") or "LLM unavailable"}
         try:
-            self.broadcast({"type": "status", "value": "thinking"}, operator_id=operator_id)
-            self.broadcast({"type": "user", "text": text}, operator_id=operator_id)
-            system = (CONFIG.llm.system_prompt or "You are Maya, a helpful assistant.").strip()
-            messages = [
-                {"role": "system", "content": system},
-                {"role": "user", "content": text},
-            ]
+            corr_id = new_corr_id()
+            user_message_id = new_message_id()
+            reply_message_id = new_message_id()
             client = create_llm_client()
-            parts: list[str] = []
-            with _inference_lock:
-                for chunk in client.stream_messages(messages):
-                    parts.append(chunk)
-                    self.broadcast({"type": "ai", "text": chunk}, operator_id=operator_id)
-            reply = "".join(parts).strip()
-            self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
-            return {"ok": True, "text": reply, "mode": "basic"}
+            with span(
+                "chat.corr",
+                corr_id=corr_id,
+                user_message_id=user_message_id,
+                reply_message_id=reply_message_id,
+                operator_id=operator_id or "",
+                mode="basic",
+            ):
+                self.broadcast(
+                    _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
+                    operator_id=operator_id,
+                )
+                self.broadcast(
+                    _chat_event(
+                        {"type": "user", "text": text},
+                        corr_id=corr_id,
+                        message_id=user_message_id,
+                    ),
+                    operator_id=operator_id,
+                )
+                system = (CONFIG.llm.system_prompt or "You are Maya, a helpful assistant.").strip()
+                messages = [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": text},
+                ]
+                parts: list[str] = []
+                with _llm_lock:
+                    stream = _voice_cue_filtered_stream(client.stream_messages(messages))
+                    for chunk in stream:
+                        parts.append(chunk)
+                        self.broadcast(
+                            _chat_event(
+                                {"type": "ai", "text": chunk},
+                                corr_id=corr_id,
+                                message_id=reply_message_id,
+                            ),
+                            operator_id=operator_id,
+                        )
+                reply = "".join(parts).strip()
+                completion_id = _llm_completion_id(client)
+                self.broadcast(
+                    _chat_event(
+                        {"type": "status", "value": "idle"},
+                        corr_id=corr_id,
+                        message_id=reply_message_id,
+                        completion_id=completion_id,
+                    ),
+                    operator_id=operator_id,
+                )
+                log.info(
+                    "chat turn complete mode=basic corr_id=%s user_message_id=%s reply_message_id=%s completion_id=%s",
+                    corr_id,
+                    user_message_id,
+                    reply_message_id,
+                    completion_id or "",
+                )
+            # #region agent log
+            try:
+                import json as _json, time as _time
+                with open("/home/warby/Workspace-git/maya-unified/.cursor/debug-3692cd.log", "a") as _f:
+                    _f.write(_json.dumps({"sessionId": "3692cd", "runId": "post-fix", "hypothesisId": "A", "location": "hub.py:_chat_text_basic", "message": "chat_text_basic success (current corr_id code ran)", "data": {"corr_id": corr_id, "reply_len": len(reply)}, "timestamp": int(_time.time() * 1000)}) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            return {"ok": True, "text": reply, "mode": "basic", "corr_id": corr_id}
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
+            # #region agent log
+            try:
+                import json as _json, time as _time, traceback as _tb
+                with open("/home/warby/Workspace-git/maya-unified/.cursor/debug-3692cd.log", "a") as _f:
+                    _f.write(_json.dumps({"sessionId": "3692cd", "hypothesisId": "A_B_D", "location": "hub.py:_chat_text_basic", "message": "chat_text_basic exception", "data": {"exc_type": type(exc).__name__, "exc": msg, "traceback": _tb.format_exc()}, "timestamp": int(_time.time() * 1000)}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
             self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
             return {"ok": False, "error": msg}
@@ -532,28 +649,117 @@ class VoiceHub(Hub):
             if not llm.get("ok"):
                 return {"ok": False, "error": llm.get("error") or "LLM unavailable"}
         try:
-            self.broadcast({"type": "status", "value": "thinking"}, operator_id=operator_id)
-            self.broadcast({"type": "user", "text": text}, operator_id=operator_id)
-            messages = self.agent._build_messages(text, history_override=history_override)  # noqa: SLF001
-            parts: list[str] = []
-            with _inference_lock:
-                for chunk in self.agent.llm.stream_messages(messages):
-                    parts.append(chunk)
-                    self.broadcast({"type": "ai", "text": chunk}, operator_id=operator_id)
-            reply = "".join(parts).strip()
-            if reply:
-                if operator_id:
-                    from services.operator_voice import context as op_ctx
+            corr_id = new_corr_id()
+            user_message_id = new_message_id()
+            reply_message_id = new_message_id()
+            with span(
+                "chat.corr",
+                corr_id=corr_id,
+                user_message_id=user_message_id,
+                reply_message_id=reply_message_id,
+                operator_id=operator_id or "",
+                mode="enriched",
+            ):
+                self.broadcast(
+                    _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
+                    operator_id=operator_id,
+                )
+                self.broadcast(
+                    _chat_event(
+                        {"type": "user", "text": text},
+                        corr_id=corr_id,
+                        message_id=user_message_id,
+                    ),
+                    operator_id=operator_id,
+                )
+                messages = self.agent._build_messages(text, history_override=history_override)  # noqa: SLF001
+                parts: list[str] = []
+                with _llm_lock:
+                    stream = _voice_cue_filtered_stream(self.agent.llm.stream_messages(messages))
+                    for chunk in stream:
+                        parts.append(chunk)
+                        self.broadcast(
+                            _chat_event(
+                                {"type": "ai", "text": chunk},
+                                corr_id=corr_id,
+                                message_id=reply_message_id,
+                            ),
+                            operator_id=operator_id,
+                        )
+                reply = "".join(parts).strip()
+                completion_id = _llm_completion_id(self.agent.llm)
+                if reply:
+                    if operator_id:
+                        from services.operator_voice import context as op_ctx
 
-                    op_ctx.append_turn(operator_id, "user", text)
-                    op_ctx.append_turn(operator_id, "assistant", reply)
-                else:
-                    self.agent.history.append({"role": "user", "content": text})
-                    self.agent.history.append({"role": "assistant", "content": reply})
-            self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
-            return {"ok": True, "text": reply}
+                        op_ctx.append_turn(
+                            operator_id,
+                            "user",
+                            text,
+                            message_id=user_message_id,
+                            corr_id=corr_id,
+                        )
+                        op_ctx.append_turn(
+                            operator_id,
+                            "assistant",
+                            reply,
+                            message_id=reply_message_id,
+                            corr_id=corr_id,
+                            completion_id=completion_id,
+                        )
+                    else:
+                        self.agent.history.append(
+                            {
+                                "role": "user",
+                                "content": text,
+                                "message_id": user_message_id,
+                                "corr_id": corr_id,
+                            }
+                        )
+                        self.agent.history.append(
+                            {
+                                "role": "assistant",
+                                "content": reply,
+                                "message_id": reply_message_id,
+                                "corr_id": corr_id,
+                                "completion_id": completion_id,
+                            }
+                        )
+                self.broadcast(
+                    _chat_event(
+                        {"type": "status", "value": "idle"},
+                        corr_id=corr_id,
+                        message_id=reply_message_id,
+                        completion_id=completion_id,
+                    ),
+                    operator_id=operator_id,
+                )
+                log.info(
+                    "chat turn complete mode=enriched corr_id=%s user_message_id=%s reply_message_id=%s completion_id=%s",
+                    corr_id,
+                    user_message_id,
+                    reply_message_id,
+                    completion_id or "",
+                )
+            # #region agent log
+            try:
+                import json as _json, time as _time
+                with open("/home/warby/Workspace-git/maya-unified/.cursor/debug-3692cd.log", "a") as _f:
+                    _f.write(_json.dumps({"sessionId": "3692cd", "runId": "post-fix", "hypothesisId": "A", "location": "hub.py:chat_text/enriched", "message": "chat_text enriched success (current corr_id code ran)", "data": {"corr_id": corr_id, "reply_len": len(reply)}, "timestamp": int(_time.time() * 1000)}) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            return {"ok": True, "text": reply, "corr_id": corr_id}
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
+            # #region agent log
+            try:
+                import json as _json, time as _time, traceback as _tb
+                with open("/home/warby/Workspace-git/maya-unified/.cursor/debug-3692cd.log", "a") as _f:
+                    _f.write(_json.dumps({"sessionId": "3692cd", "hypothesisId": "A_B_C", "location": "hub.py:chat_text/enriched", "message": "chat_text enriched exception", "data": {"exc_type": type(exc).__name__, "exc": msg, "traceback": _tb.format_exc()}, "timestamp": int(_time.time() * 1000)}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
             self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
             return {"ok": False, "error": msg}
@@ -575,17 +781,63 @@ class VoiceHub(Hub):
         self.apply_room_context(room_id, snapshot)
         user_line = f"{member_name}: {text}"
         try:
-            self.broadcast({"type": "status", "value": "thinking"}, room_id=room_id)
-            self.broadcast({"type": "user", "text": user_line}, room_id=room_id)
-            messages = self.agent._build_messages(user_line, history_override=history)  # noqa: SLF001
-            parts: list[str] = []
-            with _inference_lock:
-                for chunk in self.agent.llm.stream_messages(messages):
-                    parts.append(chunk)
-                    self.broadcast({"type": "ai", "text": chunk}, room_id=room_id)
-            reply = "".join(parts).strip()
-            self.broadcast({"type": "status", "value": "idle"}, room_id=room_id)
-            return {"ok": True, "text": reply}
+            corr_id = new_corr_id()
+            user_message_id = new_message_id()
+            reply_message_id = new_message_id()
+            with span(
+                "chat.corr",
+                corr_id=corr_id,
+                user_message_id=user_message_id,
+                reply_message_id=reply_message_id,
+                room_id=room_id,
+                mode="room",
+            ):
+                self.broadcast(
+                    _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
+                    room_id=room_id,
+                )
+                self.broadcast(
+                    _chat_event(
+                        {"type": "user", "text": user_line},
+                        corr_id=corr_id,
+                        message_id=user_message_id,
+                    ),
+                    room_id=room_id,
+                )
+                messages = self.agent._build_messages(user_line, history_override=history)  # noqa: SLF001
+                parts: list[str] = []
+                with _llm_lock:
+                    stream = _voice_cue_filtered_stream(self.agent.llm.stream_messages(messages))
+                    for chunk in stream:
+                        parts.append(chunk)
+                        self.broadcast(
+                            _chat_event(
+                                {"type": "ai", "text": chunk},
+                                corr_id=corr_id,
+                                message_id=reply_message_id,
+                            ),
+                            room_id=room_id,
+                        )
+                reply = "".join(parts).strip()
+                completion_id = _llm_completion_id(self.agent.llm)
+                self.broadcast(
+                    _chat_event(
+                        {"type": "status", "value": "idle"},
+                        corr_id=corr_id,
+                        message_id=reply_message_id,
+                        completion_id=completion_id,
+                    ),
+                    room_id=room_id,
+                )
+                log.info(
+                    "chat turn complete mode=room corr_id=%s user_message_id=%s reply_message_id=%s completion_id=%s room_id=%s",
+                    corr_id,
+                    user_message_id,
+                    reply_message_id,
+                    completion_id or "",
+                    room_id,
+                )
+            return {"ok": True, "text": reply, "corr_id": corr_id}
         except Exception as exc:  # noqa: BLE001
             self.broadcast({"type": "status", "value": "idle"}, room_id=room_id)
             return {"ok": False, "error": str(exc)}
@@ -606,7 +858,7 @@ class VoiceHub(Hub):
 
         def _run() -> None:
             try:
-                with _inference_lock:
+                with _tts_lock:
                     self.agent.speak_preview(text, instruct=instruct)
             except Exception as exc:  # noqa: BLE001
                 msg = str(exc)
@@ -618,7 +870,9 @@ class VoiceHub(Hub):
 
     def render_speech(
         self, text: str, *, instruct: str | None = None, operator_id: str | None = None
-    ) -> tuple[bytes, int]:
+    ) -> tuple[bytes, int, dict[str, float]]:
+        import time
+
         if not self.ready or self.agent is None:
             raise RuntimeError(self.last_error or "agent not ready")
         voice = self.agent.voice
@@ -630,8 +884,46 @@ class VoiceHub(Hub):
         if not text:
             raise ValueError("empty text")
         instruct = (instruct or "").strip() or None
-        with _inference_lock:
-            return self.agent.render_speech(text, instruct=instruct)
+        lock_wait_start = time.perf_counter()
+        with _tts_lock:
+            lock_wait_ms = (time.perf_counter() - lock_wait_start) * 1000.0
+            wav_bytes, sr, timing = self.agent.render_speech(text, instruct=instruct)
+        timing = {**timing, "lock_wait_ms": lock_wait_ms}
+        try:
+            from observability import record_tts
+
+            record_tts(timing)
+        except ImportError:
+            pass
+        return wav_bytes, sr, timing
+
+    def iter_speech(
+        self, text: str, *, instruct: str | None = None, operator_id: str | None = None
+    ):
+        """Stream PCM chunks under the TTS lock (generator must be consumed promptly)."""
+        import time
+
+        if not self.ready or self.agent is None:
+            raise RuntimeError(self.last_error or "agent not ready")
+        voice = self.agent.voice
+        if voice is None or not getattr(voice, "available", True):
+            raise RuntimeError(getattr(voice, "degrade_reason", "TTS unavailable"))
+        if operator_id:
+            self.apply_operator_context(operator_id)
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("empty text")
+        instruct = (instruct or "").strip() or None
+        lock_wait_start = time.perf_counter()
+        with _tts_lock:
+            lock_wait_ms = (time.perf_counter() - lock_wait_start) * 1000.0
+            first = True
+            for pcm, sr, is_first, engine_timing in self.agent.iter_speech(text, instruct=instruct):
+                if first:
+                    yield pcm, sr, is_first, {**engine_timing, "lock_wait_ms": lock_wait_ms}
+                    first = False
+                else:
+                    yield pcm, sr, is_first, engine_timing
 
     def start(self, operator_id: str | None = None) -> dict:
         if not self.ready or self.agent is None:

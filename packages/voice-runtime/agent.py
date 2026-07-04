@@ -23,6 +23,7 @@ from config import CONFIG
 from chunker import sentence_chunks
 from llm import LLMClient, sanitize_llm_output
 from observability import get_logger, record_turn, span
+from services.ids import new_corr_id, new_message_id
 
 log = get_logger("agent")
 
@@ -42,16 +43,133 @@ def _clean_text(text: str) -> str:
     return re.sub(r"\s{2,}", " ", cleaned).strip()
 
 
+# Split a VOICE delivery cue from the spoken reply. Newline form (instruct) or
+# inline form (chat completion): lowercase descriptors then Capitalized reply.
+# Do not compile with re.IGNORECASE — it breaks the [A-Z]/[a-z] boundary.
+_INLINE_VOICE_BOUNDARY_RE = re.compile(r"(?<=[a-z,])\s+(?=[A-Z])")
+
+
+def _strip_voice_prefix(probe: str) -> tuple[bool, str]:
+    """Return (has_voice_prefix, text_after_voice_colon)."""
+    p = (probe or "").lstrip()
+    m = re.match(r"^\s*(?:[*_#]\s*)*", p)
+    rest = p[m.end() :] if m else p
+    if rest[:6].lower() != "voice:":
+        return False, probe or ""
+    return True, rest[6:].lstrip()
+
+
+def _find_voice_boundary(after_voice: str) -> tuple[int, str] | None:
+    """Return (index, kind) for newline or inline lowercase→Capital split."""
+    nl = after_voice.find("\n")
+    inline = _INLINE_VOICE_BOUNDARY_RE.search(after_voice)
+    if nl != -1 and (inline is None or nl <= inline.start()):
+        return nl, "newline"
+    if inline is not None:
+        return inline.start(), "inline"
+    return None
+
+
+def _reply_after_voice_boundary(after_voice: str, boundary: int, kind: str) -> str:
+    if kind == "newline":
+        return after_voice[boundary:].lstrip("\n")
+    match = _INLINE_VOICE_BOUNDARY_RE.search(after_voice, boundary)
+    return after_voice[match.end() :] if match else after_voice[boundary:].lstrip()
+
+
+def _split_voice_cue(text: str, *, eof: bool = False) -> tuple[str | None, str]:
+    """Split a leading VOICE: cue from the spoken reply.
+
+    Returns (cue, reply). When there is no VOICE: prefix, returns (None, text).
+    When the prefix is present but no boundary is found yet, returns (None, text)
+    unless *eof* is True — then the remainder after VOICE: is treated as cue-only.
+    """
+    probe = (text or "").lstrip()
+    has_voice, after_voice = _strip_voice_prefix(probe)
+    if not has_voice:
+        return None, text or ""
+
+    found = _find_voice_boundary(after_voice)
+    if found is None:
+        if eof:
+            cue = after_voice.strip().rstrip(".")
+            return (cue or None, "")
+        return None, text or ""
+
+    boundary, kind = found
+    cue = after_voice[:boundary].strip().rstrip(".")
+    reply = _reply_after_voice_boundary(after_voice, boundary, kind)
+    return (cue or None, reply)
+
+
+def _might_be_partial_voice_prefix(probe: str) -> bool:
+    """True while the buffer could still become a leading VOICE: cue."""
+    p = (probe or "").lstrip()
+    m = re.match(r"^\s*(?:[*_#]\s*)*", p)
+    rest = p[m.end() :] if m else p
+    if not rest:
+        return True
+    lower = rest.lower()
+    if lower.startswith("voice:"):
+        return True
+    return "voice:".startswith(lower)
+
+
+def strip_voice_cue_stream(token_stream, on_cue: Callable[[str | None], None] | None = None):
+    """Yield reply-only tokens, stripping a leading VOICE: delivery cue.
+
+    Buffers until a newline/inline boundary is found or the 160-char cap is hit.
+    Invokes *on_cue* once with the parsed cue (or None) when resolved."""
+    buf = ""
+    capturing = True
+    for tok in token_stream:
+        if not capturing:
+            yield tok
+            continue
+        buf += tok
+        probe = buf.lstrip()
+        if probe == "":
+            continue
+        has_voice, after_voice = _strip_voice_prefix(probe)
+        if not has_voice:
+            if _might_be_partial_voice_prefix(probe):
+                continue
+            capturing = False
+            yield probe
+            continue
+        if _find_voice_boundary(after_voice) is not None:
+            cue, reply = _split_voice_cue(probe)
+            if on_cue is not None:
+                on_cue(cue)
+            capturing = False
+            if reply:
+                yield reply
+        elif len(probe) > 160:
+            capturing = False
+            yield probe
+    if capturing:
+        probe = buf.lstrip()
+        has_voice, _ = _strip_voice_prefix(probe)
+        if has_voice:
+            cue, reply = _split_voice_cue(probe, eof=True)
+            if on_cue is not None:
+                on_cue(cue)
+            if reply:
+                yield reply
+        elif probe.strip():
+            yield probe
+
+
 def _strip_voice_delivery_line(text: str) -> str:
     """Drop leading VOICE: delivery cues (spoken/TTS only — not Discord text)."""
-    lines = (text or "").splitlines()
-    while lines:
-        first = lines[0].strip().lstrip("*_# ").strip()
-        if first[:6].lower() == "voice:":
-            lines.pop(0)
-            continue
-        break
-    return "\n".join(lines).strip()
+    remaining = (text or "").lstrip()
+    while remaining:
+        has_voice, _ = _strip_voice_prefix(remaining)
+        if not has_voice:
+            break
+        _, reply = _split_voice_cue(remaining, eof=True)
+        remaining = reply
+    return remaining.strip()
 
 
 _FILLER_WORDS = {
@@ -277,6 +395,10 @@ class VoiceAgent:
                 "TTS degraded — voice output unavailable: %s",
                 getattr(self.voice, "degrade_reason", "unknown"),
             )
+        elif CONFIG.tts.warmup and getattr(self.voice, "available", False):
+            self._ensure_icl_ref_text()
+            eff_instruct = (CONFIG.tts.instruct or "").strip() or None
+            self.voice.warmup(instruct=eff_instruct)
 
         # Acoustic Echo Cancellation for full-duplex (talk while AI speaks).
         self.aec = None
@@ -2012,7 +2134,45 @@ class VoiceAgent:
             else:
                 self._emit(type="status", value="idle")
 
-    def render_speech(self, text: str, *, instruct: str | None = None) -> tuple[bytes, int]:
+    def _resolve_render_instruct(self, instruct: str | None) -> str | None:
+        if instruct and instruct.strip():
+            return instruct.strip()
+        return (CONFIG.tts.instruct or "").strip() or None
+
+    def iter_speech(
+        self, text: str, *, instruct: str | None = None
+    ):
+        """Yield (pcm_f32le_bytes, sample_rate, is_first, engine_timing) for streaming HTTP."""
+        if self.voice is None or not getattr(self.voice, "available", True):
+            raise RuntimeError(
+                "TTS not loaded: "
+                f"{getattr(self.voice, 'degrade_reason', 'voice output unavailable')}"
+            )
+        cleaned = _clean_text((text or "").strip())
+        if not cleaned:
+            raise ValueError("Nothing to speak")
+        self._ensure_icl_ref_text()
+        eff_instruct = self._resolve_render_instruct(instruct)
+        log.info("TTS stream: %s", cleaned)
+
+        import numpy as np
+
+        stream_fn = (
+            self.voice.stream_timed
+            if hasattr(self.voice, "stream_timed")
+            else self.voice.stream
+        )
+        for i, item in enumerate(stream_fn(cleaned, instruct=eff_instruct)):
+            if len(item) == 3:
+                audio, sample_rate, timing = item
+            else:
+                audio, sample_rate = item
+                timing = {}
+            yield audio.astype(np.float32, copy=False).tobytes(), int(sample_rate), i == 0, timing
+
+    def render_speech(
+        self, text: str, *, instruct: str | None = None
+    ) -> tuple[bytes, int, dict[str, float]]:
         """Synthesize text to WAV bytes for browser playback (no PortAudio)."""
         if self.voice is None or not getattr(self.voice, "available", True):
             raise RuntimeError(
@@ -2023,30 +2183,67 @@ class VoiceAgent:
         if not cleaned:
             raise ValueError("Nothing to speak")
         self._ensure_icl_ref_text()
-        self._emit(type="ai", text=cleaned)
-        if instruct and instruct.strip():
-            eff_instruct = instruct.strip()
-        else:
-            eff_instruct = (CONFIG.tts.instruct or "").strip() or None
+        eff_instruct = self._resolve_render_instruct(instruct)
         log.info("TTS render: %s", cleaned)
 
         import io
+        import time
 
         import numpy as np
         import soundfile as sf
 
+        t0 = time.perf_counter()
+        prep_ms = (time.perf_counter() - t0) * 1000.0
+        t_synth = time.perf_counter()
         chunks: list[np.ndarray] = []
         sr = 0
-        for audio, sample_rate in self.voice.stream(cleaned, instruct=eff_instruct):
+        ttfa_ms = 0.0
+        engine_prefill_ms = 0.0
+        engine_decode_ms = 0.0
+        stream_fn = (
+            self.voice.stream_timed
+            if hasattr(self.voice, "stream_timed")
+            else self.voice.stream
+        )
+        for i, item in enumerate(stream_fn(cleaned, instruct=eff_instruct)):
+            if len(item) == 3:
+                audio, sample_rate, timing = item
+            else:
+                audio, sample_rate = item
+                timing = {}
+            if i == 0:
+                ttfa_ms = (time.perf_counter() - t_synth) * 1000.0
+                engine_prefill_ms = float(timing.get("prefill_ms") or 0)
+                engine_decode_ms = float(timing.get("decode_ms") or 0)
             chunks.append(audio)
             sr = sample_rate
+        synth_ms = (time.perf_counter() - t_synth) * 1000.0
         if not chunks or sr == 0:
             raise RuntimeError("TTS produced no audio")
 
+        t_enc = time.perf_counter()
         audio = np.concatenate(chunks)
         buf = io.BytesIO()
         sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
-        return buf.getvalue(), sr
+        encode_ms = (time.perf_counter() - t_enc) * 1000.0
+        total_ms = (time.perf_counter() - t0) * 1000.0
+        timing = {
+            "prep_ms": prep_ms,
+            "ttfa_ms": ttfa_ms,
+            "synth_ms": synth_ms,
+            "encode_ms": encode_ms,
+            "total_ms": total_ms,
+            "engine_prefill_ms": engine_prefill_ms,
+            "engine_decode_ms": engine_decode_ms,
+        }
+        log.info(
+            "TTS render done ttfa_ms=%.0f synth_ms=%.0f encode_ms=%.0f total_ms=%.0f",
+            ttfa_ms,
+            synth_ms,
+            encode_ms,
+            total_ms,
+        )
+        return buf.getvalue(), sr, timing
 
     def _effective_instruct(self) -> Optional[str]:
         """Combine the base voice description with this reply's delivery cue.
@@ -2063,50 +2260,48 @@ class VoiceAgent:
     def _parse_style_stream(self, token_stream):
         """Pull a leading 'VOICE: ...' delivery directive off the token stream,
         store it on self._turn_instruct, and yield the remaining (spoken) text."""
-        buf = ""
-        capturing = True
-        for tok in token_stream:
-            if not capturing:
-                yield tok
-                continue
-            buf += tok
-            probe = buf.lstrip()
-            if probe == "":
-                continue
-            nl = probe.find("\n")
-            if nl != -1:
-                line = probe[:nl].strip().lstrip("*_# ").strip()
-                remainder = probe[nl + 1:]
-                if line[:6].lower() == "voice:":
-                    self._turn_instruct = line[6:].strip().rstrip(".") or None
-                else:
-                    remainder = probe  # no directive - it's all reply text
-                capturing = False
-                if remainder:
-                    yield remainder
-            elif len(probe) > 160:
-                capturing = False
-                yield probe
-        if capturing:
-            probe = buf.strip().lstrip("*_# ").strip()
-            if probe[:6].lower() == "voice:":
-                self._turn_instruct = probe[6:].strip().rstrip(".") or None
-            elif probe:
-                yield probe
+        yield from strip_voice_cue_stream(
+            token_stream,
+            on_cue=lambda cue: setattr(self, "_turn_instruct", cue),
+        )
 
     def respond(self, user_text: str) -> None:
-        with span("voice.turn", user_text_len=len(user_text or "")):
-            self._respond_turn(user_text)
+        corr_id = new_corr_id()
+        user_message_id = new_message_id()
+        reply_message_id = new_message_id()
+        with span(
+            "voice.turn",
+            corr_id=corr_id,
+            user_message_id=user_message_id,
+            reply_message_id=reply_message_id,
+            user_text_len=len(user_text or ""),
+        ) as sp:
+            self._respond_turn(
+                user_text,
+                corr_id=corr_id,
+                user_message_id=user_message_id,
+                reply_message_id=reply_message_id,
+            )
+            completion_id = getattr(self.llm, "last_completion_id", None)
+            if completion_id and sp is not None and hasattr(sp, "set_attribute"):
+                sp.set_attribute("completion_id", str(completion_id))
         record_turn()
 
-    def _respond_turn(self, user_text: str) -> None:
+    def _respond_turn(
+        self,
+        user_text: str,
+        *,
+        corr_id: str,
+        user_message_id: str,
+        reply_message_id: str,
+    ) -> None:
         raw_text = user_text
         user_text = self._interpret_user_turn(user_text)
         if user_text != (raw_text or "").strip():
             log.info("interpreted: %r -> %r", raw_text, user_text)
         display_text = user_text or "[unclear audio]"
         log.info("user: %s", display_text)
-        self._emit(type="user", text=display_text)
+        self._emit(type="user", text=display_text, corr_id=corr_id, message_id=user_message_id)
         self.playback.stop()
         self.playback.begin_turn()
         self._barge_in_flag.clear()
@@ -2156,7 +2351,12 @@ class VoiceAgent:
                 token_stream = self.llm.stream_messages(messages)
             if CONFIG.wants_style_cue():
                 token_stream = self._parse_style_stream(token_stream)
-            full_reply = self._deliver(delivery, token_stream)
+            full_reply = self._deliver(
+                delivery,
+                token_stream,
+                corr_id=corr_id,
+                reply_message_id=reply_message_id,
+            )
 
             # Let queued audio finish unless interrupted.
             while self.playback.is_playing() and not self._barge_in_flag.is_set():
@@ -2181,12 +2381,37 @@ class VoiceAgent:
             self._emit(type="barge_in")
 
         if self.is_session_running():
-            self._emit(type="status", value="listening")
+            completion_id = getattr(self.llm, "last_completion_id", None)
+            listen_ev: dict[str, Any] = {
+                "type": "status",
+                "value": "listening",
+                "corr_id": corr_id,
+                "message_id": reply_message_id,
+            }
+            if completion_id:
+                listen_ev["completion_id"] = str(completion_id)
+            self._emit(**listen_ev)
 
         # Record the exchange for context.
-        self.history.append({"role": "user", "content": display_text})
+        self.history.append(
+            {
+                "role": "user",
+                "content": display_text,
+                "message_id": user_message_id,
+                "corr_id": corr_id,
+            }
+        )
         if full_reply:
-            self.history.append({"role": "assistant", "content": full_reply})
+            completion_id = getattr(self.llm, "last_completion_id", None)
+            self.history.append(
+                {
+                    "role": "assistant",
+                    "content": full_reply,
+                    "message_id": reply_message_id,
+                    "corr_id": corr_id,
+                    "completion_id": str(completion_id) if completion_id else None,
+                }
+            )
 
         # Persist to the session log and let the background review adapt memory.
         if self.memory is not None:
@@ -2198,7 +2423,14 @@ class VoiceAgent:
             except Exception as exc:  # noqa: BLE001
                 log.warning("memory turn logging failed: %s", exc)
 
-    def _deliver(self, delivery: str, token_stream) -> str:
+    def _deliver(
+        self,
+        delivery: str,
+        token_stream,
+        *,
+        corr_id: str,
+        reply_message_id: str,
+    ) -> str:
         """Route the LLM token stream to TTS per the delivery mode. Returns the
         full (cleaned) reply text for history."""
         spoke = [False]
@@ -2221,7 +2453,7 @@ class VoiceAgent:
                     continue
                 parts.append(chunk)
                 mark_speaking()
-                self._emit(type="ai", text=chunk)
+                self._emit(type="ai", text=chunk, corr_id=corr_id, message_id=reply_message_id)
                 self._speak(chunk)
             return " ".join(parts)
 
@@ -2236,7 +2468,7 @@ class VoiceAgent:
                 chunk = _clean_text(chunk)
                 if not chunk:
                     continue
-                self._emit(type="ai", text=chunk)
+                self._emit(type="ai", text=chunk, corr_id=corr_id, message_id=reply_message_id)
                 if not first_spoken:
                     first_text = chunk
                     mark_speaking()
@@ -2256,7 +2488,7 @@ class VoiceAgent:
                 break
             text += token
             if token:
-                self._emit(type="ai", text=token)
+                self._emit(type="ai", text=token, corr_id=corr_id, message_id=reply_message_id)
         text = _clean_text(text)
         if not text:
             return ""

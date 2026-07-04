@@ -78,5 +78,8 @@ class OperatorConversationMessage(Base):
     )
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
+    corr_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
+    completion_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     session: Mapped["OperatorConversationSession"] = relationship(back_populates="messages")

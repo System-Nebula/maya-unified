@@ -117,6 +117,10 @@ async def append_message(
     operator_id: str | uuid.UUID,
     role: str,
     content: str,
+    *,
+    message_id: str | None = None,
+    corr_id: str | None = None,
+    completion_id: str | None = None,
 ) -> None:
     content = (content or "").strip()
     if not content:
@@ -129,6 +133,9 @@ async def append_message(
         role=role,
         content=content,
         ts=datetime.now(timezone.utc),
+        message_id=message_id,
+        corr_id=corr_id,
+        completion_id=completion_id,
     )
     session.add(msg)
     await session.flush()
@@ -151,12 +158,30 @@ async def get_conversation_turns(
     turns: list[dict[str, str]] = []
     for row in rows.all():
         role = row.role
+        entry: dict[str, str] = {"text": row.content}
+        if row.message_id:
+            entry["message_id"] = row.message_id
+        if row.corr_id:
+            entry["corr_id"] = row.corr_id
+        if row.completion_id:
+            entry["completion_id"] = row.completion_id
         if role == "user":
-            turns.append({"role": "operator", "text": row.content})
+            entry["role"] = "operator"
+            turns.append(entry)
         elif role == "assistant":
-            turns.append({"role": "maya", "text": row.content})
+            entry["role"] = "maya"
+            turns.append(entry)
         else:
-            turns.append({"role": role, "text": row.content})
+            entry["role"] = role
+            turns.append(entry)
+    # #region agent log
+    try:
+        import json as _json, time as _time
+        with open("/home/warby/Workspace-git/maya-unified/.cursor/debug-3692cd.log", "a") as _f:
+            _f.write(_json.dumps({"sessionId": "3692cd", "runId": "post-fix", "hypothesisId": "A", "location": "store.py:get_conversation_turns", "message": "get_conversation_turns ran with current corr_id code", "data": {"row_count": len(turns)}, "timestamp": int(_time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     return turns
 
 
@@ -206,6 +231,9 @@ async def list_conversation_messages(
             "role": r.role,
             "content": r.content,
             "ts": r.ts.isoformat() if r.ts else None,
+            "message_id": r.message_id,
+            "corr_id": r.corr_id,
+            "completion_id": r.completion_id,
         }
         for r in rows.all()
     ]

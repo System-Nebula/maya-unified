@@ -75,6 +75,7 @@ class WebLLMBridgeClient:
     def __init__(self, cfg: LLMConfig | None = None):
         self.cfg = cfg or CONFIG.llm
         self._model_id = self._webllm_model_id()
+        self.last_completion_id: str | None = None
 
     def prefers_direct_chat(self) -> bool:
         return webllm_prefers_direct_chat(self._model_id)

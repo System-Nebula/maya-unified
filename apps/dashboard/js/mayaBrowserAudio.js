@@ -187,6 +187,7 @@
     resume: unlock,
     stop: pauseOutput,
     resumeOutput,
+    scheduleChunk,
     handleEvent,
   };
 

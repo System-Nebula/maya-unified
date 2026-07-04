@@ -71,6 +71,7 @@ class LLMClient:
     def __init__(self, cfg: LLMConfig | None = None):
         self.cfg = cfg or CONFIG.llm
         self.client = OpenAI(base_url=self.cfg.base_url, api_key=self.cfg.api_key)
+        self.last_completion_id: str | None = None
 
     # ----- message assembly -------------------------------------------------
 
@@ -140,6 +141,9 @@ class LLMClient:
                 for chunk in response:
                     if not chunk.choices:
                         continue
+                    chunk_id = getattr(chunk, "id", None)
+                    if chunk_id:
+                        self.last_completion_id = str(chunk_id)
                     text = self._delta_text(chunk.choices[0].delta)
                     if text:
                         out_q.put(("token", text))
@@ -167,6 +171,7 @@ class LLMClient:
                 break
 
     def _stream_with_fallback(self, messages: list[dict]) -> Iterator[str]:
+        self.last_completion_id = None
         kwargs: dict = dict(
             model=self.cfg.model,
             stream=True,

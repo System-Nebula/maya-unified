@@ -105,11 +105,27 @@ def save_personalities(
     return run_sync(_with_session(_go))
 
 
-def append_turn(operator_id: str | uuid.UUID, role: str, content: str) -> None:
+def append_turn(
+    operator_id: str | uuid.UUID,
+    role: str,
+    content: str,
+    *,
+    message_id: str | None = None,
+    corr_id: str | None = None,
+    completion_id: str | None = None,
+) -> None:
     from services.async_bridge import run_sync
 
     async def _go(session):
-        await op_store.append_message(session, operator_id, role, content)
+        await op_store.append_message(
+            session,
+            operator_id,
+            role,
+            content,
+            message_id=message_id,
+            corr_id=corr_id,
+            completion_id=completion_id,
+        )
 
     run_sync(_with_session(_go))
 

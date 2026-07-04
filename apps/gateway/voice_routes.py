@@ -215,15 +215,110 @@ def register_agent_routes(app) -> None:
                 },
                 status_code=503,
             )
+        oid = _operator_id(request)
+        if oid:
+            hub.apply_operator_context(oid)
+        from config import CONFIG
+        from services.voice import tts_cache
+        from services.voice.tts_stream import timing_response_headers
+
+        effective_instruct = instruct or (CONFIG.tts.instruct or "").strip() or ""
+        model_id = tts_cache.active_model_id(
+            CONFIG.tts.mode, CONFIG.tts.clone_model, CONFIG.tts.custom_model
+        )
+        cache_key = tts_cache.cache_key(
+            text,
+            effective_instruct,
+            hub.current_voice or "",
+            CONFIG.tts.mode,
+            model_id,
+        )
+        cached = tts_cache.get(cache_key)
+        if cached is not None:
+            headers = timing_response_headers({}, cache="hit", cache_key=cache_key)
+            return Response(content=cached, media_type="audio/wav", headers=headers)
         try:
-            wav_bytes, _sr = hub.render_speech(
+            wav_bytes, _sr, timing = hub.render_speech(
                 text,
                 instruct=instruct,
-                operator_id=_operator_id(request) or None,
+                operator_id=None,
             )
         except Exception as exc:  # noqa: BLE001
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
-        return Response(content=wav_bytes, media_type="audio/wav")
+        tts_cache.put(cache_key, wav_bytes)
+        headers = timing_response_headers(timing, cache="miss", cache_key=cache_key)
+        return Response(content=wav_bytes, media_type="audio/wav", headers=headers)
+
+    @app.post(f"{prefix}/tts/stream")
+    def agent_tts_stream(request: Request, data: dict = Body(...)):
+        payload = data or {}
+        instruct = str(payload.get("instruct", "") or "").strip() or None
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            return JSONResponse({"ok": False, "error": "empty text"}, status_code=400)
+        if not hub.ready or hub.agent is None:
+            return JSONResponse(
+                {"ok": False, "error": hub.last_error or "agent not ready"},
+                status_code=503,
+            )
+        voice = hub.agent.voice
+        if voice is None or not getattr(voice, "available", True):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": getattr(voice, "degrade_reason", "TTS unavailable"),
+                },
+                status_code=503,
+            )
+        oid = _operator_id(request)
+        if oid:
+            hub.apply_operator_context(oid)
+        from config import CONFIG
+        from services.voice import tts_cache
+        from services.voice.tts_stream import TtsStreamEncoder, timing_response_headers
+
+        effective_instruct = instruct or (CONFIG.tts.instruct or "").strip() or ""
+        model_id = tts_cache.active_model_id(
+            CONFIG.tts.mode, CONFIG.tts.clone_model, CONFIG.tts.custom_model
+        )
+        cache_key = tts_cache.cache_key(
+            text,
+            effective_instruct,
+            hub.current_voice or "",
+            CONFIG.tts.mode,
+            model_id,
+        )
+        cached = tts_cache.get(cache_key)
+        if cached is not None:
+            headers = timing_response_headers({}, cache="hit", cache_key=cache_key)
+            return Response(content=cached, media_type="audio/wav", headers=headers)
+
+        def _gen():
+            encoder = TtsStreamEncoder(cache_key=cache_key)
+            try:
+                chunks = hub.iter_speech(
+                    text,
+                    instruct=instruct,
+                    operator_id=None,
+                )
+                yield from encoder.frames(chunks)
+                if encoder.wav_bytes:
+                    tts_cache.put(cache_key, encoder.wav_bytes)
+                try:
+                    from observability import record_tts
+
+                    record_tts(encoder.timing)
+                except ImportError:
+                    pass
+            except Exception as exc:  # noqa: BLE001
+                err = json.dumps({"type": "error", "error": str(exc)}).encode("utf-8")
+                import struct
+
+                yield struct.pack("<I", len(err)) + err
+
+        headers = timing_response_headers({}, cache="miss", cache_key=cache_key)
+        headers["Content-Type"] = "application/octet-stream"
+        return StreamingResponse(_gen(), headers=headers)
 
     @app.post(f"{prefix}/webllm/ready")
     def webllm_ready(data: dict = Body(default_factory=dict)) -> dict:
