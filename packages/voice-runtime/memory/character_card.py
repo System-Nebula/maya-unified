@@ -203,17 +203,22 @@ def strip_wrapping_quotes(text: str) -> str:
 
 def strip_llm_artifacts(text: str) -> str:
     """Drop pseudo tool calls and roleplay control tokens that leak into speech."""
+    from tools.text_calls import strip_text_tool_calls
+
     body = (text or "").strip()
     if not body:
         return ""
     body = _START_TOKEN_RE.sub("", body)
     body = _PSEUDO_TOOL_CALL_RE.sub("", body)
+    body = strip_text_tool_calls(body)
     return re.sub(r"\s{2,}", " ", body).strip()
 
 
 def extract_pseudo_tool_calls(text: str) -> list[tuple[str, dict]]:
-    """Parse Python-style tool calls the model wrote as plain text."""
-    calls: list[tuple[str, dict]] = []
+    """Parse tool calls the model wrote as plain text."""
+    from tools.text_calls import parse_text_tool_calls
+
+    calls: list[tuple[str, dict]] = list(parse_text_tool_calls(text))
     for match in _PSEUDO_SET_EXPR_RE.finditer(text or ""):
         calls.append(("set_avatar_expression", {"mood": match.group(1).strip()}))
     for match in _PSEUDO_PLAY_ANIM_RE.finditer(text or ""):

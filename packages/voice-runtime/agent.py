@@ -2017,13 +2017,23 @@ class VoiceAgent:
                 idx = tl.index(prefix)
                 query = original[idx + len(prefix):].strip()
                 query = re.sub(
-                    r"\s*(?:in the channel|on discord|please|for me)[.!?,]*$",
+                    r"\s*(?:in the channel|on discord|please|for me|now|with your tool)[.!?,]*$",
                     "",
                     query,
                     flags=re.I,
                 ).strip(" .,!?'\"")
                 if len(query) >= 2:
                     return query
+        m = re.search(
+            r"\b(?:use\s+(?:your\s+)?tools?(?:\s+and)?\s+)?play(?:\s+me)?\s+(.+?)"
+            r"(?:\s+(?:on|in)\s+discord|\s+please|\s+now|\s+with\s+your\s+tool)?[\s.!?]*$",
+            original,
+            re.I,
+        )
+        if m:
+            query = m.group(1).strip(" .,!?'\"")
+            if len(query) >= 2 and query.lower() not in {"it", "that", "this", "something"}:
+                return query
         return None
 
     def _direct_tool_reply(
@@ -2213,27 +2223,58 @@ class VoiceAgent:
             label = str(result.get("label") or resolved).strip()
         return label or resolved
 
-    def _apply_pseudo_tool_calls_from_text(self, raw: str) -> None:
-        """Run tool side-effects when the model wrote Python-style calls as plain text."""
-        if not raw or self.registry is None:
-            return
-        from memory.character_card import extract_pseudo_tool_calls
+    def _apply_pseudo_tool_calls_from_text(self, raw: str) -> Optional[str]:
+        """Run leaked plain-text tool calls; return replacement speech if reply was tool-only."""
+        if not raw or self.registry is None or self.tool_loop is None:
+            return None
+        from memory.character_card import extract_pseudo_tool_calls, polish_spoken_reply
 
-        for name, args in extract_pseudo_tool_calls(raw):
-            spec = self.registry.get(name)
-            if spec is None:
+        calls = extract_pseudo_tool_calls(raw)
+        if not calls:
+            return None
+        spoken = polish_spoken_reply(raw)
+        last_result: dict | None = None
+        last_name = ""
+        for name, args in calls:
+            if self.registry.get(name) is None:
                 continue
             try:
-                if name == "play_avatar_animation":
-                    clip = str(args.get("clip_name") or args.get("name") or "").strip()
-                    if clip:
-                        spec.handler({"name": clip, "loop": False})
-                elif name == "set_avatar_expression":
-                    mood = str(args.get("mood") or "").strip()
-                    if mood:
-                        spec.handler({"mood": mood})
+                self._emit(type="tool_start", tool=name, args=args)
+                result = self.tool_loop.executor.execute(name, args)
+                last_result = result if isinstance(result, dict) else {"result": result}
+                last_name = name
+                self._emit(type="tool_end", tool=name, result=str(last_result))
             except Exception as exc:  # noqa: BLE001
                 log.warning("pseudo tool %s failed: %s", name, exc)
+                last_result = {"error": str(exc)}
+                last_name = name
+        if not last_name:
+            return spoken or None
+        if spoken:
+            return spoken
+        return self._spoken_leaked_tool_result(last_name, last_result or {})
+
+    @staticmethod
+    def _spoken_leaked_tool_result(name: str, result: dict) -> str:
+        if result.get("error"):
+            return "That didn't work — check Discord is connected."
+        if name == "discord_play_youtube":
+            return f"Playing {result.get('playing', 'that')}."
+        if name == "discord_queue_youtube":
+            if result.get("queued_then_played") and result.get("playing"):
+                return f"Playing {result.get('playing')}."
+            return f"Queued {result.get('queued', 'that')}."
+        if name == "discord_stop_music":
+            return "Alright, music's off."
+        if name == "discord_skip_music":
+            if result.get("now_playing"):
+                return f"Now playing {result.get('now_playing')}."
+            if result.get("track"):
+                return f"Skipped {result.get('track')}."
+            return "Skipped — nothing else in the queue."
+        if name == "discord_show_queue":
+            return VoiceAgent._format_playback_status_reply(result)
+        return "Done."
 
     def _messages_with_animation_hint(
         self,

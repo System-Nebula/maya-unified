@@ -115,9 +115,11 @@ class ToolLoop:
                                 "content": result,
                             })
                         continue
-                    # Some models (e.g. Gemma) emit tool JSON as plain text instead of
-                    # structured tool_calls — parse and run it rather than speaking it.
+                    # Some models emit tool syntax as plain text instead of structured
+                    # tool_calls — parse and run it rather than speaking it.
                     call = self._parse_json_call(resp.content or "")
+                    if call is None:
+                        call = self._parse_text_call(resp.content or "")
                     if call is not None and self.registry.get(call.get("tool", "")):
                         name = call["tool"]
                         args = call.get("args", {}) if isinstance(call.get("args"), dict) else {}
@@ -142,6 +144,8 @@ class ToolLoop:
                 json_injected = True
             resp = self.llm.complete(messages)
             call = self._parse_json_call(resp.content)
+            if call is None:
+                call = self._parse_text_call(resp.content or "")
             if call is None:
                 return ToolLoopResult(self._strip_json(resp.content), trace, rnd)
             name = call.get("tool", "")
@@ -212,6 +216,16 @@ class ToolLoop:
             if isinstance(obj, dict) and isinstance(obj.get("tool"), str):
                 return obj
         return None
+
+    @staticmethod
+    def _parse_text_call(text: str) -> Optional[dict]:
+        from tools.text_calls import parse_text_tool_calls
+
+        calls = parse_text_tool_calls(text or "")
+        if not calls:
+            return None
+        name, args = calls[0]
+        return {"tool": name, "args": args if isinstance(args, dict) else {}}
 
     @staticmethod
     def _strip_json(text: str) -> str:

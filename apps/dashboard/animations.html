@@ -49,7 +49,8 @@
         </button>
         <div class="mu-dropdown" x-show="open" x-cloak>
           <a href="/settings" class="mu-dd-item" :class="{ active: s.page === 'settings' }">Settings</a>
-          <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'">Admin — Users</a>
+          <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'" :class="{ active: s.page === 'admin' }">Admin — Users</a>
+          <a href="/admin/workspaces" class="mu-dd-item" x-show="currentUser?.role === 'admin'">Admin — Workspaces</a>
           <div class="mu-dd-sep"></div>
           <button class="mu-dd-item mu-dd-signout" @click="signOut()">Sign out</button>
         </div>

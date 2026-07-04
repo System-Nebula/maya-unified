@@ -254,6 +254,7 @@ document.addEventListener("alpine:init", () => {
           lipSyncMode: this.lipSyncMode,
           lookAtCamera: this.lookAtCamera,
           cameraDistance: this.cameraDistance,
+          frameProfile: this.immersive ? "immersive" : "default",
           idleEnabled: this.idleEnabled,
           idleAnimation: this.idleAnimation,
           idleVariants: this.idleVariants,

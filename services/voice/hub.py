@@ -950,9 +950,14 @@ class VoiceHub(Hub):
                 reply = ""
                 anim_label = ""
                 motion_turn = False
+                direct = None
+                if self.agent._tools_active():  # noqa: SLF001
+                    direct = self.agent._try_discord_direct(text)  # noqa: SLF001
                 with _inference_lock:
                     self.agent._avatar_mood_set_this_turn = False  # noqa: SLF001
-                    if self.agent._tools_active():  # noqa: SLF001
+                    if direct:
+                        reply = direct
+                    elif self.agent._tools_active():  # noqa: SLF001
                         anim_label = self.agent._maybe_play_avatar_animation(  # noqa: SLF001
                             text, plan=plan, raw_text=text,
                         ) or ""
@@ -992,7 +997,9 @@ class VoiceHub(Hub):
 
                 delivery_cue = None
                 if reply:
-                    self.agent._apply_pseudo_tool_calls_from_text(reply)  # noqa: SLF001
+                    leaked = self.agent._apply_pseudo_tool_calls_from_text(reply)  # noqa: SLF001
+                    if leaked:
+                        reply = leaked
                 if reply or motion_turn:
                     reply, delivery_cue = _publish_ai_reply(
                         self,

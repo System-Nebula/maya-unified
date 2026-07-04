@@ -12,6 +12,12 @@ import { loadMixamoClipForVrm, resolveAnimationUrl } from "/dashboard/js/mayaVrm
 export const DEFAULT_VRM_LOCAL = "Yuki.vrm";
 export const DEFAULT_IDLE_ANIM = "Idle.fbx";
 
+/** Conversation immersive column — zoom out and sit avatar lower in frame. */
+export const IMMERSIVE_FRAME = {
+  zoomScale: 1.35,
+  targetLift: 0.2,
+};
+
 export function resolveVrmUrl(model) {
   const raw = String(model || "").trim();
   if (!raw) return `/api/voice/agent/vrm/file?name=${encodeURIComponent(DEFAULT_VRM_LOCAL)}`;
@@ -26,6 +32,7 @@ export class MayaVrmEngine {
     this.opts = opts;
     this.lookAtCamera = opts.lookAtCamera !== false;
     this.cameraDistance = Number(opts.cameraDistance ?? 1.8);
+    this.frameProfile = opts.frameProfile === "immersive" ? "immersive" : "default";
     this.idleEnabled = opts.idleEnabled !== false;
     this.idleAnimation = opts.idleAnimation || DEFAULT_IDLE_ANIM;
     this.idleVariants = Array.isArray(opts.idleVariants)
@@ -154,9 +161,15 @@ export class MayaVrmEngine {
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     const height = Math.max(size.y, 0.01);
-    const dist = Math.max(this.cameraDistance, height * 1.35);
-    this.controls.target.copy(center);
-    this.camera.position.set(center.x, center.y + height * 0.05, center.z + dist);
+    let dist = Math.max(this.cameraDistance, height * 1.35);
+    let targetY = center.y;
+    const camYOffset = height * 0.05;
+    if (this.frameProfile === "immersive") {
+      dist *= IMMERSIVE_FRAME.zoomScale;
+      targetY += height * IMMERSIVE_FRAME.targetLift;
+    }
+    this.controls.target.set(center.x, targetY, center.z);
+    this.camera.position.set(center.x, targetY + camYOffset, center.z + dist);
     this.controls.update();
 
     if (this.lookAtCamera && vrm.lookAt) {
