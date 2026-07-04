@@ -151,6 +151,8 @@ def register_agent_routes(app) -> None:
         llm = hub.llm_status(oid or None)
         health = snap["health"]
         capabilities = snap["capabilities"]
+        imagine_health = snap.get("imagine_health") or {}
+        services = snap.get("services") or {}
         session_running = False
         if hub.ready and hub.agent is not None and oid:
             lease = hub.voice_lease
@@ -173,6 +175,8 @@ def register_agent_routes(app) -> None:
             "llm_model": llm.get("model"),
             "llm_provider": llm.get("provider"),
             "llm_health": health,
+            "imagine_health": imagine_health,
+            "services": services,
             "capabilities": capabilities,
             **hub.lease_status(),
         }
@@ -182,9 +186,26 @@ def register_agent_routes(app) -> None:
         oid = _operator_id(request)
         return hub.conversation_state(oid or None)
 
+    @app.post(f"{prefix}/conversation/clear")
+    def agent_conversation_clear(request: Request) -> dict:
+        oid = _operator_id(request)
+        if not oid:
+            return {"ok": False, "error": "not authenticated"}
+        from services.operator_voice import context as op_ctx
+
+        deleted = op_ctx.clear_conversation(oid)
+        return {"ok": True, "deleted_messages": deleted}
+
     @app.post(f"{prefix}/chat")
     def agent_chat(request: Request, data: dict = Body(...)) -> dict:
-        return hub.chat_text(str((data or {}).get("text", "")), operator_id=_operator_id(request) or None)
+        text = str((data or {}).get("text", ""))
+        oid = _operator_id(request) or None
+        from services.cmd.chat_bridge import try_dispatch_chat_cmd
+
+        cmd_response = try_dispatch_chat_cmd(text, operator_id=oid)
+        if cmd_response is not None:
+            return cmd_response
+        return hub.chat_text(text, operator_id=oid)
 
     @app.post(f"{prefix}/speak")
     def agent_speak(request: Request, data: dict = Body(...)) -> dict:

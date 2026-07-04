@@ -569,6 +569,139 @@ function _scrollTranscript(smooth = true) {
   });
 }
 
+function _findMayaTurnByCorr(store, corrId) {
+  if (!corrId) return -1;
+  for (let i = store.turns.length - 1; i >= 0; i--) {
+    const t = store.turns[i];
+    if (t?.role === "maya" && t.corrId === corrId) return i;
+  }
+  return -1;
+}
+
+function _hasCmdReply(store, corrId, text) {
+  if (_findMayaTurnByCorr(store, corrId) >= 0) return true;
+  const last = store.turns[store.turns.length - 1];
+  if (last?.role === "maya" && text && last.text?.trim() === String(text).trim()) return true;
+  return false;
+}
+
+function _formatCmdError(raw) {
+  const detail = String(raw || "command failed").trim();
+  let title = "Command failed";
+  let hint = "";
+  if (/COMFYUI_API_URL|comfyui-api|ComfyUI is not reachable/i.test(detail)) {
+    title = "Image generation failed";
+    hint = "ComfyUI is unavailable. Start comfyui-api or check Settings → Imagine → ComfyUI URL.";
+  } else if (/disabled in Settings/i.test(detail)) {
+    title = "Image generation disabled";
+    hint = "Enable Imagine in Settings → Imagine.";
+  } else if (/OOM|VRAM|GPU memory|out of memory/i.test(detail)) {
+    title = "Image generation failed";
+    hint = "GPU memory may be full. Stop other GPU workloads or try a smaller model.";
+  } else if (/timed out|timeout/i.test(detail)) {
+    title = "Image generation timed out";
+    hint = "ComfyUI took too long. Try again or check GPU load.";
+  }
+  const text = hint ? `${title}\n${hint}` : detail;
+  return { text, detail, cmdError: hint.length > 0 || title !== "Command failed" };
+}
+
+const _SERVER_CLEAR_WINDOW_MS = 30000;
+
+function _ensureOperatorTurn(store, text, corrId) {
+  const last = store.turns[store.turns.length - 1];
+  if (last?.role === "operator" && last.text === text) {
+    if (corrId && !last.corrId) last.corrId = corrId;
+    return;
+  }
+  store.turns.push({
+    messageId: _nextMessageId(),
+    corrId: corrId || null,
+    role: "operator",
+    text,
+    sentAt: Date.now(),
+  });
+  _persistConversation(store);
+  _scrollTranscript();
+}
+
+function _applyChatHttpResponse(store, data, operatorText) {
+  if (!data || !data.ok || data.mode === "cmd") return;
+  const corrId = data.corr_id || null;
+  const replyText = String(data.text || "").trim();
+  _ensureOperatorTurn(store, operatorText, corrId);
+  if (!replyText) {
+    store._chatPendingAt = null;
+    store._expectingReply = false;
+    _persistConversation(store);
+    return;
+  }
+  if (_findMayaTurnByCorr(store, corrId) >= 0) return;
+  const last = store.turns[store.turns.length - 1];
+  if (last?.role === "maya" && last.text?.trim() === replyText) return;
+  store.turns.push({
+    messageId: _nextMessageId(),
+    corrId,
+    role: "maya",
+    text: data.text || "",
+    _streaming: false,
+  });
+  _finalizeChatMs(store);
+  store._chatPendingAt = null;
+  store._expectingReply = false;
+  _persistConversation(store);
+  _scrollTranscript();
+}
+
+function _applyCmdResponse(store, data, operatorText) {
+  if (!data || data.mode !== "cmd") return;
+  const corrId = data.corr_id || null;
+  if (data.ok) {
+    if (_hasCmdReply(store, corrId, data.text)) return;
+    const lastOp = store.turns[store.turns.length - 1];
+    if (!(lastOp?.role === "operator" && lastOp.text === operatorText)) {
+      store.turns.push({
+        messageId: _nextMessageId(),
+        corrId,
+        role: "operator",
+        text: operatorText,
+        sentAt: Date.now(),
+      });
+    }
+    const turn = {
+      messageId: _nextMessageId(),
+      corrId,
+      role: "maya",
+      text: data.text || "",
+      _streaming: false,
+    };
+    if (data.artifacts?.length) turn.artifacts = data.artifacts;
+    store.turns.push(turn);
+    _finalizeChatMs(store);
+    store._chatPendingAt = null;
+    store._expectingReply = false;
+    _persistConversation(store);
+    _scrollTranscript();
+    return;
+  }
+  const formatted = _formatCmdError(data.error || data.text || "command failed");
+  store.turns.push({
+    messageId: _nextMessageId(),
+    corrId,
+    traceId: data.trace_id || null,
+    jobId: data.job_id || null,
+    role: "system",
+    text: formatted.text,
+    detail: formatted.detail,
+    cmdError: formatted.cmdError,
+    sentAt: Date.now(),
+  });
+  store._chatPendingAt = null;
+  store._expectingReply = false;
+  _persistConversation(store);
+  _scrollTranscript();
+}
+
 function _applyAgentEvent(store, ev) {
   if (!ev || !ev.type) return;
   if (ev.type === "delivery" && ev.cue) {
@@ -636,11 +769,27 @@ function _applyAgentEvent(store, ev) {
     _persistConversation(store);
     return;
   }
-  if (ev.type === "error" && ev.text && store.ttsBusy) {
-    store.ttsError = ev.text;
-    store.ttsBusy = false;
-    store._ttsPreviewOnly = false;
-    return;
+  if (ev.type === "error" && ev.text) {
+    if (ev.mode === "cmd") return;
+    if (store.ttsBusy) {
+      store.ttsError = ev.text;
+      store.ttsBusy = false;
+      store._ttsPreviewOnly = false;
+      return;
+    }
+    if (store._chatPendingAt || ev.mode === "cmd") {
+      store.turns.push({
+        messageId: _nextMessageId(),
+        corrId: _evCorrId(ev),
+        role: "system",
+        text: ev.text,
+      });
+      store._chatPendingAt = null;
+      store._expectingReply = false;
+      _persistConversation(store);
+      _scrollTranscript();
+      return;
+    }
   }
   if (ev.type === "tts_error" && ev.text) {
     store.ttsError = ev.text;
@@ -669,11 +818,42 @@ function _applyAgentEvent(store, ev) {
   if (ev.type === "ai" && ev.text) {
     const last = store.turns[store.turns.length - 1];
     const chunk = String(ev.text);
+    const isCmd = ev.mode === "cmd";
     const streamingMaya = last && last.role === "maya" && last._streaming;
     if (last && last.role === "maya" && !last._streaming && chunk.trim() === (last.text || "").trim()) {
+      if (ev.artifacts?.length && !last.artifacts?.length) {
+        last.artifacts = ev.artifacts;
+        _persistConversation(store);
+        _scrollTranscript();
+      }
       return;
     }
-    if (!streamingMaya && !store._expectingReply) return;
+    const allowReply =
+      streamingMaya ||
+      store._expectingReply ||
+      store._chatPendingAt != null ||
+      isCmd ||
+      (ev.artifacts?.length > 0);
+    if (!allowReply) return;
+
+    if (isCmd) {
+      const corrId = _evCorrId(ev);
+      if (_findMayaTurnByCorr(store, corrId) >= 0) return;
+      store.turns.push({
+        messageId: ev.message_id || _nextMessageId(),
+        corrId,
+        role: "maya",
+        text: chunk,
+        _streaming: false,
+        artifacts: ev.artifacts?.length ? ev.artifacts : undefined,
+      });
+      _applyPendingTurnMeta(store, store.turns[store.turns.length - 1]);
+      _finalizeChatMs(store);
+      _persistConversation(store);
+      _scrollTranscript();
+      return;
+    }
+
     if (streamingMaya) {
       if (ev.message_id) last.messageId = ev.message_id;
       const corrId = _evCorrId(ev);
@@ -725,6 +905,7 @@ document.addEventListener("alpine:init", () => {
     _hydrated: false,
     _basicChatNoted: false,
     _chatPendingAt: null,
+    _clearedAt: null,
     _ttsPendingAt: null,
     _ttsPendingIdx: null,
     _ttsTargetIdx: null,
@@ -802,6 +983,15 @@ document.addEventListener("alpine:init", () => {
       return parts;
     },
 
+    systemMetaParts(turn) {
+      const parts = [];
+      if (turn.sentAt) parts.push({ text: `sent ${_formatSentAt(turn.sentAt)}` });
+      if (turn.corrId) parts.push({ text: turn.corrId, dim: !_isServerId(turn.corrId) });
+      if (turn.traceId) parts.push({ text: `trace ${turn.traceId}` });
+      if (turn.jobId) parts.push({ text: `job ${turn.jobId}` });
+      return parts;
+    },
+
     formatOperatorMeta(turn) {
       return this.operatorMetaParts(turn).map((p) => p.text).join(" · ");
     },
@@ -835,8 +1025,21 @@ document.addEventListener("alpine:init", () => {
           const d = await convR.json();
           if (d.session_running !== undefined) this.sessionOn = !!d.session_running;
           if (d.status) this.statusLabel = d.status;
-          if (Array.isArray(d.turns) && d.turns.length > this.turns.length) {
-            this.turns = _mergeServerTurns(this.turns, d.turns);
+          if (Array.isArray(d.turns)) {
+            if (d.turns.length === 0) {
+              const clearedAt = this._clearedAt;
+              const clearedRecently =
+                clearedAt != null && Date.now() - clearedAt < _SERVER_CLEAR_WINDOW_MS;
+              const pendingChat = this._chatPendingAt != null;
+              const hasTurnsAfterClear = this.turns.some(
+                (t) => t.sentAt && clearedAt != null && t.sentAt > clearedAt,
+              );
+              if (clearedRecently && !pendingChat && !hasTurnsAfterClear) {
+                this.turns = [];
+              }
+            } else if (d.turns.length > this.turns.length) {
+              this.turns = _mergeServerTurns(this.turns, d.turns);
+            }
             _scrollTranscript();
           }
         }
@@ -1064,6 +1267,7 @@ document.addEventListener("alpine:init", () => {
           _scrollTranscript();
           return;
         }
+        _ensureOperatorTurn(this, text, null);
         if (!caps.text_chat_enriched && !this._basicChatNoted) {
           this._basicChatNoted = true;
           this.turns.push({
@@ -1077,12 +1281,35 @@ document.addEventListener("alpine:init", () => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text }),
         });
+        if (!r.ok) {
+          let errMsg = `Chat failed (${r.status})`;
+          try {
+            const errBody = await r.json();
+            errMsg = errBody.error || errBody.detail || errMsg;
+          } catch (_) {}
+          this.turns.push({ messageId: _nextMessageId(), role: "system", text: String(errMsg) });
+          this.persist();
+          _scrollTranscript();
+          return;
+        }
         const data = await r.json();
-        if (!data.ok) {
+        if (data.mode === "cmd") {
+          _applyCmdResponse(this, data, text);
+        } else if (!data.ok) {
           this.turns.push({ messageId: _nextMessageId(), role: "system", text: data.error || "Chat failed" });
           this.persist();
           _scrollTranscript();
+        } else {
+          _applyChatHttpResponse(this, data, text);
         }
+      } catch (err) {
+        this.turns.push({
+          messageId: _nextMessageId(),
+          role: "system",
+          text: String(err?.message || err) || "Chat request failed — check network and gateway.",
+        });
+        this.persist();
+        _scrollTranscript();
       } finally {
         this.sending = false;
         this.step = "listen";
@@ -1096,7 +1323,7 @@ document.addEventListener("alpine:init", () => {
       }
     },
 
-    reset() {
+    resetLocal() {
       this.stopTurnAudio();
       for (const t of this.turns) {
         if (t.audioUrl) URL.revokeObjectURL(t.audioUrl);
@@ -1109,6 +1336,21 @@ document.addEventListener("alpine:init", () => {
       this._expectingReply = false;
       this.persist();
       _scrollTranscript(false);
+    },
+
+    async newChat() {
+      try {
+        const r = await fetch("/api/voice/agent/conversation/clear", { method: "POST" });
+        if (r.ok) {
+          const data = await r.json();
+          if (data.ok) this._clearedAt = Date.now();
+        }
+      } catch (_) {}
+      this.resetLocal();
+    },
+
+    reset() {
+      return this.newChat();
     },
   });
 

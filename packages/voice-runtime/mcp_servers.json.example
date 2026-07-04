@@ -15,6 +15,11 @@
       "command": "uvx",
       "args": ["mcp-server-fetch"],
       "enabled": false
+    },
+    "blender": {
+      "command": "/home/warby/.local/bin/blender-mcp",
+      "args": [],
+      "enabled": true
     }
   }
 }

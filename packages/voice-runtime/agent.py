@@ -467,6 +467,7 @@ class VoiceAgent:
         # Tools (built-in memory + MCP) and layered memory.
         self.memory = None
         self.mcp = None
+        self._mcp_init_error: str | None = None
         self.discord = None
         self.tool_loop = None
         self.registry = None
@@ -528,18 +529,20 @@ class VoiceAgent:
 
         if CONFIG.mcp.enabled:
             try:
-                from tools.mcp_bridge import MCPManager
+                from tools.mcp_bridge import MCPManager, resolve_mcp_config_path
 
-                cfg_path = CONFIG.mcp.config_file
-                if not os.path.isabs(cfg_path):
-                    cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), cfg_path)
+                cfg_path = resolve_mcp_config_path(CONFIG.mcp.config_file)
                 self.mcp = MCPManager(cfg_path, CONFIG.mcp.startup_timeout)
                 mcp_specs = self.mcp.start()
                 if mcp_specs:
                     registry.register_many(mcp_specs)
                     log.info("%s MCP tool(s) registered", len(mcp_specs))
             except Exception as exc:  # noqa: BLE001
+                self.mcp = None
+                self._mcp_init_error = str(exc)
                 log.warning("mcp disabled (load failed): %s", exc)
+        else:
+            self._mcp_init_error = None
 
         if CONFIG.discord.enabled and CONFIG.discord.token.strip():
             try:
@@ -3177,12 +3180,36 @@ class VoiceAgent:
         return {"ok": True, "name": name, "content": content}
 
     def tools_status(self) -> dict:
+        if self.mcp is not None:
+            mcp_status = self.mcp.status()
+            mcp_status["enabled"] = CONFIG.mcp.enabled
+            return {
+                "enabled": self._tools_active(),
+                "mode": CONFIG.tools.mode,
+                "max_rounds": CONFIG.tools.max_rounds,
+                "tools": self.registry.ui_list() if self.registry is not None else [],
+                "mcp": mcp_status,
+            }
+        hint = None
+        if not CONFIG.mcp.enabled:
+            hint = "MCP disabled in Settings → Tools."
+        elif getattr(self, "_mcp_init_error", None):
+            hint = f"MCP failed to initialize — {self._mcp_init_error}"
+        else:
+            hint = "MCP not initialized — check gateway logs."
         return {
             "enabled": self._tools_active(),
             "mode": CONFIG.tools.mode,
             "max_rounds": CONFIG.tools.max_rounds,
             "tools": self.registry.ui_list() if self.registry is not None else [],
-            "mcp": self.mcp.status() if self.mcp is not None else {"servers": {}},
+            "mcp": {
+                "servers": {},
+                "enabled": CONFIG.mcp.enabled,
+                "config_path": CONFIG.mcp.config_file,
+                "package_installed": None,
+                "connected_count": 0,
+                "hint": hint,
+            },
         }
 
     def set_delivery(self, mode: str) -> None:

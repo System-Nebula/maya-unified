@@ -1352,22 +1352,43 @@ class ImagineCog(commands.Cog):
                 )
                 return
 
-            request = ImageJobInput(
-                prompt=prompt,
-                mode=image_mode,
-                references=references,
-                size=size,
-                quality=quality,
-                user_id=portal_user_id,
-                guild_id=str(interaction.guild_id) if interaction.guild_id else None,
-                channel_id=str(interaction.channel_id),
-                metadata={
-                    "discord_interaction_id": interaction_id,
-                    "discord_user_id": str(interaction.user.id),
-                    "provider_key": provider_key,
-                    "workflow_id": wf.id,
-                },
-            )
+            if image_mode == ImageMode.GENERATE and not attachments:
+                from services.cmd.executors.imagine import build_imagine_request
+
+                provider_key, request = build_imagine_request(
+                    prompt=prompt,
+                    operator_id=portal_user_id,
+                    mode=image_mode.value,
+                    size=size,
+                    quality=quality,
+                    guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+                    channel_id=str(interaction.channel_id),
+                    workflow=wf,
+                    metadata={
+                        "discord_interaction_id": interaction_id,
+                        "discord_user_id": str(interaction.user.id),
+                        "provider_key": provider_key,
+                        "workflow_id": wf.id,
+                        "source": "discord",
+                    },
+                )
+            else:
+                request = ImageJobInput(
+                    prompt=prompt,
+                    mode=image_mode,
+                    references=references,
+                    size=size,
+                    quality=quality,
+                    user_id=portal_user_id,
+                    guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+                    channel_id=str(interaction.channel_id),
+                    metadata={
+                        "discord_interaction_id": interaction_id,
+                        "discord_user_id": str(interaction.user.id),
+                        "provider_key": provider_key,
+                        "workflow_id": wf.id,
+                    },
+                )
 
             from maya_image.portal.activity import emit_event_standalone
 

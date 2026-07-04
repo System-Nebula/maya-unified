@@ -921,7 +921,7 @@
             <div class="ms-panel-head" style="margin-top:20px">
               <p class="mv-eyebrow">MCP</p>
               <h3 class="mv-title" style="font-size:14px">MCP servers</h3>
-              <p class="mv-desc">Configure <span class="mv-mono">packages/voice-runtime/mcp_servers.json</span> and restart.</p>
+              <p class="mv-desc">Configure <span class="mv-mono">packages/voice-runtime/mcp_servers.json</span>, install <span class="mv-mono">uv sync --extra mcp</span>, and restart the gateway.</p>
             </div>
             <ul class="ms-tool-list">
               <template x-for="s in mcpServers" :key="s.name">
@@ -931,7 +931,8 @@
                   <span class="ms-tool-desc" x-text="s.connected ? (s.tools + ' tools') : ('error: ' + (s.error || 'not connected'))"></span>
                 </li>
               </template>
-              <li class="ms-empty" x-show="!mcpServers.length">No MCP servers configured.</li>
+              <li class="ms-empty" x-show="!mcpServers.length && !mcpHint">No MCP servers configured.</li>
+              <li class="ms-empty ms-mcp-hint" x-show="mcpHint" x-text="mcpHint"></li>
             </ul>
 
             <div class="ms-panel-head" style="margin-top:20px">
@@ -1018,13 +1019,53 @@
                 </div>
                 <div class="rhs"><input class="mv-input" style="width:320px" x-model="s.discord.youtube_cookies_file" @change="save()" placeholder="C:\path\to\cookies.txt" /></div>
               </div>
+            </div>
+          </div>
+
+          <!-- IMAGINE -->
+          <div x-show="tab === 'imagine'">
+            <div class="ms-panel-head">
+              <p class="mv-eyebrow">Connect</p>
+              <h2 class="mv-title">Imagine</h2>
+              <p class="mv-desc">ComfyUI image generation for <span class="mv-mono">/imagine</span> in Conversation and Discord. Default URL matches Maya docker-compose host port 3030. Setup guide: <span class="mv-mono">infra/comfyui/README.md</span>.</p>
+            </div>
+            <div class="mv-card">
               <div class="mv-list-row">
-                <div class="lhs"><div class="mv-row-label">Imagine / ComfyUI</div></div>
-                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.discord.imagine_enabled" @change="save()" /><span class="slider"></span></label></div>
+                <div class="lhs">
+                  <div class="mv-row-label">Imagine enabled</div>
+                  <div class="mv-row-hint">Required before /imagine runs — Comfy health is checked separately.</div>
+                </div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.imagine.enabled" @change="save()" /><span class="slider"></span></label></div>
               </div>
-              <div class="mv-list-row" x-show="s.discord.imagine_enabled">
+              <div class="mv-list-row" x-show="s.imagine.enabled">
                 <div class="lhs"><div class="mv-row-label">ComfyUI URL</div></div>
-                <div class="rhs"><input class="mv-input" style="width:280px" x-model="s.discord.comfyui_url" @change="save()" /></div>
+                <div class="rhs"><input class="mv-input" style="width:280px" x-model="s.imagine.comfyui_url" @change="save()" /></div>
+              </div>
+              <div class="mv-list-row" x-show="s.imagine.enabled">
+                <div class="lhs">
+                  <div class="mv-row-label">ComfyUI connection</div>
+                  <div class="mv-row-sub" x-show="imagineHealth?.detail" x-text="imagineHealth.detail"></div>
+                  <div class="mv-row-sub" x-show="imagineHealth?.adopted_url" x-text="`Discovered comfyui-api at ${imagineHealth.adopted_url} — update ComfyUI URL above to persist.`"></div>
+                </div>
+                <div class="rhs" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                  <button type="button" class="mv-btn" @click="testImagineConnection()" :disabled="imagineHealthTesting">Test connection</button>
+                  <span class="mv-desc" x-show="imagineHealthTesting">Checking…</span>
+                  <span x-show="imagineHealth && !imagineHealthTesting" class="llm-health-badge" :title="imagineHealth.detail || ''">
+                    <svg x-show="imagineHealth.status === 'ok'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="color:#22c55e">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 0 1-1.043 3.296 3.745 3.745 0 0 1-3.296 1.043A3.745 3.745 0 0 1 12 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 0 1-3.296-1.043 3.745 3.745 0 0 1-1.043-3.296A3.745 3.745 0 0 1 3 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 0 1 1.043-3.296 3.746 3.746 0 0 1 3.296-1.043A3.746 3.746 0 0 1 12 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 0 1 3.296 1.043 3.746 3.746 0 0 1 1.043 3.296A3.745 3.745 0 0 1 21 12Z" />
+                    </svg>
+                    <svg x-show="imagineHealth.status === 'warn'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="color:#ff9f0a">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+                    </svg>
+                    <svg x-show="imagineHealth.status === 'error'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="color:#ff453a">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                    </svg>
+                    <svg x-show="imagineHealth.status === 'skipped'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="color:#8e8e93">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M15 12H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                    </svg>
+                  </span>
+                  <span class="mv-desc" x-show="imagineHealth?.latency_ms != null && !imagineHealthTesting" x-text="`${imagineHealth.latency_ms} ms`"></span>
+                </div>
               </div>
             </div>
           </div>
@@ -1044,6 +1085,31 @@
 
             <div class="mv-card" x-show="error && !loading" x-cloak>
               <p class="mp-save-err" x-text="error" style="margin:0"></p>
+            </div>
+
+            <div class="mv-card" x-show="!loading && !error" x-cloak style="margin-bottom:16px">
+              <div class="mp-section-head" style="margin-bottom:12px">
+                <h2>ComfyUI / Imagine</h2>
+                <span class="mp-role-badge" :class="imagineStatusClass()"
+                  x-text="imagineStatusLabel()"></span>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs">
+                  <div class="mv-row-label">Endpoint</div>
+                  <div class="mv-row-hint" x-text="imagineHealth?.url || 'Not probed yet'"></div>
+                  <div class="mv-row-sub" x-show="imagineHealth?.detail" x-text="imagineHealth.detail"></div>
+                </div>
+                <div class="rhs" style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
+                  <span class="mv-row-sub" x-show="imagineHealth?.latency_ms != null" x-text="`${imagineHealth.latency_ms} ms`"></span>
+                  <span class="mv-row-sub" x-show="imagineCapability != null" x-text="`capabilities.imagine: ${imagineCapability}`"></span>
+                </div>
+              </div>
+              <div class="mp-save-row" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+                <button type="button" class="mv-btn" @click="openImagineSettings()">Configure</button>
+                <button type="button" class="mv-btn" @click="testImagineConnection()" :disabled="imagineHealthTesting">
+                  <span x-text="imagineHealthTesting ? 'Checking…' : 'Test connection'"></span>
+                </button>
+              </div>
             </div>
 
             <div class="mv-card" x-show="!loading && !error" x-cloak>

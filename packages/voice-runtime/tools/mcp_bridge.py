@@ -22,6 +22,32 @@ from .registry import ToolSpec
 # Commands that are batch scripts on Windows and must run via cmd /c.
 _WIN_WRAP = {"npx", "npm", "npm.cmd", "yarn", "pnpm", "node", "uvx", "uv", "bunx"}
 
+_PACKAGE_MISSING_MSG = "mcp package not installed — run: uv sync --extra mcp"
+
+
+def resolve_mcp_config_path(path: str) -> str:
+    """Resolve MCP config relative to voice-runtime (matches services.paths.resolve_runtime_file)."""
+    raw = (path or "").strip()
+    if not raw:
+        return raw
+    if os.path.isabs(raw) and os.path.isfile(raw):
+        return raw
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidate = os.path.join(base, raw)
+    if os.path.isfile(candidate):
+        return os.path.abspath(candidate)
+    if os.path.isabs(raw):
+        return raw
+    return os.path.abspath(candidate)
+
+
+def _mcp_package_installed() -> bool:
+    try:
+        import mcp  # noqa: F401
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
 
 def _load_config(path: str) -> dict:
     if not os.path.isfile(path):
@@ -45,24 +71,62 @@ class MCPManager:
         self._sessions: dict[str, Any] = {}
         self._stack = None
         self._server_status: dict[str, dict] = {}
+        self._meta: dict[str, Any] = {}
 
     # ----- lifecycle --------------------------------------------------------
 
+    def _set_meta(self, **fields: Any) -> None:
+        self._meta.update(fields)
+
+    def _mark_servers_unavailable(self, names: dict, *, error: str) -> None:
+        for name in names:
+            self._server_status[name] = {"connected": False, "error": error}
+
+    def _build_hint(self) -> str | None:
+        if self._meta.get("config_missing"):
+            return (
+                f"MCP config not found at {self.config_path}. "
+                "Copy mcp_servers.json.example to mcp_servers.json and restart."
+            )
+        if self._meta.get("no_servers_configured"):
+            return "No MCP servers enabled in mcp_servers.json."
+        if self._meta.get("package_missing"):
+            return f"MCP package not installed. Run `uv sync --extra mcp` and restart the gateway."
+        failed = [
+            name
+            for name, st in self._server_status.items()
+            if not st.get("connected")
+        ]
+        if failed and not any(st.get("connected") for st in self._server_status.values()):
+            first = failed[0]
+            err = (self._server_status.get(first) or {}).get("error") or "not connected"
+            return f"{first} — not connected: {err}"
+        return None
+
     def start(self) -> list[ToolSpec]:
         """Launch configured servers and return their tools (empty on any issue)."""
+        self._meta = {"config_path": self.config_path}
+
+        if not os.path.isfile(self.config_path):
+            self._set_meta(config_missing=True)
+            print(f"[mcp] config not found: {self.config_path}")
+            return []
+
         cfg = _load_config(self.config_path)
         servers = cfg.get("servers", {})
         enabled = {n: c for n, c in servers.items() if c.get("enabled", True)}
         if not enabled:
+            self._set_meta(no_servers_configured=True)
             return []
 
-        try:
-            import mcp  # noqa: F401
-        except Exception:  # noqa: BLE001
+        if not _mcp_package_installed():
+            self._set_meta(package_missing=True, package_installed=False)
+            self._mark_servers_unavailable(enabled, error=_PACKAGE_MISSING_MSG)
             print("[mcp] the 'mcp' package is not installed; skipping MCP servers. "
-                  "Install with: pip install mcp")
+                  "Install with: uv sync --extra mcp")
             return []
 
+        self._set_meta(package_installed=True)
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
@@ -141,15 +205,51 @@ class MCPManager:
             text = getattr(item, "text", None)
             if text is not None:
                 parts.append(text)
-            else:
-                parts.append(str(item))
+                continue
+            image_url = MCPManager._save_image_content(item)
+            if image_url:
+                parts.append(f"Saved image: {image_url}")
+                continue
+            parts.append(str(item))
         out = "\n".join(parts).strip() or "ok"
         if getattr(result, "isError", False):
             return f"error: {out}"
         return out
 
+    @staticmethod
+    def _save_image_content(item) -> str | None:
+        """Persist MCP ImageContent to blender-outputs and return a gateway URL."""
+        typ = getattr(item, "type", None)
+        if typ != "image" and not (isinstance(item, dict) and item.get("type") == "image"):
+            data = getattr(item, "data", None)
+            if data is None:
+                return None
+        try:
+            from services.artifacts.store import artifact_url_for_path, save_image_bytes
+            from services.blender.client import _content_item_image_bytes
+
+            raw = _content_item_image_bytes(item)
+            if not raw:
+                return None
+            path = save_image_bytes(raw)
+            return artifact_url_for_path(path)
+        except Exception:  # noqa: BLE001
+            return None
+
     def status(self) -> dict:
-        return {"servers": self._server_status}
+        if "package_installed" in self._meta:
+            package_installed = bool(self._meta["package_installed"])
+        else:
+            package_installed = _mcp_package_installed()
+        hint = self._build_hint()
+        connected = sum(1 for st in self._server_status.values() if st.get("connected"))
+        return {
+            "servers": self._server_status,
+            "config_path": self.config_path,
+            "package_installed": package_installed,
+            "connected_count": connected,
+            "hint": hint,
+        }
 
     def close(self) -> None:
         if self._loop is None:

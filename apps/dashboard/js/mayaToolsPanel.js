@@ -7,6 +7,9 @@ document.addEventListener("alpine:init", () => {
     maxRounds: 3,
     tools: [],
     mcpServers: [],
+    mcpHint: "",
+    mcpEnabled: false,
+    mcpPackageInstalled: null,
     toolLog: [],
     error: "",
     _unsub: null,
@@ -56,7 +59,11 @@ document.addEventListener("alpine:init", () => {
         this.mode = d.mode || "auto";
         this.maxRounds = d.max_rounds ?? 3;
         this.tools = d.tools || [];
-        const servers = (d.mcp && d.mcp.servers) || {};
+        const mcp = d.mcp || {};
+        this.mcpHint = mcp.hint || "";
+        this.mcpEnabled = mcp.enabled !== false;
+        this.mcpPackageInstalled = mcp.package_installed ?? null;
+        const servers = mcp.servers || {};
         this.mcpServers = Object.keys(servers).map((name) => ({
           name,
           connected: !!servers[name].connected,

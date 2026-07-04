@@ -88,7 +88,7 @@ class MayaBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         self.tree.on_error = self.on_app_command_error
-        for extension in ("maya_bot.cogs.imagine",):
+        for extension in ("maya_bot.cogs.imagine", "maya_bot.cogs.cmd_registry"):
             try:
                 await self.load_extension(extension)
             except Exception as exc:

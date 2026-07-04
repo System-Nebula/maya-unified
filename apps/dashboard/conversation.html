@@ -95,6 +95,10 @@
               — <a href="/settings?tab=reasoning" style="color:var(--mv-accent)">Settings → Reasoning</a>
             </div>
             <div class="md-banner" x-show="agentReady && $store.mayaShell?.browserAudioHint" x-text="$store.mayaShell.browserAudioHint"></div>
+            <div class="md-banner error" x-show="textChatReady && $store.mayaShell?.capabilities?.imagine === false">
+              <span x-text="$store.mayaShell?.imagineHealth?.detail || 'ComfyUI unavailable — /imagine is disabled in dev until comfyui-api responds.'"></span>
+              — <a href="/settings?tab=imagine" style="color:var(--mv-accent)">Settings → Imagine</a>
+            </div>
           </div>
 
           <div class="md-session">
@@ -104,6 +108,7 @@
                   class="md-turn"
                   :class="[
                     t.role,
+                    t.cmdError ? 'cmd-error' : '',
                     t.audioPlaying ? 'md-turn-playing' : '',
                     $store.mayaConversation.detailed && t.corrId ? 'md-turn-grouped' : '',
                     $store.mayaConversation.stacksWithPrev(t, i) ? 'md-turn-stacked' : '',
@@ -125,6 +130,21 @@
                     <div class="role" x-text="t.role"></div>
                   </div>
                   <div class="md-turn-body" x-text="t.text"></div>
+                  <p
+                    class="md-turn-cmd-detail"
+                    x-show="$store.mayaConversation.detailed && t.cmdError && t.detail && t.detail !== t.text"
+                    x-text="t.detail"
+                  ></p>
+                  <div class="md-turn-artifacts" x-show="t.artifacts && t.artifacts.length">
+                    <template x-for="a in (t.artifacts || [])" :key="a.job_id || a.url">
+                      <img
+                        x-show="a.type === 'image' && a.url"
+                        :src="a.url"
+                        :alt="a.job_id || 'Generated image'"
+                        loading="lazy"
+                      />
+                    </template>
+                  </div>
                   <p class="md-turn-audio-error" x-show="t.audioError" x-text="t.audioError"></p>
                   <div
                     class="md-turn-footer"
@@ -132,6 +152,16 @@
                   >
                     <span class="md-turn-meta mv-mono">
                       <template x-for="(p, pi) in $store.mayaConversation.operatorMetaParts(t)" :key="pi">
+                        <span class="md-turn-meta-part"><span x-show="pi > 0" class="md-turn-meta-sep"> · </span><span :class="p.dim ? 'md-turn-meta-part--dim' : ''" x-text="p.text"></span></span>
+                      </template>
+                    </span>
+                  </div>
+                  <div
+                    class="md-turn-footer"
+                    x-show="$store.mayaConversation.detailed && t.role === 'system'"
+                  >
+                    <span class="md-turn-meta mv-mono">
+                      <template x-for="(p, pi) in $store.mayaConversation.systemMetaParts(t)" :key="pi">
                         <span class="md-turn-meta-part"><span x-show="pi > 0" class="md-turn-meta-sep"> · </span><span :class="p.dim ? 'md-turn-meta-part--dim' : ''" x-text="p.text"></span></span>
                       </template>
                     </span>
@@ -168,11 +198,50 @@
               <p class="mv-desc" x-show="!$store.mayaConversation.turns.length" style="padding:12px 0">Transcript appears here during voice or chat turns.</p>
             </div>
 
-            <div class="md-composer">
-              <textarea class="md-textarea mv-input" x-model="$store.mayaConversation.draft" :placeholder="textChatReady ? 'Message Maya…' : ($store.mayaConversation.useWebLLM ? 'Waiting for WebLLM…' : 'Waiting for LLM…')" @keydown="$store.mayaConversation.onKeydown($event)"></textarea>
+            <div class="md-composer" x-data="{ get palette() { return $store.mayaCmdPalette } }">
+              <div class="md-composer-input-wrap">
+                <textarea
+                  class="md-textarea mv-input"
+                  x-model="$store.mayaConversation.draft"
+                  @input="palette.onDraftChange($event.target.value)"
+                  :placeholder="textChatReady ? 'Message Maya… (/ for cmds)' : ($store.mayaConversation.useWebLLM ? 'Waiting for WebLLM…' : 'Waiting for LLM…')"
+                  @keydown="if (!palette.handleKeydown($event)) $store.mayaConversation.onKeydown($event)"
+                ></textarea>
+                <div class="md-cmd-tray md-scroll" x-show="palette.open" x-cloak @click.away="palette.closeTray()">
+                  <div class="md-cmd-tray-head">
+                    <span>Commands</span>
+                    <button type="button" class="md-cmd-tray-close" @click="palette.closeTray()" aria-label="Close command tray">×</button>
+                  </div>
+                  <p class="md-cmd-tray-empty" x-show="palette.loading">Loading cmds…</p>
+                  <p class="md-cmd-tray-empty md-banner error" x-show="palette.error" x-text="palette.error"></p>
+                  <p class="md-cmd-tray-empty" x-show="!palette.loading && !palette.error && !palette.filtered().length">No matching cmds.</p>
+                  <template x-for="group in palette.grouped()" :key="group.category">
+                    <div class="md-cmd-group">
+                      <div class="md-cmd-group-title" x-text="group.category"></div>
+                      <template x-for="(cmd, idx) in group.items" :key="cmd.id">
+                        <button
+                          type="button"
+                          class="md-cmd-item"
+                          :class="{ active: palette.flatItems().indexOf(cmd) === palette.selectedIndex }"
+                          @click="palette.select(cmd)"
+                        >
+                          <span class="md-cmd-item-name">/<span x-text="cmd.name"></span></span>
+                          <span class="md-cmd-item-desc" x-text="cmd.description"></span>
+                        </button>
+                      </template>
+                    </div>
+                  </template>
+                  <div class="md-cmd-tray-foot" x-show="!palette.loading && palette.filtered().length">
+                    <span><kbd>Tab</kbd> Autocomplete</span>
+                    <span><kbd>↵</kbd> Select</span>
+                    <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+                    <span><kbd>Esc</kbd> Close</span>
+                  </div>
+                </div>
+              </div>
               <div class="md-composer-actions">
                 <button class="mv-btn mv-btn-primary" @click="$store.mayaConversation.sendServer()" :disabled="$store.mayaConversation.sending || !textChatReady">Send</button>
-                <button class="mv-btn" @click="$store.mayaConversation.reset()">Clear transcript</button>
+                <button class="mv-btn" @click="$store.mayaConversation.newChat()">New chat</button>
               </div>
             </div>
           </div>
@@ -400,7 +469,8 @@
                         <span class="md-tool-desc" x-text="s.connected ? (s.tools + ' tools') : (s.error || 'not connected')"></span>
                       </li>
                     </template>
-                    <li class="md-empty" x-show="!mcpServers.length">No MCP servers</li>
+                    <li class="md-empty" x-show="!mcpServers.length && !mcpHint">No MCP servers</li>
+                    <li class="md-empty md-mcp-hint" x-show="mcpHint" x-text="mcpHint"></li>
                   </ul>
 
                   <p class="mv-eyebrow" style="margin:16px 0 6px">Live tool log</p>
@@ -539,6 +609,7 @@
     <script defer src="/dashboard/vendor/eq-ui.js"></script>
     <script defer src="/dashboard/js/mayaWebLLM.js"></script>
     <script defer src="/dashboard/js/mayaConversation.js"></script>
+    <script defer src="/dashboard/js/mayaCmdPalette.js"></script>
     <script defer src="/dashboard/js/mayaShell.js"></script>
     <script defer src="/dashboard/js/mayaBrowserAudio.js"></script>
     <script defer src="/dashboard/js/mayaEqViz.js"></script>

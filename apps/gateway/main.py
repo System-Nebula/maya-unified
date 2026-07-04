@@ -12,7 +12,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 
-from services.paths import GATEWAY_SRC, VOICE_RUNTIME, setup_paths  # noqa: E402
+from services.paths import DATA_DIR, GATEWAY_SRC, VOICE_RUNTIME, setup_paths  # noqa: E402
 
 setup_paths()
 
@@ -30,6 +30,7 @@ from apps.gateway.google_integrations_routes import router as google_integration
 from apps.gateway.platform_auth_routes import router as platform_auth_router  # noqa: E402
 from apps.gateway.lifespan import lifespan  # noqa: E402
 from apps.gateway.settings_routes import router as settings_router  # noqa: E402
+from apps.gateway.cmd_routes import router as cmd_router  # noqa: E402
 from apps.gateway.room_routes import router as room_router  # noqa: E402
 from apps.gateway.voice_routes import register_agent_routes  # noqa: E402
 from services.auth.deps import resolve_operator_from_token  # noqa: E402
@@ -53,7 +54,7 @@ app = FastAPI(
 _GUARDED_PREFIXES = ("/", "/memory", "/settings", "/animations", "/panel", "/admin", "/rooms")
 _OPEN_PREFIXES = (
     "/login", "/setup", "/static", "/sdk", "/dashboard", "/docs", "/redoc",
-    "/openapi", "/health", "/favicon", "/room",
+    "/openapi", "/health", "/favicon", "/room", "/imagine-outputs",
 )
 _API_AUTH_OPEN = ("/api/auth/login", "/api/auth/logout", "/api/auth/me")
 _API_PLATFORM_OPEN = ("/api/platform/auth/status", "/api/platform/auth/login")
@@ -207,6 +208,7 @@ _mount_platform_routes()
 
 app.include_router(settings_router)
 app.include_router(room_router)
+app.include_router(cmd_router)
 register_agent_routes(app)
 
 # --- static: voice SDK ----------------------------------------------------------
@@ -218,6 +220,17 @@ if _sdk_dir.is_dir():
 
 if _dashboard_dir.is_dir():
     app.mount("/dashboard", StaticFiles(directory=str(_dashboard_dir)), name="dashboard-static")
+
+_image_root = Path(os.environ.get("MAYA_IMAGE_ROOT", "./data/outputs/maya-image")).resolve()
+if _image_root.is_dir():
+    app.mount("/imagine-outputs", StaticFiles(directory=str(_image_root)), name="imagine-outputs")
+elif _image_root.parent:
+    _image_root.mkdir(parents=True, exist_ok=True)
+    app.mount("/imagine-outputs", StaticFiles(directory=str(_image_root)), name="imagine-outputs")
+
+_blender_root = (DATA_DIR / "blender-outputs").resolve()
+_blender_root.mkdir(parents=True, exist_ok=True)
+app.mount("/blender-outputs", StaticFiles(directory=str(_blender_root)), name="blender-outputs")
 
 
 @app.get("/")
@@ -274,7 +287,16 @@ def settings_page():
 
 @app.get("/health")
 def unified_health():
-    return {"ok": True, "service": "maya-unified"}
+    out: dict = {"ok": True, "service": "maya-unified"}
+    import os
+
+    if os.getenv("ENV", "production") == "development" or os.getenv("ENVIRONMENT", "development") == "development":
+        from services.discovery.registry import snapshot
+
+        services = snapshot()
+        if services:
+            out["deps"] = {sid: svc.get("status") for sid, svc in services.items()}
+    return out
 
 
 @app.get("/login")
