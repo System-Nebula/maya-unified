@@ -944,33 +944,31 @@
   margin: 8px 0 0;
 }
 
-/* Immersive live avatar overlay (bottom-left of chat) */
-.md-session-immersive .md-log {
-  padding-left: clamp(200px, 34vw, 380px);
-}
+/* Immersive live avatar — fixed left tray (mirrors right controls tray) */
 .md-vrm-immersive {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  width: clamp(200px, 32vw, 360px);
-  z-index: 20;
+  position: fixed;
+  top: 55px;
+  left: 0;
+  bottom: 0;
+  width: clamp(240px, 26vw, 340px);
+  max-width: 100vw;
+  z-index: 88;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  pointer-events: none;
-}
-.md-vrm-immersive-head,
-.md-vrm-immersive-stage {
-  pointer-events: auto;
+  overflow: hidden;
+  border-right: 1px solid var(--mv-border);
+  background: var(--mv-bg);
 }
 .md-vrm-immersive-head {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 2px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--mv-border);
 }
 .md-vrm-immersive-title {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -982,8 +980,8 @@
 }
 .md-vrm-immersive-close {
   flex-shrink: 0;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border: 1px solid var(--mv-border);
   border-radius: var(--mv-r-ctl);
   background: var(--mv-bg);
@@ -999,17 +997,14 @@
 }
 .md-vrm-immersive-stage {
   position: relative;
-  height: clamp(240px, 38vh, 420px);
-  border: 1px solid var(--mv-border);
-  border-radius: var(--mv-r-panel);
-  background: radial-gradient(ellipse at 50% 18%, rgba(26, 32, 48, 0.92) 0%, rgba(13, 13, 16, 0.55) 72%);
-  backdrop-filter: blur(6px);
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  background: radial-gradient(ellipse at 50% 18%, #1a2030 0%, #0d0d10 72%);
+  transition: box-shadow 0.2s;
 }
 .md-vrm-immersive.md-vrm-speaking .md-vrm-immersive-stage {
-  border-color: rgba(10, 132, 255, 0.45);
-  box-shadow: 0 0 0 1px rgba(10, 132, 255, 0.12), 0 8px 32px rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.35);
 }
 .md-vrm-immersive-stage canvas {
   display: block;
@@ -1020,10 +1015,85 @@
 .md-vrm-immersive-stage canvas:active {
   cursor: grabbing;
 }
-.md-vrm-immersive .md-vrm-error {
-  pointer-events: auto;
+.md-vrm-immersive-foot {
+  flex-shrink: 0;
   margin: 0;
+  padding: 10px 14px 14px;
   font-size: 11px;
+  line-height: 1.45;
+  border-top: 1px solid var(--mv-border);
+}
+.md-vrm-immersive-foot a {
+  color: var(--mv-accent);
+}
+
+/* Avatar placeholder (immersive + sidebar) */
+.md-vrm-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px;
+  text-align: center;
+  background: radial-gradient(ellipse at 50% 30%, rgba(26, 32, 48, 0.85) 0%, rgba(13, 13, 16, 0.92) 70%);
+  pointer-events: none;
+}
+.md-vrm-placeholder--compact {
+  padding: 16px;
+  gap: 8px;
+}
+.md-vrm-placeholder-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  border: 1px solid var(--mv-border);
+  color: var(--mv-muted);
+  background: rgba(13, 13, 16, 0.6);
+}
+.md-vrm-placeholder--compact .md-vrm-placeholder-icon {
+  width: 44px;
+  height: 44px;
+}
+.md-vrm-placeholder-icon svg {
+  width: 28px;
+  height: 28px;
+}
+.md-vrm-placeholder--compact .md-vrm-placeholder-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.md-vrm-placeholder-img {
+  max-width: min(180px, 70%);
+  max-height: min(220px, 45%);
+  border-radius: var(--mv-r-panel);
+  object-fit: contain;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+}
+.md-vrm-placeholder-caption {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--mv-muted);
+  max-width: 220px;
+}
+.md-vrm-placeholder--compact .md-vrm-placeholder-caption {
+  font-size: 11px;
+  max-width: 180px;
+}
+.md-vrm-placeholder-link {
+  pointer-events: auto;
+  font-size: 11px;
+  color: var(--mv-accent);
+  text-decoration: none;
+}
+.md-vrm-placeholder-link:hover {
+  text-decoration: underline;
 }
 
 /* Turn avatar trigger + composer toggle */
@@ -1076,14 +1146,7 @@
 }
 
 @media (max-width: 720px) {
-  .md-session-immersive .md-log {
-    padding-left: 0;
-    padding-bottom: clamp(220px, 42vh, 320px);
-  }
   .md-vrm-immersive {
-    left: 8px;
-    right: 8px;
-    bottom: 8px;
-    width: auto;
+    width: min(280px, 78vw);
   }
 }

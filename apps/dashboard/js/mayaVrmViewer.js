@@ -3,8 +3,45 @@ import { createVrmBus } from "/dashboard/js/mayaVrmBus.js";
 
 const POPOUT_NAME = "maya-vrm-popout";
 const POPOUT_FEATURES = "popup,width=420,height=560,left=120,top=80,resizable=yes";
+const IMMERSIVE_EVENT = "maya:toggle-immersive-avatar";
+
+function _immersiveStorageKey() {
+  const uid = window._mayaCurrentUser?.id || "anonymous";
+  return `maya.conversation.immersive.v1.${uid}`;
+}
+
+function _vrmStore() {
+  return typeof Alpine !== "undefined" ? Alpine.store("mayaVrm") : null;
+}
+
+function _bindStoreActions(viewer) {
+  const s = _vrmStore();
+  if (!s) return;
+  s.toggleImmersive = (force) => viewer.toggleImmersive(force);
+  s.openPopout = () => viewer.openPopout();
+  s.closeImmersive = () => viewer.setImmersive(false);
+}
 
 document.addEventListener("alpine:init", () => {
+  Alpine.store("mayaVrm", {
+    immersive: false,
+    enabled: true,
+    speaking: false,
+    loading: false,
+    poppedOut: false,
+    loadError: "",
+    modelLabel: "",
+    lipSyncLabel: "",
+    lipSyncMode: "viseme",
+    modelLoaded: false,
+    showPlaceholder: false,
+    avatarImage: "",
+    placeholderCaption: "No avatar model",
+    toggleImmersive() {},
+    openPopout() {},
+    closeImmersive() {},
+  });
+
   Alpine.data("mayaVrmViewer", () => ({
     enabled: true,
     model: "",
@@ -19,17 +56,102 @@ document.addEventListener("alpine:init", () => {
     loadError: "",
     speaking: false,
     poppedOut: false,
+    immersive: false,
     modelLabel: "",
     lipSyncLabel: "",
+    avatarImage: "",
+    modelLoaded: false,
+    placeholderHint: "",
     _engine: null,
     _enginePromise: null,
     _specTimer: null,
     _unsub: null,
     _bus: null,
     _popout: null,
+    _onImmersiveToggle: null,
 
     get agentReady() {
       return Alpine.store("mayaShell")?.ready || false;
+    },
+
+    get agentError() {
+      return Alpine.store("mayaShell")?.error || "";
+    },
+
+    get llmOk() {
+      const shell = Alpine.store("mayaShell");
+      return !!(shell?.llmReady || shell?.llmOk);
+    },
+
+    get textChatReady() {
+      const shell = Alpine.store("mayaShell");
+      return shell?.capabilities?.text_chat === true || shell?.llmReady === true;
+    },
+
+    get llmError() {
+      return Alpine.store("mayaShell")?.llmError || "";
+    },
+
+    get showPlaceholder() {
+      return !this.loading && !this.modelLoaded;
+    },
+
+    get placeholderCaption() {
+      if (this.placeholderHint) return this.placeholderHint;
+      if (this.loadError) return this.loadError;
+      return "No avatar model";
+    },
+
+    _friendlyLoadError(msg) {
+      const text = String(msg || "");
+      if (/404|not found/i.test(text)) {
+        return "No avatar model — upload a .vrm in Settings";
+      }
+      if (/canvas not ready/i.test(text)) return "";
+      return text.length > 120 ? `${text.slice(0, 117)}…` : text;
+    },
+
+    _syncToStore() {
+      const s = _vrmStore();
+      if (!s) return;
+      s.immersive = this.immersive;
+      s.enabled = this.enabled;
+      s.speaking = this.speaking;
+      s.loading = this.loading;
+      s.poppedOut = this.poppedOut;
+      s.loadError = this.loadError;
+      s.modelLabel = this.modelLabel;
+      s.lipSyncLabel = this.lipSyncLabel;
+      s.lipSyncMode = this.lipSyncMode;
+      s.modelLoaded = this.modelLoaded;
+      s.showPlaceholder = this.showPlaceholder;
+      s.avatarImage = this.avatarImage;
+      s.placeholderCaption = this.placeholderCaption;
+    },
+
+    _activeCanvas() {
+      if (this.poppedOut) return null;
+      if (this.immersive) {
+        return (
+          this.$refs.vrmImmersiveCanvas ||
+          document.querySelector("[data-maya-vrm-canvas='immersive']")
+        );
+      }
+      return document.querySelector("[data-maya-vrm-canvas='sidebar']");
+    },
+
+    _persistImmersive() {
+      try {
+        sessionStorage.setItem(_immersiveStorageKey(), this.immersive ? "1" : "0");
+      } catch (_) {}
+    },
+
+    _restoreImmersive() {
+      try {
+        this.immersive = sessionStorage.getItem(_immersiveStorageKey()) === "1";
+      } catch (_) {
+        this.immersive = false;
+      }
     },
 
     async init() {
@@ -40,10 +162,17 @@ document.addEventListener("alpine:init", () => {
           this.poppedOut = true;
           this._engine?.dispose();
           this._engine = null;
+          this._syncToStore();
         }
       });
+      _bindStoreActions(this);
+      this._onImmersiveToggle = () => this.toggleImmersive();
+      window.addEventListener(IMMERSIVE_EVENT, this._onImmersiveToggle);
       await this.$nextTick();
       await this.loadSettings();
+      this._restoreImmersive();
+      this._syncToStore();
+      await this.$nextTick();
       this._unsub = window.mayaAgentEvents?.subscribe((ev) => this.onAgentEvent(ev));
       this._attachExistingPopout();
       if (this.enabled && !this.poppedOut) {
@@ -59,6 +188,7 @@ document.addEventListener("alpine:init", () => {
         if (!path.includes("/avatar/popout")) return;
         this._popout = w;
         this.poppedOut = true;
+        this._syncToStore();
         const timer = setInterval(() => {
           if (!this._popout || this._popout.closed) {
             clearInterval(timer);
@@ -71,6 +201,9 @@ document.addEventListener("alpine:init", () => {
     destroy() {
       this.stopSpectrumPoll();
       if (this._unsub) this._unsub();
+      if (this._onImmersiveToggle) {
+        window.removeEventListener(IMMERSIVE_EVENT, this._onImmersiveToggle);
+      }
       this._engine?.dispose();
       this._engine = null;
       this._bus?.close();
@@ -92,6 +225,7 @@ document.addEventListener("alpine:init", () => {
         this.idleEnabled = vrm.idle_enabled !== false;
         this.idleAnimation = vrm.idle_animation || "Idle.fbx";
         this.modelLabel = this.model ? this.model.replace(/^.*[/\\]/, "") : "1556438947145020822.vrm";
+        this._syncToStore();
       } catch (_) {}
     },
 
@@ -100,7 +234,7 @@ document.addEventListener("alpine:init", () => {
       if (this._enginePromise) return this._enginePromise;
       this._enginePromise = (async () => {
         const { MayaVrmEngine } = await import("/dashboard/js/mayaVrmEngine.js");
-        const canvas = this.$refs.vrmCanvas;
+        const canvas = this._activeCanvas();
         if (!canvas) throw new Error("Canvas not ready");
         const engine = new MayaVrmEngine(canvas, {
           mouthGain: this.mouthGain,
@@ -125,10 +259,12 @@ document.addEventListener("alpine:init", () => {
 
     async bootViewer() {
       if (this.poppedOut) return;
-      const canvas = this.$refs.vrmCanvas;
+      const canvas = this._activeCanvas();
       if (!canvas) return;
       this.loading = true;
       this.loadError = "";
+      this.placeholderHint = "";
+      this._syncToStore();
       try {
         const { resolveVrmUrl } = await import("/dashboard/js/mayaVrmEngine.js");
         const engine = await this.ensureEngine();
@@ -139,26 +275,63 @@ document.addEventListener("alpine:init", () => {
         await engine.loadModel(resolveVrmUrl(this.model));
         const keys = engine.lipSyncInfo?.keys || {};
         this.lipSyncLabel = Object.entries(keys).map(([k, v]) => `${k}→${v}`).join(" ") || "no mouth expressions";
+        this.modelLoaded = true;
+        this.placeholderHint = "";
+        this.loadError = "";
       } catch (e) {
-        this.loadError = String(e.message || e);
+        this.modelLoaded = false;
+        const friendly = this._friendlyLoadError(e.message || e);
+        this.placeholderHint = friendly || "No avatar model";
+        this.loadError = "";
       } finally {
         this.loading = false;
+        this._syncToStore();
+        this.$nextTick(() => window.dispatchEvent(new Event("resize")));
       }
     },
 
-    openPopout() {
+    async _relocateEngine(nextImmersive) {
+      this._engine?.dispose();
+      this._engine = null;
+      this.immersive = nextImmersive;
+      this._persistImmersive();
+      this._syncToStore();
+      await this.$nextTick();
+      if (this.enabled && !this.poppedOut) {
+        await this.bootViewer();
+      }
+      this.$nextTick(() => window.dispatchEvent(new Event("resize")));
+    },
+
+    async toggleImmersive(force) {
+      if (this.poppedOut) return;
+      const next = typeof force === "boolean" ? force : !this.immersive;
+      if (next === this.immersive) return;
+      await this._relocateEngine(next);
+    },
+
+    async setImmersive(value) {
+      await this.toggleImmersive(!!value);
+    },
+
+    async openPopout() {
       if (this._popout && !this._popout.closed) {
         this._popout.focus();
         return;
       }
+      if (this.immersive) {
+        await this._relocateEngine(false);
+      }
       this._popout = window.open("/avatar/popout", POPOUT_NAME, POPOUT_FEATURES);
       if (!this._popout) {
         this.loadError = "Pop-up blocked — allow pop-ups for this site.";
+        this._syncToStore();
         return;
       }
       this.poppedOut = true;
       this._engine?.dispose();
       this._engine = null;
+      this._syncToStore();
       this._bus.post({ type: "popout-open" });
       const timer = setInterval(() => {
         if (!this._popout || this._popout.closed) {
@@ -171,6 +344,7 @@ document.addEventListener("alpine:init", () => {
     onPopoutClosed() {
       this.poppedOut = false;
       this._popout = null;
+      this._syncToStore();
       if (this.enabled) this.bootViewer();
     },
 
@@ -197,9 +371,11 @@ document.addEventListener("alpine:init", () => {
         const v = ev.value || "idle";
         if (v === "speaking") {
           this.speaking = true;
+          this._syncToStore();
           this.startSpectrumPoll();
         } else if (this.speaking && v !== "speaking") {
           this.speaking = false;
+          this._syncToStore();
           this._bus.post({ type: "lip", level: 0, bands: [] });
         }
       }
@@ -220,6 +396,7 @@ document.addEventListener("alpine:init", () => {
           if (v.idle_animation != null) this._engine?.setIdleAnimation(v.idle_animation);
           if (v.model != null) this.reloadModel();
         }
+        this._syncToStore();
         this._bus.post({ type: "settings", vrm: v });
       }
     },
@@ -277,3 +454,5 @@ document.addEventListener("alpine:init", () => {
     },
   }));
 });
+
+export { IMMERSIVE_EVENT };

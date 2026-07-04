@@ -97,7 +97,7 @@
             <div class="md-banner" x-show="agentReady && $store.mayaShell?.browserAudioHint" x-text="$store.mayaShell.browserAudioHint"></div>
           </div>
 
-          <div class="md-session" :class="{ 'md-session-immersive': immersive && enabled && !poppedOut }">
+          <div class="md-session">
             <div class="md-log md-scroll">
               <template x-for="(t, i) in $store.mayaConversation.turns" :key="t.messageId">
                 <div
@@ -190,33 +190,43 @@
                 </button>
               </div>
             </div>
+          </div>
 
-            <!-- Immersive VRM overlay (fixed; engine relocates here when active) -->
-            <div
-              class="md-vrm-immersive"
-              x-show="immersive && enabled && !poppedOut"
-              x-cloak
-              :class="{ 'md-vrm-speaking': speaking }"
-            >
-              <div class="md-vrm-immersive-head">
-                <span class="md-vrm-immersive-title">Live avatar</span>
-                <span class="mv-chip live md-vrm-immersive-chip" x-show="speaking"><span class="ind"></span>Lip-sync</span>
-                <button
-                  type="button"
-                  class="md-vrm-immersive-close"
-                  @click="setImmersive(false)"
-                  aria-label="Close live avatar"
-                  title="Close"
-                >&#10005;</button>
-              </div>
-              <div class="md-vrm-immersive-stage">
-                <canvas x-ref="vrmImmersiveCanvas" data-maya-vrm-canvas="immersive"></canvas>
-                <div class="md-vrm-stage-overlay" x-show="loading">
-                  <span>Loading VRM…</span>
-                </div>
-              </div>
-              <p class="md-banner error md-vrm-error" x-show="loadError" x-text="loadError"></p>
+          <!-- Immersive VRM left tray (fixed; engine relocates here when active) -->
+          <div
+            class="md-vrm-immersive"
+            x-show="immersive && enabled && !poppedOut"
+            x-cloak
+            :class="{ 'md-vrm-speaking': speaking }"
+          >
+            <div class="md-vrm-immersive-head">
+              <span class="md-vrm-immersive-title">Live avatar</span>
+              <span class="mv-chip live md-vrm-immersive-chip" x-show="speaking"><span class="ind"></span>Lip-sync</span>
+              <button
+                type="button"
+                class="md-vrm-immersive-close"
+                @click="setImmersive(false)"
+                aria-label="Close live avatar"
+                title="Close"
+              >&#10005;</button>
             </div>
+            <div class="md-vrm-immersive-stage">
+              <canvas x-ref="vrmImmersiveCanvas" data-maya-vrm-canvas="immersive"></canvas>
+              <div class="md-vrm-stage-overlay" x-show="loading">
+                <span>Loading VRM…</span>
+              </div>
+              <div class="md-vrm-placeholder" x-show="showPlaceholder && !loading" x-cloak>
+                <img x-show="avatarImage" :src="avatarImage" alt="" class="md-vrm-placeholder-img" />
+                <div class="md-vrm-placeholder-icon" x-show="!avatarImage" aria-hidden="true">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
+                  </svg>
+                </div>
+                <p class="md-vrm-placeholder-caption" x-text="placeholderCaption"></p>
+                <a href="/settings?tab=expressions" class="md-vrm-placeholder-link" x-show="!modelLoaded">Upload in Settings</a>
+              </div>
+            </div>
+            <p class="mv-desc md-vrm-immersive-foot">Powered by <a href="https://github.com/pixiv/three-vrm" target="_blank" rel="noopener">three-vrm</a> — drag to orbit</p>
           </div>
         </div>
 
@@ -502,6 +512,15 @@
                       <div class="md-vrm-stage-overlay" x-show="$store.mayaVrm.loading">
                         <span>Loading VRM…</span>
                       </div>
+                      <div class="md-vrm-placeholder md-vrm-placeholder--compact" x-show="$store.mayaVrm.showPlaceholder && !$store.mayaVrm.loading" x-cloak>
+                        <img x-show="$store.mayaVrm.avatarImage" :src="$store.mayaVrm.avatarImage" alt="" class="md-vrm-placeholder-img" />
+                        <div class="md-vrm-placeholder-icon" x-show="!$store.mayaVrm.avatarImage" aria-hidden="true">
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
+                          </svg>
+                        </div>
+                        <p class="md-vrm-placeholder-caption" x-text="$store.mayaVrm.placeholderCaption"></p>
+                      </div>
                     </div>
                   </div>
                   <p class="mv-desc md-vrm-meta" x-show="$store.mayaVrm.immersive && !$store.mayaVrm.poppedOut">
@@ -510,15 +529,14 @@
                   <p class="mv-desc md-vrm-meta" x-show="$store.mayaVrm.poppedOut">
                     Avatar is in a separate window — drag it by the title bar. Close that window to embed again.
                   </p>
-                  <p class="mv-desc md-vrm-meta" x-show="!$store.mayaVrm.loadError && !$store.mayaVrm.poppedOut && !$store.mayaVrm.immersive">
+                  <p class="mv-desc md-vrm-meta" x-show="!$store.mayaVrm.poppedOut && !$store.mayaVrm.immersive && $store.mayaVrm.modelLoaded">
                     <span x-text="$store.mayaVrm.modelLabel"></span>
                     <span class="md-vrm-dot">·</span>
                     <span x-text="$store.mayaVrm.lipSyncMode === 'viseme' ? 'Viseme sync' : 'Jaw sync'"></span>
                     <span class="md-vrm-dot">·</span>
                     <a href="/settings?tab=expressions">Configure</a>
                   </p>
-                  <p class="mv-desc md-vrm-visemes" x-show="$store.mayaVrm.lipSyncLabel && !$store.mayaVrm.loadError" x-text="$store.mayaVrm.lipSyncLabel"></p>
-                  <p class="md-banner error md-vrm-error" x-show="$store.mayaVrm.loadError" x-text="$store.mayaVrm.loadError"></p>
+                  <p class="mv-desc md-vrm-visemes" x-show="$store.mayaVrm.lipSyncLabel && $store.mayaVrm.modelLoaded" x-text="$store.mayaVrm.lipSyncLabel"></p>
                   <p class="mv-desc md-vrm-hint">Powered by <a href="https://github.com/pixiv/three-vrm" target="_blank" rel="noopener">three-vrm</a> — drag to orbit</p>
                 </div>
               </div>
