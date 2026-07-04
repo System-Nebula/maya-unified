@@ -16,6 +16,10 @@ def ensure_cmds_registered() -> None:
     if _bootstrapped:
         return
     _bootstrapped = True
+    if registry.get("help") is not None:
+        # Registry already populated — e.g. a test fixture reset the flag
+        # without clearing the registry. Re-registering would raise.
+        return
 
     registry.register(
         CmdDefinition(

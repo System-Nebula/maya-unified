@@ -12,6 +12,8 @@ log = logging.getLogger("maya-unified.discord")
 
 def apply_discord_env(settings: dict) -> None:
     """Mirror unified discord settings into os.environ for qwen3 CONFIG."""
+    from services.imagine.settings import get_imagine_settings
+
     disc = settings.get("discord", {})
     token = str(disc.get("token") or "").strip()
     enabled = bool(token) or bool(disc.get("enabled"))
@@ -24,8 +26,9 @@ def apply_discord_env(settings: dict) -> None:
             os.environ["VA_DISCORD_AUTO_REPLY"] = "1" if disc.get("auto_reply") else "0"
         if disc.get("attach_voice") is not None:
             os.environ["VA_DISCORD_ATTACH_VOICE"] = "1" if disc.get("attach_voice") else "0"
-    if disc.get("comfyui_url"):
-        os.environ["COMFYUI_API_URL"] = str(disc["comfyui_url"])
+    imagine = get_imagine_settings(settings)
+    if imagine.get("comfyui_url"):
+        os.environ["COMFYUI_API_URL"] = str(imagine["comfyui_url"])
 
 
 def start_discord_extensions(hub) -> None:

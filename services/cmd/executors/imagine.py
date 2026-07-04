@@ -129,7 +129,9 @@ async def exec_imagine(ctx: CmdContext, args: dict[str, Any]) -> CmdResult:
     from services.imagine.settings import get_imagine_settings
     from services.settings.store import load_effective_settings
 
-    settings = load_effective_settings(ctx.operator_id)
+    # Settings + health preflight block on DB/network — keep them off the loop
+    # (load_effective_settings run_syncs DB work back onto the gateway loop).
+    settings = await asyncio.to_thread(load_effective_settings, ctx.operator_id)
     imagine = get_imagine_settings(settings)
     if not imagine.get("enabled"):
         return CmdResult(
@@ -148,9 +150,11 @@ async def exec_imagine(ctx: CmdContext, args: dict[str, Any]) -> CmdResult:
     )
 
     apply_comfyui_url_from_settings(settings)
-    health = get_cached_comfyui_health(settings, run_probe=True)
+    health = await asyncio.to_thread(get_cached_comfyui_health, settings, run_probe=True)
     if health.get("status") == "error":
-        health = get_cached_comfyui_health(settings, run_probe=True, rediscover=True)
+        health = await asyncio.to_thread(
+            get_cached_comfyui_health, settings, run_probe=True, rediscover=True
+        )
     if dev_policy_blocks_imagine(health):
         return CmdResult(
             ok=False,
@@ -161,6 +165,23 @@ async def exec_imagine(ctx: CmdContext, args: dict[str, Any]) -> CmdResult:
         return CmdResult(
             ok=False,
             error=format_comfyui_unavailable_error(health),
+            trace_id=_trace_id(),
+        )
+    weights = health.get("weights") or {}
+    if health.get("status") in ("ok", "warn") and weights.get("ok") is False:
+        missing = weights.get("missing") or []
+        missing_labels = [
+            item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else str(item)
+            for item in missing
+        ]
+        detail = weights.get("detail") or "Z-Image weights not visible to ComfyUI"
+        missing_text = ", ".join(missing_labels) if missing_labels else "unknown"
+        return CmdResult(
+            ok=False,
+            error=(
+                f"Z-Image weights missing ({missing_text}). {detail}. "
+                "See infra/comfyui/README.md."
+            ),
             trace_id=_trace_id(),
         )
     mode = str(args.get("mode") or "generate")

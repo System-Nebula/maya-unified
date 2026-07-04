@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
-import threading
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from services.cmd.chat_bridge import (
     _broadcast_cmd_turn,
+    _ensure_cmd_result,
     _format_cmd_exception,
     _resolve_cmd_error_text,
-    _run_long_cmd_background,
+    _run_long_cmd_async,
     try_dispatch_chat_cmd,
 )
 from services.cmd.models import CmdContext, CmdResult, CmdSurface, ParsedCmd
@@ -34,7 +37,7 @@ def test_broadcast_cmd_turn_includes_artifacts_in_ai_event() -> None:
     mock_hub = MagicMock()
     mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
 
-    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._persist_cmd_turns"):
+    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._schedule_persist_cmd_turns"):
         out = _broadcast_cmd_turn(text="/imagine alley", reply=reply, operator_id="op-1")
 
     assert out["ok"] is True
@@ -52,7 +55,7 @@ def test_broadcast_cmd_turn_marks_cmd_errors() -> None:
     mock_hub = MagicMock()
     mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
 
-    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._persist_cmd_turns"):
+    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._schedule_persist_cmd_turns"):
         out = _broadcast_cmd_turn(text="/imagine", reply=reply, operator_id=None)
 
     error_events = [b for b in broadcasts if b.get("type") == "error"]
@@ -74,7 +77,7 @@ def test_broadcast_cmd_turn_error_includes_trace_and_job_ids() -> None:
     mock_hub = MagicMock()
     mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
 
-    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._persist_cmd_turns"):
+    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._schedule_persist_cmd_turns"):
         out = _broadcast_cmd_turn(text="/imagine alley", reply=reply, operator_id="op-1")
 
     error_events = [b for b in broadcasts if b.get("type") == "error"]
@@ -123,12 +126,13 @@ def test_try_dispatch_imagine_returns_pending_immediately() -> None:
     mock_hub = MagicMock()
     mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
 
-    class _NoStartThread(threading.Thread):
-        def start(self) -> None:  # noqa: D401 — test stub
-            return None
+    scheduled: list = []
+
+    def _capture_schedule(coro) -> None:
+        scheduled.append(coro)
 
     with _patch_voice_hub(mock_hub):
-        with patch("services.cmd.chat_bridge.threading.Thread", _NoStartThread):
+        with patch("services.async_bridge.schedule_coro", side_effect=_capture_schedule):
             with patch("services.cmd.chat_bridge.parse_cmd_input") as mock_parse:
                 mock_parse.return_value = ParsedCmd(
                     cmd_id="imagine",
@@ -152,6 +156,8 @@ def test_try_dispatch_imagine_returns_pending_immediately() -> None:
     ]
     assert len(thinking_events) == 1
     assert thinking_events[0]["corr_id"] == out["corr_id"]
+    assert len(scheduled) == 1
+    scheduled[0].close()
 
 
 def test_format_cmd_exception_timeout_is_not_empty() -> None:
@@ -170,6 +176,25 @@ def test_resolve_cmd_error_text_never_empty() -> None:
     ) == "blend failed with no details"
 
 
+def test_format_cmd_exception_cancelled() -> None:
+    msg = _format_cmd_exception(asyncio.CancelledError(), cmd_id="imagine", timeout_sec=300.0)
+    assert "imagine cancelled" in msg
+    assert "gateway may have reloaded" in msg
+
+
+def test_ensure_cmd_result_fills_empty_error() -> None:
+    out = _ensure_cmd_result(CmdResult(ok=False, error=""), cmd_id="imagine")
+    assert out.ok is False
+    assert "no details" in (out.error or "")
+    assert "gateway logs" in (out.error or "")
+
+
+def test_ensure_cmd_result_invalid_type() -> None:
+    out = _ensure_cmd_result(None, cmd_id="blend")
+    assert out.ok is False
+    assert "invalid result" in (out.error or "")
+
+
 def test_broadcast_cmd_turn_never_empty_error() -> None:
     reply = CmdResult(ok=False, error="")
     broadcasts: list[dict] = []
@@ -177,7 +202,7 @@ def test_broadcast_cmd_turn_never_empty_error() -> None:
     mock_hub = MagicMock()
     mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
 
-    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._persist_cmd_turns"):
+    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._schedule_persist_cmd_turns"):
         _broadcast_cmd_turn(
             text="/imagine dog",
             reply=reply,
@@ -187,10 +212,12 @@ def test_broadcast_cmd_turn_never_empty_error() -> None:
 
     error_events = [b for b in broadcasts if b.get("type") == "error"]
     assert len(error_events) == 1
-    assert error_events[0]["text"] == "imagine failed with no details"
+    assert "no details" in error_events[0]["text"]
+    assert "gateway logs" in error_events[0]["text"]
 
 
-def test_background_timeout_error_is_not_empty() -> None:
+@pytest.mark.asyncio
+async def test_background_cancelled_broadcasts_reload_error() -> None:
     broadcasts: list[dict] = []
     mock_hub = MagicMock()
     mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
@@ -198,9 +225,66 @@ def test_background_timeout_error_is_not_empty() -> None:
     parsed = ParsedCmd(cmd_id="imagine", name="imagine", raw_args="dog", args={"prompt": "dog"})
     ctx = CmdContext(operator_id="op-1", surface=CmdSurface.DASHBOARD, raw_text="/imagine dog")
 
-    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._persist_cmd_turns"):
-        with patch("services.async_bridge.run_sync", side_effect=TimeoutError):
-            _run_long_cmd_background(
+    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._schedule_persist_cmd_turns"):
+        with patch(
+            "services.cmd.chat_bridge.dispatch_cmd_async",
+            side_effect=asyncio.CancelledError,
+        ):
+            await _run_long_cmd_async(
+                parsed=parsed,
+                ctx=ctx,
+                text="/imagine dog",
+                corr_id="c_cancel_test",
+                operator_id="op-1",
+            )
+
+    error_events = [b for b in broadcasts if b.get("type") == "error"]
+    assert len(error_events) == 1
+    assert "cancelled" in error_events[0]["text"]
+    assert "gateway may have reloaded" in error_events[0]["text"]
+
+
+def test_broadcast_cmd_turn_sends_sse_before_persist() -> None:
+    broadcasts: list[dict] = []
+    persist_called = False
+
+    mock_hub = MagicMock()
+    mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
+
+    def _mark_persist(**_) -> None:
+        nonlocal persist_called
+        persist_called = True
+
+    with _patch_voice_hub(mock_hub):
+        with patch("services.cmd.chat_bridge._schedule_persist_cmd_turns", side_effect=_mark_persist):
+            _broadcast_cmd_turn(
+                text="/imagine dog",
+                reply=CmdResult(ok=False, error="weights missing"),
+                operator_id="op-1",
+                cmd_id="imagine",
+            )
+
+    error_events = [b for b in broadcasts if b.get("type") == "error"]
+    assert len(error_events) == 1
+    assert len(broadcasts) >= 2
+    assert persist_called
+
+
+@pytest.mark.asyncio
+async def test_background_timeout_error_is_not_empty() -> None:
+    broadcasts: list[dict] = []
+    mock_hub = MagicMock()
+    mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
+
+    parsed = ParsedCmd(cmd_id="imagine", name="imagine", raw_args="dog", args={"prompt": "dog"})
+    ctx = CmdContext(operator_id="op-1", surface=CmdSurface.DASHBOARD, raw_text="/imagine dog")
+
+    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._schedule_persist_cmd_turns"):
+        with patch(
+            "services.cmd.chat_bridge.dispatch_cmd_async",
+            side_effect=TimeoutError,
+        ):
+            await _run_long_cmd_async(
                 parsed=parsed,
                 ctx=ctx,
                 text="/imagine dog",

@@ -23,6 +23,30 @@ def _fresh_registry(monkeypatch):
     ensure_cmds_registered()
 
 
+@pytest.fixture
+def imagine_preflight_ok():
+    """Stub the settings/health preflight so dispatch tests stay unit-level."""
+    with (
+        patch(
+            "services.settings.store.load_effective_settings",
+            return_value={"imagine": {"enabled": True, "comfyui_url": "http://127.0.0.1:3030"}},
+        ),
+        patch(
+            "services.imagine.health.get_cached_comfyui_health",
+            return_value={
+                "status": "ok",
+                "url": "http://127.0.0.1:3030",
+                "weights": {"ok": True},
+            },
+        ),
+        patch(
+            "services.imagine.health.apply_comfyui_url_from_settings",
+            return_value="http://127.0.0.1:3030",
+        ),
+    ):
+        yield
+
+
 def test_discovery_excludes_executor():
     help_cmd = registry.get("help")
     assert help_cmd is not None
@@ -64,7 +88,7 @@ async def test_dispatch_help():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_imagine_async():
+async def test_dispatch_imagine_async(imagine_preflight_ok):
     parsed = parse_cmd_input("/imagine neon alley")
     assert parsed is not None
     mock_result = {
@@ -89,7 +113,7 @@ async def test_dispatch_imagine_async():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_imagine_defaults_zit_on_dashboard():
+async def test_dispatch_imagine_defaults_zit_on_dashboard(imagine_preflight_ok):
     parsed = parse_cmd_input("/imagine a doge shiba inu anime style")
     assert parsed is not None
     mock_run = AsyncMock(
@@ -126,7 +150,7 @@ def test_cmd_result_to_chat_response_includes_correlation_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_imagine_failure_includes_trace_and_job_ids():
+async def test_dispatch_imagine_failure_includes_trace_and_job_ids(imagine_preflight_ok):
     parsed = parse_cmd_input("/imagine neon alley")
     assert parsed is not None
     mock_run = AsyncMock(

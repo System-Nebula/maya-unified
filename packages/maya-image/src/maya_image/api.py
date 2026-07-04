@@ -11,8 +11,13 @@ router = APIRouter(prefix="/api/imagine", tags=["imagine"])
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict:
+    try:
+        from services.imagine.health import check_comfyui_health
+    except ImportError:
+        return {"status": "ok"}
+    result = check_comfyui_health(run_probe=True)
+    return {"status": result.get("status", "error"), **result}
 
 
 @router.get("/workflows")

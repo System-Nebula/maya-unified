@@ -154,7 +154,7 @@ def _comfy_container() -> str:
 
 
 def _container_models_root() -> str:
-    return os.getenv("COMFY_CONTAINER_MODELS_PATH", "/app/ComfyUI/models")
+    return os.getenv("COMFY_CONTAINER_MODELS_PATH", "/opt/ComfyUI/models")
 
 
 def resolve_hf_token() -> str | None:

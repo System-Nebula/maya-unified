@@ -206,6 +206,14 @@ def _mount_platform_routes() -> None:
 
 _mount_platform_routes()
 
+try:
+    from maya_image.api import router as imagine_router
+
+    app.include_router(imagine_router)
+    log.info("mounted imagine /api/imagine routes")
+except Exception as exc:  # noqa: BLE001
+    log.warning("imagine routes unavailable: %s", exc)
+
 app.include_router(settings_router)
 app.include_router(room_router)
 app.include_router(cmd_router)

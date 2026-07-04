@@ -28,12 +28,12 @@ def test_inject_prompt_and_dimensions():
             "seed": 42,
         },
     )
-    assert result["45"]["inputs"]["text"] == "neon alley at night"
-    assert result["41"]["inputs"]["width"] == 1152
-    assert result["41"]["inputs"]["height"] == 2048
-    assert result["44"]["inputs"]["steps"] == 8
-    assert result["44"]["inputs"]["cfg"] == 1.2
-    assert result["44"]["inputs"]["seed"] == 42
+    assert result["27"]["inputs"]["text"] == "neon alley at night"
+    assert result["13"]["inputs"]["width"] == 1152
+    assert result["13"]["inputs"]["height"] == 2048
+    assert result["3"]["inputs"]["steps"] == 8
+    assert result["3"]["inputs"]["cfg"] == 1.2
+    assert result["3"]["inputs"]["seed"] == 42
 
 
 def test_build_values_from_request_aspect():

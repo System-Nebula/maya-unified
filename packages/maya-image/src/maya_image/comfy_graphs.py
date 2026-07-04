@@ -283,9 +283,20 @@ def create_krea2_turbo_graph(
     }
 
 
-_IDEOGRAM4_API_GRAPH = (
-    __import__("pathlib").Path(__file__).resolve().parents[2]
-    / "infra/comfyui/workflows/ideogram4/image_ideogram4_t2i.api.json"
+def _repo_workflow_path(rel: str):
+    """Locate a workflow template by walking up from this file to the repo root."""
+    from pathlib import Path
+
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / rel
+        if candidate.is_file():
+            return candidate
+    return here.parents[2] / rel
+
+
+_IDEOGRAM4_API_GRAPH = _repo_workflow_path(
+    "infra/comfyui/workflows/ideogram4/image_ideogram4_t2i.api.json"
 )
 
 

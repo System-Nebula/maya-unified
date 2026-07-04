@@ -592,12 +592,73 @@ function _hasCmdReply(store, corrId, text) {
 
 function _markCmdFailed(store, corrId) {
   if (!corrId) return;
+  const ackIdx = _findCmdAckTurn(store, corrId);
+  const optimisticIdx = ackIdx >= 0
+    ? ackIdx
+    : store.turns.findIndex((t) => t._optimisticAck && t.cmdPhase === "ack" && t._cmdPending);
+  if (optimisticIdx < 0) return;
   if (!store._cmdFailedCorrIds) store._cmdFailedCorrIds = {};
   store._cmdFailedCorrIds[corrId] = true;
 }
 
 function _isCmdFailed(store, corrId) {
-  return !!(corrId && store._cmdFailedCorrIds?.[corrId]);
+  if (!corrId) return false;
+  return !!store._cmdFailedCorrIds?.[corrId];
+}
+
+function _operatorTextBeforeTurn(store, turnIdx) {
+  for (let i = turnIdx - 1; i >= 0; i -= 1) {
+    if (store.turns[i]?.role === "operator") return store.turns[i].text;
+  }
+  return null;
+}
+
+function _resetCmdFailureState(store) {
+  store._cmdFailedCorrIds = {};
+}
+
+function _clearStalePendingCmdAck(store, operatorText) {
+  const ackIdx = _findCmdAckTurn(store, null);
+  if (ackIdx < 0) return;
+  const priorOp = _operatorTextBeforeTurn(store, ackIdx);
+  if (priorOp === operatorText) return;
+  _clearCmdStallTimer(store.turns[ackIdx]);
+  store.turns.splice(ackIdx, 1);
+}
+
+const _LONG_RUNNING_CMD_ACK = {
+  imagine: "Generating image… Z-Image Turbo may take up to a minute while models load.",
+  img: "Generating image… Z-Image Turbo may take up to a minute while models load.",
+  blend: "Running Blender…",
+};
+
+function _longRunningCmdAckText(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed.startsWith("/")) return null;
+  const name = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase();
+  return _LONG_RUNNING_CMD_ACK[name] || null;
+}
+
+function _showOptimisticCmdAck(store, text) {
+  const ackText = _longRunningCmdAckText(text);
+  if (!ackText) return false;
+  _resetCmdFailureState(store);
+  _clearStalePendingCmdAck(store, text);
+  _upsertCmdMayaTurn(store, {
+    corrId: null,
+    text: ackText,
+    cmdPhase: "ack",
+    operatorText: text,
+  });
+  const turn = store.turns[store.turns.length - 1];
+  if (turn?.cmdPhase === "ack") {
+    turn._optimisticAck = true;
+    turn._cmdOperatorText = text;
+  }
+  store._expectingReply = true;
+  _persistConversation(store);
+  _scrollTranscript();
+  return true;
 }
 
 function _findCmdAckTurn(store, corrId) {
@@ -609,7 +670,10 @@ function _findCmdAckTurn(store, corrId) {
     const t = store.turns[i];
     if (t.role === "maya" && t.cmdPhase === "ack" && t._cmdPending) return i;
   }
-  return -1;
+  const optimistic = store.turns.findIndex(
+    (t) => t._optimisticAck && t.role === "maya" && t.cmdPhase === "ack" && t._cmdPending,
+  );
+  return optimistic;
 }
 
 function _clearCmdStallTimer(turn) {
@@ -644,6 +708,7 @@ function _upsertCmdMayaTurn(store, {
   artifacts,
   cmdPhase,
   messageId,
+  operatorText,
 }) {
   const ackIdx = _findCmdAckTurn(store, corrId);
   if (ackIdx >= 0 && cmdPhase !== "ack") {
@@ -666,8 +731,17 @@ function _upsertCmdMayaTurn(store, {
     if (_isCmdFailed(store, corrId)) return true;
     if (ackIdx >= 0) {
       const turn = store.turns[ackIdx];
-      if (corrId && turn.corrId !== corrId) turn.corrId = corrId;
-      return true;
+      const priorOp = _operatorTextBeforeTurn(store, ackIdx);
+      if (operatorText && priorOp && priorOp !== operatorText) {
+        _clearCmdStallTimer(turn);
+        store.turns.splice(ackIdx, 1);
+      } else {
+        if (corrId && turn.corrId !== corrId) turn.corrId = corrId;
+        if (corrId) turn._optimisticAck = false;
+        if (operatorText) turn._cmdOperatorText = operatorText;
+        if (text && turn.text !== text) turn.text = text;
+        return true;
+      }
     }
     if (_findMayaTurnByCorr(store, corrId) >= 0) return true;
     const turn = {
@@ -679,6 +753,7 @@ function _upsertCmdMayaTurn(store, {
       _cmdPending: true,
       _streaming: false,
     };
+    if (operatorText) turn._cmdOperatorText = operatorText;
     turn._cmdStallTimer = _scheduleCmdStallHint(store, corrId);
     store.turns.push(turn);
     store._chatPendingAt = store._chatPendingAt || Date.now();
@@ -713,6 +788,15 @@ function _formatCmdError(raw) {
   if (!detail || /^command failed$/i.test(detail)) {
     title = "Image generation failed";
     hint = "Check gateway logs for this corr_id. ComfyUI may still be loading models.";
+  } else if (/failed with no details/i.test(detail)) {
+    title = "Image generation failed";
+    hint = "Check gateway logs for this corr_id. The job ended without a reason (gateway reload or ComfyUI issue).";
+  } else if (/weights not visible|Z-Image weights missing|weights missing/i.test(detail)) {
+    title = "Image generation failed";
+    hint = "Z-Image model weights are not mounted in ComfyUI. See infra/comfyui/README.md.";
+  } else if (/cancelled.*gateway may have reloaded/i.test(detail)) {
+    title = "Image generation cancelled";
+    hint = "The gateway may have reloaded during generation. Retry /imagine.";
   } else if (/COMFYUI_API_URL|comfyui-api|ComfyUI is not reachable/i.test(detail)) {
     title = "Image generation failed";
     hint = "ComfyUI is unavailable. Start comfyui-api or check Settings → Imagine → ComfyUI URL.";
@@ -915,7 +999,12 @@ function _applyAgentEvent(store, ev) {
     if (ev.mode === "cmd") {
       const formatted = _formatCmdError(ev.text);
       const corrId = _evCorrId(ev);
-      const ackIdx = _findCmdAckTurn(store, corrId);
+      let ackIdx = _findCmdAckTurn(store, corrId);
+      if (ackIdx < 0) {
+        ackIdx = store.turns.findIndex(
+          (t) => t._optimisticAck && t.cmdPhase === "ack" && t._cmdPending,
+        );
+      }
       if (ackIdx >= 0) {
         _clearCmdStallTimer(store.turns[ackIdx]);
         store.turns.splice(ackIdx, 1);
@@ -1417,6 +1506,7 @@ document.addEventListener("alpine:init", () => {
       this.draft = "";
       this.step = "reason";
       this._chatPendingAt = Date.now();
+      let fetchHangTimer = null;
       try {
         if (!textChat) {
           this.turns.push({ messageId: _nextMessageId(), role: "operator", text, sentAt: Date.now() });
@@ -1438,11 +1528,30 @@ document.addEventListener("alpine:init", () => {
             text: "Basic LLM replies — full agent (personality, memory, voice) still loading.",
           });
         }
+        _showOptimisticCmdAck(this, text);
+        const isLongCmd = !!_longRunningCmdAckText(text);
+        if (isLongCmd) {
+          fetchHangTimer = setTimeout(() => {
+            if (!this._chatPendingAt) return;
+            const ackIdx = _findCmdAckTurn(this, null);
+            const opForAck = ackIdx >= 0 ? _operatorTextBeforeTurn(this, ackIdx) : null;
+            if (opForAck !== text) return;
+            this.turns.push({
+              messageId: _nextMessageId(),
+              role: "system",
+              text: "Still waiting for gateway… it may be reloading. Retry after restart if this persists.",
+              sentAt: Date.now(),
+            });
+            this.persist();
+            _scrollTranscript();
+          }, 30000);
+        }
         const r = await fetch("/api/voice/agent/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text }),
         });
+        if (fetchHangTimer) clearTimeout(fetchHangTimer);
         if (!r.ok) {
           let errMsg = `Chat failed (${r.status})`;
           try {
@@ -1465,17 +1574,21 @@ document.addEventListener("alpine:init", () => {
           _applyChatHttpResponse(this, data, text);
         }
       } catch (err) {
-        const pendingCmd = this.turns.some((t) => t.cmdPhase === "ack" && t._cmdPending);
-        if (!pendingCmd) {
-          this.turns.push({
-            messageId: _nextMessageId(),
-            role: "system",
-            text: String(err?.message || err) || "Chat request failed — check network and gateway.",
-          });
-          this.persist();
-          _scrollTranscript();
+        const ackIdx = _findCmdAckTurn(this, null);
+        const opForAck = ackIdx >= 0 ? _operatorTextBeforeTurn(this, ackIdx) : null;
+        if (ackIdx >= 0 && opForAck === text) {
+          _clearCmdStallTimer(this.turns[ackIdx]);
+          this.turns.splice(ackIdx, 1);
         }
+        this.turns.push({
+          messageId: _nextMessageId(),
+          role: "system",
+          text: String(err?.message || err) || "Chat request failed — gateway may have reloaded.",
+        });
+        this.persist();
+        _scrollTranscript();
       } finally {
+        if (fetchHangTimer) clearTimeout(fetchHangTimer);
         this.sending = false;
         if (!this.turns.some((t) => t.cmdPhase === "ack" && t._cmdPending)) {
           this.step = "listen";
