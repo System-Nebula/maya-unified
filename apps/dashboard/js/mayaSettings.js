@@ -1,4 +1,10 @@
 /** Comprehensive settings UI — GET/POST /api/voice/settings + operator account */
+
+function _detailedStorageKey() {
+  const uid = window._mayaCurrentUser?.id || "anonymous";
+  return `maya.conversation.detailed.v1.${uid}`;
+}
+
 document.addEventListener("alpine:init", () => {
   const AVATAR_COLOURS = [
     "#0a84ff", "#30d158", "#ff9f0a", "#ff453a",
@@ -36,6 +42,7 @@ document.addEventListener("alpine:init", () => {
     clearedPrefs: false,
     newPw: "",
     confirmPw: "",
+    conversationDetailed: true,
 
     catalog: {
       eq_presets: [],
@@ -275,6 +282,23 @@ document.addEventListener("alpine:init", () => {
       setTimeout(() => { this.clearedPrefs = false; }, 2000);
     },
 
+    restoreConversationDetailed() {
+      try {
+        const stored = sessionStorage.getItem(_detailedStorageKey());
+        this.conversationDetailed = stored === null ? true : stored === "1";
+      } catch (_) {
+        this.conversationDetailed = true;
+      }
+    },
+
+    persistConversationDetailed() {
+      try {
+        sessionStorage.setItem(_detailedStorageKey(), this.conversationDetailed ? "1" : "0");
+      } catch (_) {}
+      const store = typeof Alpine !== "undefined" ? Alpine.store("mayaConversation") : null;
+      if (store) store.detailed = this.conversationDetailed;
+    },
+
     async refreshCatalog() {
       await this.refreshLlmModels();
       try {
@@ -391,6 +415,8 @@ document.addEventListener("alpine:init", () => {
             role: data.role,
             avatar_color: data.avatar_color || "#0a84ff",
           };
+          window._mayaCurrentUser = { id: data.id, username: data.username };
+          this.restoreConversationDetailed();
         }
         if (settingsR.ok) {
           const data = await settingsR.json();

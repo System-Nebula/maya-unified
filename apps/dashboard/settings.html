@@ -720,6 +720,18 @@
                   </select>
                 </div>
               </div>
+              <div class="mv-list-row">
+                <div class="lhs">
+                  <div class="mv-row-label">Detailed chat output</div>
+                  <div class="mv-row-sub">Show correlation IDs, timing, and completion metadata in the transcript. Stored in this browser only — not saved to <span class="mv-mono">data/settings.json</span>.</div>
+                </div>
+                <div class="rhs">
+                  <label class="mv-switch">
+                    <input type="checkbox" x-model="conversationDetailed" @change="persistConversationDetailed()" />
+                    <span class="slider"></span>
+                  </label>
+                </div>
+              </div>
               <div class="mv-list-row" x-show="s.reasoning.provider === 'webllm'">
                 <div class="lhs">
                   <div class="mv-row-label">WebLLM</div>

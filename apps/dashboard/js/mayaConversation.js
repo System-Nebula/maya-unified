@@ -717,7 +717,7 @@ document.addEventListener("alpine:init", () => {
     turns: [],
     useWebLLM: false,
     sending: false,
-    detailed: false,
+    detailed: true,
     sidebarOpen: true,
     _expectingReply: false,
     _activeTurnAudio: null,
@@ -765,7 +765,8 @@ document.addEventListener("alpine:init", () => {
     restore() {
       _restoreConversation(this);
       try {
-        this.detailed = sessionStorage.getItem(_detailedStorageKey()) === "1";
+        const stored = sessionStorage.getItem(_detailedStorageKey());
+        this.detailed = stored === null ? true : stored === "1";
       } catch (_) {}
       try {
         const stored = sessionStorage.getItem(_sidebarStorageKey());

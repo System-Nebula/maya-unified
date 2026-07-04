@@ -173,24 +173,6 @@
               <div class="md-composer-actions">
                 <button class="mv-btn mv-btn-primary" @click="$store.mayaConversation.sendServer()" :disabled="$store.mayaConversation.sending || !textChatReady">Send</button>
                 <button class="mv-btn" @click="$store.mayaConversation.reset()">Clear transcript</button>
-                <label class="md-detailed-toggle">
-                  <span class="md-detailed-toggle-label">Detailed</span>
-                  <span class="mv-switch">
-                    <input type="checkbox" x-model="$store.mayaConversation.detailed" @change="$store.mayaConversation.persistDetailed()" />
-                    <span class="slider"></span>
-                  </span>
-                </label>
-                <button
-                  type="button"
-                  class="mv-btn md-immersive-toggle"
-                  x-show="enabled && !poppedOut"
-                  @click="toggleImmersive()"
-                  :class="{ active: immersive }"
-                  :aria-pressed="immersive"
-                  title="Toggle live avatar view"
-                >
-                  Live avatar
-                </button>
               </div>
             </div>
           </div>
@@ -529,7 +511,7 @@
                     </div>
                   </div>
                   <p class="mv-desc md-vrm-meta" x-show="$store.mayaVrm.immersive && !$store.mayaVrm.poppedOut">
-                    Avatar is in immersive view — click a message avatar or use Live avatar to toggle.
+                    Avatar is in immersive view — click a message avatar or use Immersive view in Controls.
                   </p>
                   <p class="mv-desc md-vrm-meta" x-show="$store.mayaVrm.poppedOut">
                     Avatar is in a separate window — drag it by the title bar. Close that window to embed again.
