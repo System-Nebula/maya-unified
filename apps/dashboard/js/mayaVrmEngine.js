@@ -9,7 +9,7 @@ import { VrmLipSync } from "/dashboard/js/mayaVrmLipSync.js";
 import { VrmExpressionController } from "/dashboard/js/mayaVrmExpressions.js";
 import { loadMixamoClipForVrm, resolveAnimationUrl } from "/dashboard/js/mayaVrmMixamo.js";
 
-export const DEFAULT_VRM_LOCAL = "1556438947145020822.vrm";
+export const DEFAULT_VRM_LOCAL = "Yuki.vrm";
 export const DEFAULT_IDLE_ANIM = "Idle.fbx";
 
 export function resolveVrmUrl(model) {

@@ -426,7 +426,7 @@
                 <div class="lhs"><div class="mv-row-label">Model</div><div class="mv-row-sub">Uploaded models in data/vrm/</div></div>
                 <div class="rhs">
                   <select class="mv-select" x-model="s.vrm.model" @change="save()">
-                    <option value="">Default (1556438947145020822.vrm)</option>
+                    <option value="">Default (Yuki.vrm)</option>
                     <template x-for="m in catalog.vrm_models" :key="m">
                       <option :value="m" x-text="m"></option>
                     </template>

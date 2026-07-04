@@ -1,5 +1,6 @@
 /** Alpine panel — in-browser VRM avatar with TTS lip-sync + pop-out window. */
 import { createVrmBus } from "/dashboard/js/mayaVrmBus.js";
+import { DEFAULT_VRM_LOCAL } from "/dashboard/js/mayaVrmEngine.js";
 
 const POPOUT_NAME = "maya-vrm-popout";
 const POPOUT_FEATURES = "popup,width=420,height=560,left=120,top=80,resizable=yes";
@@ -93,7 +94,7 @@ document.addEventListener("alpine:init", () => {
         this.cameraDistance = Number(vrm.camera_distance ?? 1.8);
         this.idleEnabled = vrm.idle_enabled !== false;
         this.idleAnimation = vrm.idle_animation || "Idle.fbx";
-        this.modelLabel = this.model ? this.model.replace(/^.*[/\\]/, "") : "1556438947145020822.vrm";
+        this.modelLabel = this.model ? this.model.replace(/^.*[/\\]/, "") : DEFAULT_VRM_LOCAL;
       } catch (_) {}
     },
 
@@ -274,7 +275,7 @@ document.addEventListener("alpine:init", () => {
         if (v.camera_distance != null) this.cameraDistance = Number(v.camera_distance);
         if (v.idle_enabled != null) this.idleEnabled = !!v.idle_enabled;
         if (v.idle_animation != null) this.idleAnimation = v.idle_animation;
-        this.modelLabel = (this.model || "1556438947145020822.vrm").replace(/^.*[/\\]/, "");
+        this.modelLabel = (this.model || DEFAULT_VRM_LOCAL).replace(/^.*[/\\]/, "");
         if (!this.poppedOut) {
           this._engine?.setMouthGain(this.mouthGain);
           this._engine?.setMouthSmoothing(this.mouthSmoothing);

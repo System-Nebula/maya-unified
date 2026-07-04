@@ -55,7 +55,7 @@ document.addEventListener("alpine:init", () => {
         const data = await r.json();
         const vrm = data.settings?.vrm || {};
         this.idleAnimation = vrm.idle_animation || "Idle.fbx";
-        this.modelLabel = (vrm.model || "1556438947145020822.vrm").replace(/^.*[/\\]/, "");
+        this.modelLabel = (vrm.model || "Yuki.vrm").replace(/^.*[/\\]/, "");
       } catch (_) {}
     },
 
@@ -85,7 +85,7 @@ document.addEventListener("alpine:init", () => {
       const r = await fetch("/api/voice/settings", { credentials: "same-origin" });
       const data = r.ok ? await r.json() : {};
       const vrm = data.settings?.vrm || {};
-      const model = vrm.model || "1556438947145020822.vrm";
+      const model = vrm.model || "Yuki.vrm";
       this.modelLabel = model.replace(/^.*[/\\]/, "");
       if (vrm.idle_animation) this.idleAnimation = vrm.idle_animation;
       return resolveVrmUrl(model);

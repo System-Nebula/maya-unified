@@ -95,7 +95,7 @@ document.addEventListener("alpine:init", () => {
         expressions: true, auto_express: true, mouth_gain: 6, mouth_smoothing: 0.5, mouth_fps: 60,
       },
       vrm: {
-        enabled: true, model: "1556438947145020822.vrm", lip_sync_mode: "viseme",
+        enabled: true, model: "Yuki.vrm", lip_sync_mode: "viseme",
         mouth_gain: 6, mouth_smoothing: 0.5, look_at_camera: true, camera_distance: 1.8,
         idle_enabled: true, idle_animation: "Idle.fbx",
       },

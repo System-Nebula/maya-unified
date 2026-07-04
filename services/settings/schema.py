@@ -103,7 +103,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "vrm": {
         "enabled": True,
-        "model": "1556438947145020822.vrm",
+        "model": "Yuki.vrm",
         "lip_sync_mode": "viseme",
         "mouth_gain": 6.0,
         "mouth_smoothing": 0.5,
