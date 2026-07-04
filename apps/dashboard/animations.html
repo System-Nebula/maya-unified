@@ -150,7 +150,10 @@
                     <input type="text" x-model="editDraft.tags" placeholder="wave, greet, hello" />
                   </label>
                   <label class="ma-check">
-                    <input type="checkbox" x-model="editDraft.loop" />
+                    <span class="mv-switch">
+                      <input type="checkbox" x-model="editDraft.loop" />
+                      <span class="slider"></span>
+                    </span>
                     Loop when played by agent
                   </label>
                   <div class="ma-edit-actions">

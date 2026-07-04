@@ -284,14 +284,11 @@
 .ma-check {
   flex-direction: row !important;
   align-items: center;
-  gap: 8px !important;
+  gap: 10px !important;
   text-transform: none !important;
   font-size: 12px !important;
   color: var(--mv-fg, #fff) !important;
-}
-
-.ma-check input {
-  width: auto;
+  cursor: pointer;
 }
 
 .ma-edit-actions {
