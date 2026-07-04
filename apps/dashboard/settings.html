@@ -295,7 +295,7 @@
             <div class="ms-panel-head">
               <p class="mv-eyebrow">Voice</p>
               <h2 class="mv-title">Voice &amp; TTS</h2>
-              <p class="mv-desc">Clone from a reference clip or use built-in CustomVoice speakers. Restart agent after switching TTS mode.</p>
+              <p class="mv-desc">Clone from a reference clip or use built-in CustomVoice speakers. Changing clone/custom model or TTS mode reloads the agent automatically.</p>
             </div>
             <div class="mv-card">
               <div class="mv-list-row">
@@ -443,8 +443,20 @@
                 </div>
               </div>
               <div class="mv-list-row">
-                <div class="lhs"><div class="mv-row-label">Upload .vrm</div></div>
-                <div class="rhs"><input type="file" accept=".vrm,model/vrm" @change="uploadVrm($event)" /></div>
+                <div class="lhs">
+                  <div class="mv-row-label">Upload .vrm</div>
+                  <div class="mv-row-sub">Saved to data/vrm/ — hot reloads on Conversation</div>
+                </div>
+                <div class="rhs ms-vrm-upload">
+                  <input
+                    type="text"
+                    class="mv-input"
+                    x-model="vrmUploadName"
+                    placeholder="Display name (optional)"
+                    style="margin-bottom:8px"
+                  />
+                  <input type="file" accept=".vrm,model/vrm" @change="uploadVrm($event)" />
+                </div>
               </div>
               <div class="mv-list-row">
                 <div class="lhs"><div class="mv-row-label">Idle animation</div><div class="mv-row-sub">Mixamo FBX loop when not speaking</div></div>
@@ -941,12 +953,22 @@
                 <div class="rhs"><input class="mv-input" type="password" style="width:300px" x-model="s.discord.token" @change="save()" autocomplete="off" /></div>
               </div>
               <div class="mv-list-row">
-                <div class="lhs"><div class="mv-row-label">Guild ID</div></div>
-                <div class="rhs"><input class="mv-input" type="number" style="width:160px" x-model.number="s.discord.guild_id" @change="save()" /></div>
+                <div class="lhs">
+                  <div class="mv-row-label">Guild ID</div>
+                  <div class="mv-row-hint">Paste as text — large IDs lose precision if saved as a number.</div>
+                </div>
+                <div class="rhs"><input class="mv-input" type="text" inputmode="numeric" style="width:220px" x-model="s.discord.guild_id" @change="save()" placeholder="549642809574162458" /></div>
               </div>
               <div class="mv-list-row">
                 <div class="lhs"><div class="mv-row-label">Auto-reply</div></div>
                 <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.discord.auto_reply" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs">
+                  <div class="mv-row-label">Attach voice clip</div>
+                  <div class="mv-row-hint">TTS WAV on text replies (@mentions, reply-to-user). Requires TTS loaded.</div>
+                </div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.discord.attach_voice" @change="save()" /><span class="slider"></span></label></div>
               </div>
               <div class="mv-list-row">
                 <div class="lhs"><div class="mv-row-label">Music volume</div></div>

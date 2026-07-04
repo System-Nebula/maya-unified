@@ -1,9 +1,33 @@
 /* Maya Unified — dashboard (conversation) layout */
 [x-cloak] { display: none !important; }
 .md-page {
-  max-width: 1180px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 24px 20px 72px;
+}
+@media (max-width: 640px) {
+  .md-page {
+    padding: 16px 12px 48px;
+  }
+  .md-session,
+  .md-eq-card,
+  .md-tools-card,
+  .md-vrm-card,
+  .md-tts-preview {
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .md-eq-head,
+  .md-eq-controls,
+  .md-eq-stage-wrap,
+  .md-tools-head,
+  .md-vrm-head,
+  .md-tts-head,
+  .md-tts-body,
+  .md-tools-body {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
 }
 .md-hero {
   margin-bottom: 20px;
@@ -265,12 +289,14 @@
 /* Two-column dashboard */
 .md-grid {
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
   gap: 16px;
   align-items: start;
 }
-@media (max-width: 960px) {
-  .md-grid { grid-template-columns: 1fr; }
+@media (max-width: 1100px) {
+  .md-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .md-col-main {
   display: flex;
@@ -282,10 +308,22 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  position: sticky;
-  top: 12px;
-  max-height: calc(100vh - 80px);
-  overflow-y: auto;
+  min-width: 0;
+}
+@media (min-width: 1101px) {
+  .md-col-side {
+    position: sticky;
+    top: 12px;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+  }
+}
+@media (max-width: 1100px) {
+  .md-col-side {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+  }
 }
 
 /* Output EQ */
@@ -311,6 +349,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   padding: 14px 16px 10px;
   border-bottom: 1px solid var(--mv-border);
 }
@@ -458,7 +497,11 @@
 }
 
 /* Tools panel */
-.md-tools-body { padding: 12px 14px 16px; }
+.md-tools-body {
+  padding: 12px 14px 16px;
+  min-width: 0;
+  overflow-x: hidden;
+}
 .ms-btn-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .md-tool-list,
 .md-tool-log {
@@ -471,8 +514,9 @@
 }
 .md-tool-list li,
 .md-tool-log li {
-  display: flex;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: auto minmax(72px, max-content) minmax(0, 1fr);
+  align-items: start;
   gap: 8px;
   padding: 8px 10px;
   font-size: 12px;
@@ -481,10 +525,18 @@
   border-radius: 6px;
   line-height: 1.4;
 }
+@media (max-width: 520px) {
+  .md-tool-list li {
+    grid-template-columns: 1fr;
+  }
+  .md-tool-list li strong {
+    min-width: 0;
+  }
+}
 .md-tool-list li strong {
-  flex-shrink: 0;
-  min-width: 90px;
+  min-width: 0;
   font-size: 12px;
+  word-break: break-word;
 }
 .md-tool-desc {
   color: var(--mv-muted);
@@ -510,10 +562,16 @@
 }
 .md-tool-dot.on { background: #30d158; }
 .md-tool-dot.off { background: #ff453a; }
+.md-tool-log {
+  max-height: min(220px, 40vh);
+  overflow-y: auto;
+}
 .md-tool-log li {
+  display: block;
   font-family: var(--mv-mono);
   font-size: 10px;
   color: var(--mv-muted);
+  word-break: break-word;
 }
 .md-empty {
   color: var(--mv-faint);
@@ -679,6 +737,8 @@
   flex-wrap: wrap;
   gap: 6px;
   justify-content: flex-end;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .md-vrm-chip-muted {
   opacity: 0.75;
@@ -688,7 +748,10 @@
 }
 .md-vrm-stage {
   position: relative;
-  height: 280px;
+  aspect-ratio: 4 / 5;
+  min-height: 200px;
+  max-height: min(420px, 55vh);
+  height: auto;
   border: 1px solid var(--mv-border);
   border-radius: var(--mv-r-ctl);
   background: radial-gradient(ellipse at 50% 20%, #1a2030 0%, #0d0d10 70%);

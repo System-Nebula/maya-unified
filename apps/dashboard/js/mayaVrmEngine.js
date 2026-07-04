@@ -6,6 +6,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
 import { VrmLipSync } from "/dashboard/js/mayaVrmLipSync.js";
+import { VrmExpressionController } from "/dashboard/js/mayaVrmExpressions.js";
 import { loadMixamoClipForVrm, resolveAnimationUrl } from "/dashboard/js/mayaVrmMixamo.js";
 
 export const DEFAULT_VRM_LOCAL = "1556438947145020822.vrm";
@@ -33,6 +34,7 @@ export class MayaVrmEngine {
       smoothing: opts.mouthSmoothing ?? 0.5,
       mode: opts.lipSyncMode === "amplitude" ? "amplitude" : "viseme",
     });
+    this.expressions = new VrmExpressionController();
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -73,12 +75,15 @@ export class MayaVrmEngine {
     this._idleAction = null;
     this._gestureAction = null;
     this._gestureFinishHandler = null;
+    this._returnIdleGuard = 0;
+    this._headSwayRamp = 1;
     this._lastLevel = 0;
     this._lastBands = [];
     this._raf = 0;
     this._loadToken = 0;
     this._resizeObs = null;
     this.lipSyncInfo = null;
+    this.exprInfo = null;
     this._headPhase = 0;
     this._lookTarget = new THREE.Vector3();
     this._headBone = null;
@@ -125,6 +130,8 @@ export class MayaVrmEngine {
     this.scene.add(vrm.scene);
     this.vrm = vrm;
     this.lipSyncInfo = this.lipSync.bind(vrm);
+    const mouthKeys = Object.values(this.lipSyncInfo?.keys || {});
+    this.exprInfo = this.expressions.bind(vrm, { extraProtected: mouthKeys });
     this._mixer = new THREE.AnimationMixer(vrm.scene);
 
     const box = new THREE.Box3().setFromObject(vrm.scene);
@@ -189,14 +196,19 @@ export class MayaVrmEngine {
     this._gestureFinishHandler = null;
   }
 
-  stopGesture(fadeOut = 0.3) {
+  stopGesture(fadeOut = 0.45) {
     this._clearGestureListener();
     const gesture = this._gestureAction;
     this._gestureAction = null;
     if (!gesture || !this._mixer) return;
-    gesture.fadeOut(fadeOut);
+    this._headSwayRamp = 0;
+    this._returnIdleGuard = fadeOut + 0.1;
     if (this._idleAction) {
-      this._idleAction.reset().setEffectiveWeight(1).fadeIn(fadeOut).play();
+      this._idleAction.enabled = true;
+      gesture.crossFadeTo(this._idleAction, fadeOut, true);
+      this._idleAction.play();
+    } else {
+      gesture.fadeOut(fadeOut);
     }
   }
 
@@ -208,8 +220,8 @@ export class MayaVrmEngine {
   async playAnimation(name, opts = {}) {
     if (!this.vrm || !this._mixer) return false;
     const loop = !!opts.loop;
-    const fadeIn = Math.max(0.05, Number(opts.fadeIn ?? 0.28));
-    const fadeOut = Math.max(0.05, Number(opts.fadeOut ?? 0.35));
+    const fadeIn = Math.max(0.08, Number(opts.fadeIn ?? 0.32));
+    const fadeOut = Math.max(0.12, Number(opts.fadeOut ?? 0.55));
     const url = resolveAnimationUrl(name);
     if (!url) return false;
 
@@ -231,28 +243,37 @@ export class MayaVrmEngine {
     action.reset();
     action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
     action.clampWhenFinished = !loop;
+    action.setEffectiveWeight(1);
 
     if (this._idleAction) {
+      this._idleAction.enabled = true;
+      this._idleAction.play();
       if (loop) {
-        this._idleAction.fadeOut(fadeIn);
+        this._idleAction.crossFadeTo(action, fadeIn, true);
       } else {
-        this._idleAction.crossFadeTo(action, fadeIn, false);
+        this._idleAction.crossFadeTo(action, fadeIn, true);
       }
-    }
-    if (!this._idleAction || loop) {
+    } else {
       action.fadeIn(fadeIn);
     }
     action.play();
     this._gestureAction = action;
+    this._headSwayRamp = 0;
+    this._returnIdleGuard = fadeIn + 0.05;
 
     if (!loop) {
       this._gestureFinishHandler = (e) => {
         if (e.action !== action) return;
         this._clearGestureListener();
         this._gestureAction = null;
+        this._headSwayRamp = 0;
+        this._returnIdleGuard = fadeOut + 0.15;
         if (this._idleAction) {
-          action.crossFadeTo(this._idleAction, fadeOut, false);
+          this._idleAction.enabled = true;
+          action.crossFadeTo(this._idleAction, fadeOut, true);
           this._idleAction.play();
+        } else {
+          action.fadeOut(fadeOut);
         }
       };
       this._mixer.addEventListener("finished", this._gestureFinishHandler);
@@ -268,6 +289,18 @@ export class MayaVrmEngine {
     } else if (v && this.vrm && !this._idleAction) {
       this._loadIdleAnimation(this._loadToken);
     }
+  }
+
+  setMood(mood) {
+    this.expressions.setMood(mood);
+  }
+
+  easeMoodToIdle() {
+    this.expressions.easeToIdle();
+  }
+
+  getMood() {
+    return this.expressions.getMood();
   }
 
   /** @deprecated Lips follow setAudioFrame(); does not touch idle/body animation. */
@@ -345,20 +378,29 @@ export class MayaVrmEngine {
     const tick = () => {
       this._raf = requestAnimationFrame(tick);
       const delta = this.clock.getDelta();
+      if (this.expressions) {
+        this.expressions.update(delta);
+      }
       this.lipSync.update(delta);
       if (this._mixer) {
-        if (this._idleAction && !this._gestureAction) {
-          this._idleAction.setEffectiveWeight(1);
+        if (this._returnIdleGuard > 0) {
+          this._returnIdleGuard = Math.max(0, this._returnIdleGuard - delta);
         }
         this._mixer.update(delta);
-        if (this.idleEnabled) {
+        if (this.idleEnabled && !this._gestureAction) {
+          if (this._headSwayRamp < 1) {
+            this._headSwayRamp = Math.min(1, this._headSwayRamp + delta / 0.7);
+          }
           this._resetIdleHeadBases();
+          this._updateIdleHead(delta, this._headSwayRamp);
         }
+      } else if (this.idleEnabled && !this._gestureAction) {
+        this._headSwayRamp = 1;
+        this._resetIdleHeadBases();
+        this._updateIdleHead(delta, 1);
       }
       if (this.vrm) {
-        if (this.idleEnabled) {
-          this._updateIdleHead(delta, 1);
-        } else if (this.lookAtCamera && this.vrm.lookAt?.target) {
+        if (!this.idleEnabled && this.lookAtCamera && this.vrm.lookAt?.target) {
           this.vrm.lookAt.target.position.copy(this.camera.position);
         }
         this.vrm.update(delta);
@@ -372,6 +414,7 @@ export class MayaVrmEngine {
   async _disposeVrm() {
     if (!this.vrm) return;
     this.lipSync.reset();
+    this.expressions.reset();
     this._clearGestureListener();
     this._gestureAction = null;
     if (this._idleAction) {
@@ -392,6 +435,7 @@ export class MayaVrmEngine {
     }
     this.vrm = null;
     this.lipSyncInfo = null;
+    this.exprInfo = null;
     this._headBone = null;
     this._neckBone = null;
   }

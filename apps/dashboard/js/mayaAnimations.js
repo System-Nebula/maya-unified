@@ -15,6 +15,9 @@ document.addEventListener("alpine:init", () => {
     uploadLabel: "",
     uploadDesc: "",
     dragOver: false,
+    editingFile: null,
+    editDraft: { label: "", description: "", tags: "", loop: false },
+    savingEdit: false,
     _engine: null,
     _enginePromise: null,
     _unsub: null,
@@ -275,6 +278,56 @@ document.addEventListener("alpine:init", () => {
       }
     },
 
+    startEdit(item) {
+      this.editingFile = item.file;
+      this.editDraft = {
+        label: item.label || "",
+        description: item.description || "",
+        tags: (item.tags || []).join(", "),
+        loop: !!item.loop,
+      };
+    },
+
+    cancelEdit() {
+      this.editingFile = null;
+    },
+
+    async saveEdit(item) {
+      if (this.savingEdit) return;
+      this.savingEdit = true;
+      this.error = "";
+      const tags = String(this.editDraft.tags || "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+      try {
+        const r = await fetch("/api/voice/agent/animation/meta", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({
+            file: item.file,
+            label: String(this.editDraft.label || "").trim(),
+            description: String(this.editDraft.description || "").trim(),
+            tags,
+            loop: !!this.editDraft.loop,
+          }),
+        });
+        const data = await r.json();
+        if (!r.ok || !data.ok) {
+          this.error = data.detail || data.error || "Could not save";
+          return;
+        }
+        if (data.catalog) this.catalog = data.catalog;
+        this.editingFile = null;
+        this.showToast(`Saved ${item.file}`);
+      } catch (e) {
+        this.error = String(e.message || e);
+      } finally {
+        this.savingEdit = false;
+      }
+    },
+
     async saveMeta(item, field, value) {
       try {
         const body = { file: item.file, [field]: value };
@@ -289,6 +342,14 @@ document.addEventListener("alpine:init", () => {
     },
 
     onAgentEvent(ev) {
+      if (ev.type === "settings") {
+        const vrm = ev.vrm || ev.unified?.vrm;
+        if (vrm?.model != null || vrm?.idle_animation != null) {
+          this.loadSettings().then(() => {
+            if (this.previewReady) this.reloadPreview();
+          });
+        }
+      }
       if (ev.type === "avatar_animation" && ev.name) {
         const item = this.catalog.find((c) => c.file === ev.name) || {
           file: ev.name,

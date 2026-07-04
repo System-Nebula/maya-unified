@@ -13,6 +13,21 @@ from services.settings.schema import DEFAULT_SETTINGS, deep_merge
 _PLACEHOLDER_API_KEYS = frozenset({"", "lm-studio", "vllm-local", "local-model"})
 
 
+def _normalize_discord_settings(disc: dict[str, Any]) -> dict[str, Any]:
+    """Store guild_id as a string — Discord snowflakes exceed JS Number.MAX_SAFE_INTEGER."""
+    if not isinstance(disc, dict):
+        return disc
+    gid = disc.get("guild_id")
+    if gid in (None, "", 0):
+        disc["guild_id"] = ""
+        return disc
+    if isinstance(gid, (int, float)):
+        disc["guild_id"] = str(int(gid))
+    else:
+        disc["guild_id"] = str(gid).strip()
+    return disc
+
+
 def _path() -> str:
     os.makedirs(DATA_DIR, exist_ok=True)
     return str(DATA_DIR / "settings.json")
@@ -30,6 +45,7 @@ def load_settings() -> dict[str, Any]:
             disc = merged.get("discord", {})
             if str(disc.get("token") or "").strip() and not disc.get("enabled"):
                 merged["discord"] = {**disc, "enabled": True}
+            merged["discord"] = _normalize_discord_settings(dict(merged.get("discord") or {}))
             reasoning = merged.get("reasoning", {})
             if str(reasoning.get("provider", "")).lower() == "webllm":
                 webllm = dict(reasoning.get("webllm") or {})
@@ -62,6 +78,8 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
         webllm["enabled"] = True
         merged["reasoning"] = {**reasoning, "webllm": webllm}
     _redact_reasoning_api_key(merged)
+    if isinstance(merged.get("discord"), dict):
+        merged["discord"] = _normalize_discord_settings(dict(merged["discord"]))
     with open(_path(), "w", encoding="utf-8") as fh:
         json.dump(merged, fh, indent=2, ensure_ascii=False)
     return merged
@@ -209,10 +227,16 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
         CONFIG.discord.enabled = True
     elif disc.get("enabled") is not None:
         CONFIG.discord.enabled = bool(disc["enabled"])
-    if disc.get("guild_id"):
-        CONFIG.discord.guild_id = int(disc["guild_id"])
+    raw_gid = disc.get("guild_id")
+    if raw_gid not in (None, "", 0):
+        try:
+            CONFIG.discord.guild_id = int(str(raw_gid).strip())
+        except (TypeError, ValueError):
+            CONFIG.discord.guild_id = 0
     if disc.get("auto_reply") is not None:
         CONFIG.discord.auto_reply = bool(disc["auto_reply"])
+    if disc.get("attach_voice") is not None:
+        CONFIG.discord.attach_voice = bool(disc["attach_voice"])
     if disc.get("music_volume") is not None:
         CONFIG.discord.music_volume = float(disc["music_volume"])
 
@@ -301,11 +325,18 @@ def _overlay_env_vars(settings: dict[str, Any]) -> None:
     guild = os.environ.get("VA_DISCORD_GUILD_ID", "").strip()
     if guild:
         try:
-            discord["guild_id"] = int(guild)
+            discord["guild_id"] = str(int(guild))
         except ValueError:
-            pass
+            discord["guild_id"] = guild
     if os.environ.get("VA_DISCORD_AUTO_REPLY") is not None:
         discord["auto_reply"] = os.environ.get("VA_DISCORD_AUTO_REPLY", "1").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    if os.environ.get("VA_DISCORD_ATTACH_VOICE") is not None:
+        discord["attach_voice"] = os.environ.get("VA_DISCORD_ATTACH_VOICE", "1").strip().lower() in (
             "1",
             "true",
             "yes",
@@ -355,10 +386,7 @@ def _overlay_env_file(settings: dict[str, Any], env_path) -> None:
             disc["token"] = val
             disc["enabled"] = True
         elif key == "VA_DISCORD_GUILD_ID" and val:
-            try:
-                settings.setdefault("discord", {})["guild_id"] = int(val)
-            except ValueError:
-                pass
+            settings.setdefault("discord", {})["guild_id"] = val.strip()
     _apply_reasoning_env(
         reasoning,
         provider=provider,
@@ -377,6 +405,8 @@ def seed_env_defaults() -> dict[str, Any]:
     if VOICE_RUNTIME.is_dir():
         _overlay_env_file(settings, VOICE_RUNTIME / ".env")
     _overlay_env_vars(settings)
+    if isinstance(settings.get("discord"), dict):
+        settings["discord"] = _normalize_discord_settings(dict(settings["discord"]))
     return settings
 
 

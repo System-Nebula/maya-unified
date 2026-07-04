@@ -288,6 +288,9 @@
               <span class="md-vrm-dot">·</span>
               <a href="/settings?tab=expressions">Configure</a>
             </p>
+            <p class="mv-desc md-vrm-visemes" x-show="moodLabel && !loadError">
+              face: <span x-text="moodLabel"></span>
+            </p>
             <p class="mv-desc md-vrm-visemes" x-show="lipSyncLabel && !loadError" x-text="lipSyncLabel"></p>
             <p class="md-banner error md-vrm-error" x-show="loadError" x-text="loadError"></p>
             <p class="mv-desc md-vrm-hint">Powered by <a href="https://github.com/pixiv/three-vrm" target="_blank" rel="noopener">three-vrm</a> — drag to orbit</p>

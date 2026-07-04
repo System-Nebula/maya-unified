@@ -51,6 +51,16 @@ def patch_discord_manager(manager: Any) -> None:
     setattr(manager, _DISCORD_PATCHED, True)
 
 
+def wire_discord_voice_clip(agent: Any) -> None:
+    """Ensure Discord bot can synthesize TTS attachments after reload/patch."""
+    if agent is None or getattr(agent, "discord", None) is None:
+        return
+    clip_fn = getattr(agent, "_discord_voice_clip", None)
+    if clip_fn is not None:
+        agent.discord._voice_clip_fn = clip_fn  # noqa: SLF001
+        agent.discord._on_incoming_message = agent._compose_discord_incoming_reply  # noqa: SLF001
+
+
 def patch_voice_agent(agent: Any) -> None:
     """Orchestrator channel lists + LLM resolve + direct join execution."""
     if agent is None or getattr(agent, _AGENT_PATCHED, False):
@@ -59,6 +69,7 @@ def patch_voice_agent(agent: Any) -> None:
     patch_youtube_tools()
     if agent.discord is not None:
         patch_discord_manager(agent.discord)
+        wire_discord_voice_clip(agent)
 
     orig_hint = agent._discord_channels_hint
 

@@ -76,8 +76,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "discord": {
         "enabled": False,
         "token": "",
-        "guild_id": 0,
+        "guild_id": "",
         "auto_reply": True,
+        "attach_voice": True,
         "music_volume": 0.85,
         "imagine_enabled": False,
         "comfyui_url": "http://localhost:3000",

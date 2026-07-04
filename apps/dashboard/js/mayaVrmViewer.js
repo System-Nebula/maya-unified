@@ -20,7 +20,9 @@ document.addEventListener("alpine:init", () => {
     speaking: false,
     poppedOut: false,
     modelLabel: "",
-    lipSyncLabel: "",
+    moodLabel: "",
+    _moodFromTurn: false,
+    _moodReleaseTimer: null,
     _engine: null,
     _enginePromise: null,
     _specTimer: null,
@@ -139,6 +141,7 @@ document.addEventListener("alpine:init", () => {
         await engine.loadModel(resolveVrmUrl(this.model));
         const keys = engine.lipSyncInfo?.keys || {};
         this.lipSyncLabel = Object.entries(keys).map(([k, v]) => `${k}→${v}`).join(" ") || "no mouth expressions";
+        this.moodLabel = engine.getMood?.() || "idle";
       } catch (e) {
         this.loadError = String(e.message || e);
       } finally {
@@ -179,6 +182,50 @@ document.addEventListener("alpine:init", () => {
       await this.bootViewer();
     },
 
+    async applyMood(mood, opts = {}) {
+      const normalized = String(mood || "idle").toLowerCase();
+      const ease = !!opts.ease;
+      const payload = { type: "expression", mood: normalized, ease };
+      if (this.poppedOut) {
+        this._bus.post(payload);
+        this.moodLabel = normalized;
+        return;
+      }
+      const engine = this._engine || (await this.ensureEngine().catch(() => null));
+      if (normalized === "idle" && ease) engine?.easeMoodToIdle?.();
+      else engine?.setMood?.(normalized);
+      this.moodLabel = engine?.getMood?.() || normalized;
+    },
+
+    releaseMoodAfterSpeech() {
+      if (this._moodReleaseTimer) {
+        clearTimeout(this._moodReleaseTimer);
+        this._moodReleaseTimer = null;
+      }
+      if (!this._moodFromTurn) return;
+      this._moodFromTurn = false;
+      this.applyMood("idle", { ease: true });
+    },
+
+    scheduleMoodReleaseAfterSpeech() {
+      if (!this._moodFromTurn) return;
+      if (this._moodReleaseTimer) clearTimeout(this._moodReleaseTimer);
+      this._moodReleaseTimer = setTimeout(() => this.releaseMoodAfterSpeech(), 400);
+    },
+
+    onMoodForTurn(mood) {
+      const m = String(mood || "idle").toLowerCase();
+      this._moodFromTurn = m !== "idle";
+      this.applyMood(mood);
+      if (this._moodReleaseTimer) {
+        clearTimeout(this._moodReleaseTimer);
+        this._moodReleaseTimer = null;
+      }
+      if (!this.speaking && this._moodFromTurn) {
+        this._moodReleaseTimer = setTimeout(() => this.releaseMoodAfterSpeech(), 2200);
+      }
+    },
+
     async playAvatarAnimation(name, loop = false) {
       const payload = { type: "animation", name, loop: !!loop };
       if (this.poppedOut) {
@@ -190,35 +237,54 @@ document.addEventListener("alpine:init", () => {
     },
 
     onAgentEvent(ev) {
+      if (ev.type === "avatar_expression" && ev.mood) {
+        this.onMoodForTurn(ev.mood);
+      }
       if (ev.type === "avatar_animation" && ev.name) {
         this.playAvatarAnimation(ev.name, !!ev.loop);
       }
       if (ev.type === "status") {
         const v = ev.value || "idle";
         if (v === "speaking") {
+          if (this._moodReleaseTimer) {
+            clearTimeout(this._moodReleaseTimer);
+            this._moodReleaseTimer = null;
+          }
           this.speaking = true;
           this.startSpectrumPoll();
         } else if (this.speaking && v !== "speaking") {
           this.speaking = false;
           this._bus.post({ type: "lip", level: 0, bands: [] });
+          this.scheduleMoodReleaseAfterSpeech();
         }
       }
-      if (ev.type === "settings" && ev.vrm) {
-        const v = ev.vrm;
+      if (ev.type === "audio_stop") {
+        this.scheduleMoodReleaseAfterSpeech();
+      }
+      if (ev.type === "settings") {
+        const v = ev.vrm || ev.unified?.vrm;
+        if (!v) return;
+        const prevModel = this.model;
         if (typeof v.enabled === "boolean") this.enabled = v.enabled;
         if (v.model != null) this.model = v.model;
         if (v.mouth_gain != null) this.mouthGain = Number(v.mouth_gain);
         if (v.mouth_smoothing != null) this.mouthSmoothing = Number(v.mouth_smoothing);
         if (v.lip_sync_mode != null) this.lipSyncMode = v.lip_sync_mode;
+        if (v.look_at_camera != null) this.lookAtCamera = v.look_at_camera !== false;
+        if (v.camera_distance != null) this.cameraDistance = Number(v.camera_distance);
         if (v.idle_enabled != null) this.idleEnabled = !!v.idle_enabled;
         if (v.idle_animation != null) this.idleAnimation = v.idle_animation;
+        this.modelLabel = (this.model || "1556438947145020822.vrm").replace(/^.*[/\\]/, "");
         if (!this.poppedOut) {
           this._engine?.setMouthGain(this.mouthGain);
           this._engine?.setMouthSmoothing(this.mouthSmoothing);
           this._engine?.setLipSyncMode(this.lipSyncMode);
           this._engine?.setIdleEnabled(this.idleEnabled);
           if (v.idle_animation != null) this._engine?.setIdleAnimation(v.idle_animation);
-          if (v.model != null) this.reloadModel();
+          const modelChanged = v.model != null && String(v.model) !== String(prevModel);
+          if (modelChanged || (v.model != null && !this._engine?.vrm)) {
+            this.reloadModel();
+          }
         }
         this._bus.post({ type: "settings", vrm: v });
       }
@@ -265,6 +331,7 @@ document.addEventListener("alpine:init", () => {
           if (!this.poppedOut) {
             this._engine?.setAudioFrame({ level: 0, bands: [] });
           }
+          this.scheduleMoodReleaseAfterSpeech();
         }
       }, 50);
     },

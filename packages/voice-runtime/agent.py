@@ -38,20 +38,35 @@ _EMOJI_RE = re.compile(
 def _clean_text(text: str) -> str:
     """Remove emoji/symbol characters and collapse leftover whitespace."""
     cleaned = sanitize_llm_output(text)
+    cleaned = _strip_voice_delivery_line(cleaned)
     cleaned = _EMOJI_RE.sub("", cleaned)
     return re.sub(r"\s{2,}", " ", cleaned).strip()
 
 
-def _strip_voice_delivery_line(text: str) -> str:
-    """Drop leading VOICE: delivery cues (spoken/TTS only — not Discord text)."""
+def split_voice_delivery_cue(text: str) -> tuple[str, Optional[str]]:
+    """Split a leading VOICE: delivery line from spoken reply text."""
     lines = (text or "").splitlines()
+    cue: Optional[str] = None
     while lines:
         first = lines[0].strip().lstrip("*_# ").strip()
         if first[:6].lower() == "voice:":
+            cue = first[6:].strip().rstrip(".") or None
             lines.pop(0)
             continue
         break
-    return "\n".join(lines).strip()
+    return "\n".join(lines).strip(), cue
+
+
+def _strip_voice_delivery_line(text: str) -> str:
+    """Drop leading VOICE: delivery cues (spoken/TTS only — not Discord text)."""
+    body, _ = split_voice_delivery_cue(text)
+    return body
+
+
+def finalize_reply_text(text: str) -> tuple[str, Optional[str]]:
+    """Clean reply for display, TTS, and history; return optional delivery cue."""
+    body, cue = split_voice_delivery_cue(text)
+    return _clean_text(body), cue
 
 
 _FILLER_WORDS = {
@@ -159,6 +174,8 @@ Intents:
 - discord_queue_status — no params
 - discord_set_volume — params: volume (0-200 percent)
 - discord_join_voice — params: channel_name
+- avatar_animation — VRM avatar body dance/gesture/emote (NOT Discord music/songs). \
+params: animation_name when known (macarena, wave, bow, etc.)
 - web_search — params: query
 - weather — params: location
 
@@ -167,6 +184,10 @@ JSON shape:
 
 Use pending/last-request context when transcript is empty or vague. \
 If confirming, intent=confirm_pending and user_meant="go ahead and do it".
+
+When the user wants the avatar to dance, wave, greet the audience, gesture, or perform \
+any physical emote (e.g. "let's wave to chat", "do the Macarena"), use intent=avatar_animation \
+with animation_name when obvious — not chat.
 
 CRITICAL for Discord:
 - channel_name must be an EXACT name from Known channels (e.g. shit-talking), \
@@ -224,9 +245,25 @@ TOOL_GUIDE = (
     "Use the skill tool for repeatable workflows: when the user teaches steps, "
     "a tool sequence, or a format you should follow again, write or update a skill "
     "(name + markdown). Read skills before executing unfamiliar procedures. "
-    "For physical gestures on the VRM avatar use list_avatar_animations then "
-    "play_avatar_animation (wave, dance, bow, etc.) — match the user's request "
-    "to an available clip; one-shot clips return to idle automatically."
+    "For physical gestures on the VRM avatar use play_avatar_animation (wave, dance, "
+    "Macarena, bow, etc.) — NOT discord_play_youtube. Dancing and body gestures are "
+    "avatar animations; songs in Discord are separate. When the user wants you to dance "
+    "or move your avatar body, call play_avatar_animation immediately — do not refuse or "
+    "demand tribute first. After the animation starts, reply in character naturally; "
+    "never say you are playing an animation or name the clip file. Use "
+    "list_avatar_animations if unsure which clip exists. One-shot clips return to idle "
+    "automatically. "
+    "For facial expressions on the VRM avatar use set_avatar_expression with mood: "
+    "idle, happy, excited, surprised, angry, or frustrated — cute subtle faces, not "
+    "extreme. Call when your tone clearly matches; do not announce the mood in speech. "
+    "Use list_avatar_expressions to see options."
+)
+
+_ANIMATION_REPLY_HINT = (
+    "[System: Your avatar body is performing \"{label}\" right now. Respond in your "
+    "usual voice and personality. Do not announce the animation, say \"playing\", or "
+    "name the clip file. Set an appropriate face with set_avatar_expression if you "
+    "have not already.]"
 )
 
 
@@ -305,6 +342,7 @@ class VoiceAgent:
         self._barge_in_flag = threading.Event()
         # Tracks whether we've already triggered a VTuber expression this turn.
         self._expressed = False
+        self._avatar_mood_set_this_turn = False
 
         # Tools (built-in memory + MCP) and layered memory.
         self.memory = None
@@ -393,6 +431,7 @@ class VoiceAgent:
                     default_guild_id=CONFIG.discord.guild_id or None,
                     music_volume=CONFIG.discord.music_volume,
                     on_incoming_message=self._compose_discord_incoming_reply,
+                    voice_clip_fn=self._discord_voice_clip,
                 )
                 registry.register_many(build_discord_tools(self.discord))
                 if CONFIG.discord.auto_reply:
@@ -423,6 +462,14 @@ class VoiceAgent:
             log.info("avatar animation tools enabled")
         except Exception as exc:  # noqa: BLE001
             log.warning("avatar animation tools disabled: %s", exc)
+
+        try:
+            from tools.avatar_expressions import build_avatar_expression_tools
+
+            registry.register_many(build_avatar_expression_tools(self._emit_avatar_event))
+            log.info("avatar expression tools enabled")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("avatar expression tools disabled: %s", exc)
 
         self.registry = registry
         if CONFIG.tools.enabled and len(registry) > 0:
@@ -813,9 +860,10 @@ class VoiceAgent:
                     lambda: self.discord.reply_to_user(
                         channel_name, target_user, content,
                     ),
-                    ok=lambda r: self._finish_channel_reply(
-                        f"Replied to {r.get('target_user', target_user)} "
-                        f"in #{r.get('channel', channel_name)}."
+                    ok=lambda r, tu=target_user, ch=channel_name, body=content: self._finish_channel_reply(
+                        target_user=r.get("target_user", tu),
+                        channel=r.get("channel", ch),
+                        content=body,
                     ),
                     fail=f"I couldn't reply to {target_user} in {channel_name}.",
                 )
@@ -891,6 +939,11 @@ class VoiceAgent:
         if intent == "weather":
             loc = p.get("location")
             return f"weather in {loc}" if loc else None
+        if intent == "avatar_animation":
+            name = p.get("animation_name") or p.get("name")
+            if name:
+                return f"do the {name}"
+            return plan.user_meant or None
         if intent == "discord_send_message":
             ch, hint = p.get("channel_name"), p.get("content_hint") or p.get("content")
             if ch and hint:
@@ -1000,9 +1053,10 @@ class VoiceAgent:
                     "content": content,
                 },
                 lambda: self.discord.reply_to_user(channel_name, target_user, content),
-                ok=lambda r: self._finish_channel_reply(
-                    f"Replied to {r.get('target_user', target_user)} "
-                    f"in #{r.get('channel', channel_name)}."
+                ok=lambda r, tu=target_user, ch=channel_name, body=content: self._finish_channel_reply(
+                    target_user=r.get("target_user", tu),
+                    channel=r.get("channel", ch),
+                    content=body,
                 ),
                 fail=f"I couldn't reply to {target_user} in {channel_name}.",
             )
@@ -1027,9 +1081,10 @@ class VoiceAgent:
                 lambda: self.discord.reply_to_user(
                     channel_name, target_user, content,
                 ),
-                ok=lambda r: self._finish_channel_reply(
-                    f"Replied to {r.get('target_user', target_user)} "
-                    f"in #{r.get('channel', channel_name)}."
+                ok=lambda r, tu=target_user, ch=channel_name, body=content: self._finish_channel_reply(
+                    target_user=r.get("target_user", tu),
+                    channel=r.get("channel", ch),
+                    content=body,
                 ),
                 fail=f"I couldn't reply to {target_user} in {channel_name}.",
             )
@@ -1287,8 +1342,8 @@ class VoiceAgent:
         return None
 
     @staticmethod
-    def _extract_reply_to_user_request(original: str) -> Optional[tuple[str, str, str]]:
-        """Return (target_user, channel_name, content_hint)."""
+    def _parse_reply_to_user_request(original: str) -> Optional[tuple[str, str, str]]:
+        """Return (target_user, channel_name, content_hint) when explicitly named."""
         patterns = (
             r"(?:please\s+)?(?:respond|reply)\s+to\s+"
             r"([a-zA-Z][\w'-]*(?:\s+[A-Z][\w'-]*)?)\s+"
@@ -1321,6 +1376,39 @@ class VoiceAgent:
                     user = user.split(" and ", 1)[0].strip()
                 return user, channel, "a contextual in-character reply"
         return None
+
+    def _extract_reply_to_user_request(self, original: str) -> Optional[tuple[str, str, str]]:
+        """Named reply request, or a follow-up like 'again' / 'reply to him again'."""
+        parsed = self._parse_reply_to_user_request(original)
+        if parsed:
+            return parsed
+        tl = (original or "").strip().lower()
+        if not tl:
+            return None
+        repeat = tl in {
+            "again",
+            "say it again",
+            "do it again",
+            "one more time",
+            "reply again",
+            "respond again",
+        } or re.search(
+            r"\b(?:reply|respond)(?:\s+to)?(?:\s+(?:him|her|them|that|em))?\s+again\b",
+            tl,
+        )
+        if not repeat:
+            return None
+        intent = self._last_discord_intent or {}
+        if intent.get("kind") != "channel_reply_user":
+            return None
+        target = (intent.get("target_user") or "").strip()
+        channel = (intent.get("channel") or "").strip()
+        if not target or not channel:
+            return None
+        hint = "another fresh in-character reply to their latest message"
+        if any(w in tl for w in ("funny", "joke", "roast", "sarcastic")):
+            hint = "a funny in-character reply"
+        return target, channel, hint
 
     @staticmethod
     def _extract_channel_read_request(tl: str, original: str) -> Optional[tuple[str, int]]:
@@ -1486,13 +1574,22 @@ class VoiceAgent:
         their_text = (target_info.get("content") or "").strip()
         channel = target_info.get("channel") or ""
         resolved_name = target_info.get("target_user") or target_user
+        lines: list[str] = []
+        for msg in target_info.get("recent_messages") or []:
+            who = (msg.get("author") or "someone").strip()
+            body = (msg.get("content") or "").strip()
+            if body:
+                lines.append(f"{who}: {body}")
+        transcript = "\n".join(lines[-12:])
         messages = [
             {
                 "role": "system",
                 "content": self._discord_compose_system(
-                    "You are writing a threaded Discord reply. Output ONLY the "
-                    "reply text — no quotes, labels, or explanation. Address the "
-                    "person naturally. Keep it under 500 characters."
+                    "You are writing a threaded Discord reply. Read the recent "
+                    "channel chat and respond to what they said — witty, natural, "
+                    "in character. Output ONLY the reply text — no quotes, labels, "
+                    "or explanation. Address the person naturally. Keep it under "
+                    "500 characters."
                 ),
             },
             {
@@ -1500,7 +1597,8 @@ class VoiceAgent:
                 "content": (
                     f"Voice user asked: {user_text}\n\n"
                     f"Reply to {resolved_name} in #{channel}.\n"
-                    f"They said: {their_text}\n\n"
+                    f"Their latest message: {their_text}\n\n"
+                    f"Recent chat:\n{transcript or '(none)'}\n\n"
                     f"Intent: {content_hint}"
                 ),
             },
@@ -1719,15 +1817,64 @@ class VoiceAgent:
             return ok(result if isinstance(result, dict) else {})
         return ok
 
+    def _spoken_discord_reply_summary(
+        self,
+        target_user: str,
+        channel: str,
+        content: str,
+    ) -> str:
+        """Brief in-character TTS line — not a verbatim read of the Discord post."""
+        body = (content or "").strip()
+        if not body:
+            return f"Replied to {target_user}."
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"{self.llm.base_system_prompt(include_style_cue=False)}\n\n"
+                    "You just sent a Discord text reply. Tell the operator briefly "
+                    "what you said, in your natural spoken voice and personality. "
+                    "Do NOT quote or repeat the message word-for-word. One or two "
+                    "short sentences. No meta like 'replied to' or channel names."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Discord reply to {target_user} in #{channel}:\n{body}\n\n"
+                    "Spoken summary for the operator."
+                ),
+            },
+        ]
+        try:
+            resp = self.llm.complete(messages, max_tokens=120)
+            text = sanitize_llm_output((resp.content or "").strip())
+            if text and len(text) > 8:
+                return _strip_voice_delivery_line(text)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("discord reply voice summary failed: %s", exc)
+        short = body[:80] + ("…" if len(body) > 80 else "")
+        return f"Told {target_user} — {short}"
+
     def _finish_channel_post(self, message: str) -> str:
         self._pending_channel_post = None
         self._last_discord_intent = None
         return message
 
-    def _finish_channel_reply(self, message: str) -> str:
+    def _finish_channel_reply(
+        self,
+        *,
+        target_user: str,
+        channel: str,
+        content: str,
+    ) -> str:
         self._pending_channel_reply = None
-        self._last_discord_intent = None
-        return message
+        self._last_discord_intent = {
+            "kind": "channel_reply_user",
+            "target_user": target_user,
+            "channel": channel,
+        }
+        return self._spoken_discord_reply_summary(target_user, channel, content)
 
     def _discord_tool_reply(self, tool: str, args: dict, fn: Callable[[], dict], *, ok, fail: str) -> str:
         return self._direct_tool_reply(tool, args, fn, ok=ok, fail=fail)
@@ -1773,6 +1920,76 @@ class VoiceAgent:
         if not result.get("results"):
             return "I searched but didn't find much on that topic."
         return self._summarize_search_results(original, query, result)
+
+    def _maybe_motion_request(
+        self,
+        user_text: str,
+        *,
+        plan: Optional[OrchestratorPlan] = None,
+        raw_text: str = "",
+    ) -> bool:
+        from tools.animation import wants_avatar_motion
+
+        user_meant = (plan.user_meant or "").strip() if plan else ""
+        intent = (plan.intent or "").strip().lower() if plan else ""
+        return wants_avatar_motion(
+            user_text or raw_text,
+            user_meant=user_meant,
+            intent=intent,
+        )
+
+    def _maybe_play_avatar_animation(
+        self,
+        user_text: str,
+        *,
+        plan: Optional[OrchestratorPlan] = None,
+        raw_text: str = "",
+    ) -> Optional[str]:
+        """Start a matched avatar clip silently; return its display label if played."""
+        if self.registry is None or self.registry.get("play_avatar_animation") is None:
+            return None
+        from tools.animation import infer_animation_request
+
+        params = (plan.params or {}) if plan else {}
+        anim_name = str(params.get("animation_name") or params.get("name") or "").strip()
+        user_meant = (plan.user_meant or "").strip() if plan else ""
+        intent = (plan.intent or "").strip().lower() if plan else ""
+        resolved = infer_animation_request(
+            user_text or raw_text,
+            user_meant=user_meant,
+            animation_name=anim_name,
+            intent=intent,
+            llm_client=self.llm,
+        )
+        if not resolved:
+            return None
+        spec = self.registry.get("play_avatar_animation")
+        if spec is None:
+            return None
+        try:
+            result = spec.handler({"name": resolved, "loop": False})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("avatar animation failed: %s", exc)
+            return None
+        if isinstance(result, dict) and result.get("error"):
+            return None
+        label = ""
+        if isinstance(result, dict):
+            label = str(result.get("label") or resolved).strip()
+        return label or resolved
+
+    def _messages_with_animation_hint(
+        self,
+        user_text: str,
+        anim_label: str,
+        *,
+        history_override: Optional[list[dict]] = None,
+    ) -> list[dict]:
+        messages = self._build_messages(user_text, history_override=history_override)
+        if messages and anim_label:
+            hint = _ANIMATION_REPLY_HINT.format(label=anim_label)
+            messages[-1]["content"] = f"{hint}\n\n{messages[-1]['content']}"
+        return messages
 
     def _summarize_search_results(self, user_text: str, query: str, result: dict) -> str:
         """Turn raw search hits into a short spoken answer."""
@@ -1930,7 +2147,7 @@ class VoiceAgent:
             return (
                 "[System: call discord_reply_to_user — find the user's latest "
                 f"message in #{channel_name}, compose a reply to {target_user!r}, "
-                "and send it as a threaded reply. Confirm briefly after.]"
+                "and send it as a threaded reply. Say the reply out loud.]"
             )
         extracted = self._extract_channel_message(t, user_text)
         if extracted:
@@ -1957,7 +2174,45 @@ class VoiceAgent:
             except Exception:  # noqa: BLE001 - UI callbacks must never break the loop
                 pass
 
+    def _emit_avatar_event(self, **event) -> None:
+        if event.get("type") == "avatar_expression":
+            self._avatar_mood_set_this_turn = True
+        self._emit(**event)
+
+    def _maybe_emit_avatar_mood(self, reply: str) -> None:
+        """Fallback cute face from reply tone when the LLM did not call set_avatar_expression."""
+        if self._avatar_mood_set_this_turn or not (reply or "").strip():
+            return
+        if self.registry is None or self.registry.get("set_avatar_expression") is None:
+            return
+        from tools.avatar_expressions import infer_mood_from_text, normalize_mood
+
+        mood = normalize_mood(infer_mood_from_text(reply))
+        self._emit(type="avatar_expression", mood=mood)
+
     # ----- speaking ---------------------------------------------------------
+
+    def _tts_engine_label(self) -> str:
+        """Short label for the active TTS stack (model + clone voice if any)."""
+        voice = self.voice
+        if voice is None or not getattr(voice, "available", True):
+            return ""
+        model_id = str(getattr(voice, "model_id", "") or "")
+        mode = str(getattr(voice, "mode", CONFIG.tts.mode) or CONFIG.tts.mode).lower()
+        if not model_id:
+            model_id = CONFIG.tts.clone_model if mode == "clone" else CONFIG.tts.custom_model
+        short = model_id.rsplit("/", 1)[-1] if model_id else "TTS"
+        if mode == "clone":
+            ref = str(getattr(getattr(voice, "cfg", None), "ref_audio", "") or CONFIG.tts.ref_audio)
+            name = os.path.splitext(os.path.basename(ref))[0]
+            if name:
+                return f"{short} · {name}"
+        return short
+
+    def _emit_tts_info(self) -> None:
+        label = self._tts_engine_label()
+        if label:
+            self._emit(type="tts_info", model=label)
 
     def _speak(self, text: str) -> None:
         """Synthesize `text` as one generation and stream it to the speakers."""
@@ -1993,6 +2248,7 @@ class VoiceAgent:
             self.playback.begin_turn()
             self._ensure_icl_ref_text()
             self._emit(type="status", value="speaking")
+            self._emit_tts_info()
             self._emit(type="ai", text=cleaned)
             if instruct and instruct.strip():
                 eff_instruct = instruct.strip()
@@ -2029,7 +2285,12 @@ class VoiceAgent:
         else:
             eff_instruct = (CONFIG.tts.instruct or "").strip() or None
         log.info("TTS render: %s", cleaned)
+        return self._synthesize_wav_bytes(cleaned, instruct=eff_instruct)
 
+    def _synthesize_wav_bytes(
+        self, text: str, *, instruct: str | None = None
+    ) -> tuple[bytes, int]:
+        """Render TTS to WAV bytes without dashboard side effects."""
         import io
 
         import numpy as np
@@ -2037,7 +2298,7 @@ class VoiceAgent:
 
         chunks: list[np.ndarray] = []
         sr = 0
-        for audio, sample_rate in self.voice.stream(cleaned, instruct=eff_instruct):
+        for audio, sample_rate in self.voice.stream(text, instruct=instruct):
             chunks.append(audio)
             sr = sample_rate
         if not chunks or sr == 0:
@@ -2047,6 +2308,32 @@ class VoiceAgent:
         buf = io.BytesIO()
         sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
         return buf.getvalue(), sr
+
+    def _discord_voice_clip(self, text: str) -> Optional[bytes]:
+        """TTS WAV for Discord attachments — same synthesis path as the web panel."""
+        if not CONFIG.discord.attach_voice:
+            return None
+        if self.voice is None or not getattr(self.voice, "available", True):
+            reason = getattr(self.voice, "degrade_reason", "TTS unavailable")
+            log.info("discord voice clip skipped — %s", reason)
+            return None
+        clipped = (text or "").strip()
+        if len(clipped) > 800:
+            clipped = clipped[:797] + "..."
+        from services.voice.inference import INFERENCE_LOCK
+
+        acquired = INFERENCE_LOCK.acquire(timeout=120.0)
+        if not acquired:
+            log.info("discord voice clip skipped — inference busy (voice swap or live session)")
+            return None
+        try:
+            wav, _ = self.render_speech(clipped)
+            return wav
+        except Exception as exc:  # noqa: BLE001
+            log.warning("discord voice clip failed: %s", exc)
+            return None
+        finally:
+            INFERENCE_LOCK.release()
 
     def _effective_instruct(self) -> Optional[str]:
         """Combine the base voice description with this reply's delivery cue.
@@ -2113,6 +2400,7 @@ class VoiceAgent:
         self._pending_user_text = None
         self._turn_instruct = None
         self._expressed = False
+        self._avatar_mood_set_this_turn = False
         self._turn_active.set()
 
         monitor = self._start_barge_listener()
@@ -2138,9 +2426,20 @@ class VoiceAgent:
                 direct = self._try_discord_direct(user_text)
             if direct is None:
                 direct = self._try_web_direct(user_text)
-            if direct is not None:
+            anim_label = self._maybe_play_avatar_animation(
+                user_text, plan=plan, raw_text=raw_text,
+            )
+            if anim_label:
+                messages = self._messages_with_animation_hint(user_text, anim_label)
+                token_stream = self.llm.stream_messages(messages)
+            elif direct is not None:
+                self._maybe_emit_avatar_mood(direct)
                 token_stream = iter([direct])
-            elif self._should_use_tool_loop() and not (plan and plan.intent == "chat"):
+            elif self._should_use_tool_loop() and not (
+                plan
+                and plan.intent == "chat"
+                and not self._maybe_motion_request(user_text, plan=plan, raw_text=raw_text)
+            ):
                 messages = self._build_messages(user_text)
                 if _is_weak_transcript(raw_text) or self._has_pending_action():
                     hint = (
@@ -2150,7 +2449,9 @@ class VoiceAgent:
                     )
                     messages[-1]["content"] = f"{hint}\n\n{messages[-1]['content']}"
                 result = self.tool_loop.run(messages, emit=self._emit)
-                token_stream = iter([result.final_text or ""])
+                reply_text = result.final_text or ""
+                self._maybe_emit_avatar_mood(reply_text)
+                token_stream = iter([reply_text])
             else:
                 messages = self._build_messages(user_text)
                 token_stream = self.llm.stream_messages(messages)
@@ -2187,6 +2488,7 @@ class VoiceAgent:
         self.history.append({"role": "user", "content": display_text})
         if full_reply:
             self.history.append({"role": "assistant", "content": full_reply})
+            self._maybe_emit_avatar_mood(full_reply)
 
         # Persist to the session log and let the background review adapt memory.
         if self.memory is not None:
@@ -2206,6 +2508,7 @@ class VoiceAgent:
         def mark_speaking() -> None:
             if not spoke[0]:
                 self._emit(type="status", value="speaking")
+                self._emit_tts_info()
                 if self._turn_instruct:
                     self._emit(type="delivery", cue=self._turn_instruct)
                 spoke[0] = True
@@ -2220,8 +2523,8 @@ class VoiceAgent:
                 if not chunk:
                     continue
                 parts.append(chunk)
-                mark_speaking()
                 self._emit(type="ai", text=chunk)
+                mark_speaking()
                 self._speak(chunk)
             return " ".join(parts)
 
@@ -2255,11 +2558,10 @@ class VoiceAgent:
             if self._barge_in_flag.is_set():
                 break
             text += token
-            if token:
-                self._emit(type="ai", text=token)
-        text = _clean_text(text)
+        text, _ = finalize_reply_text(text)
         if not text:
             return ""
+        self._emit(type="ai", text=text)
         mark_speaking()
         self._speak(text)
         return text
@@ -2890,6 +3192,7 @@ class VoiceAgent:
         for phrase in sentence_chunks(iter([text])):
             self._emit(type="ai", text=phrase)
         self._emit(type="status", value="speaking")
+        self._emit_tts_info()
         self._speak(text)
         while self.playback.is_playing() and not self._session_stop.is_set():
             time.sleep(0.05)

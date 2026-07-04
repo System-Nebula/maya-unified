@@ -49,6 +49,44 @@ function _finalizeChatMs(store) {
   store._chatPendingAt = null;
 }
 
+function _applyPendingTurnMeta(store, turn) {
+  if (!turn || turn.role !== "maya") return;
+  if (!turn.deliveryCue && store._pendingDeliveryCue) {
+    turn.deliveryCue = store._pendingDeliveryCue;
+    store._pendingDeliveryCue = null;
+  }
+  if (!turn.ttsModel && store._pendingTtsModel) {
+    turn.ttsModel = store._pendingTtsModel;
+    store._pendingTtsModel = null;
+  }
+}
+
+function _onDeliveryCue(store, cue) {
+  const text = String(cue || "").trim();
+  if (!text || store._ttsPreviewOnly) return;
+  const idx = store._ttsTargetIdx ?? _lastMayaTurnIdx(store);
+  if (idx < 0) {
+    store._pendingDeliveryCue = text;
+    return;
+  }
+  const turn = store.turns[idx];
+  if (!turn || turn.role !== "maya") return;
+  if (!turn.deliveryCue) turn.deliveryCue = text;
+}
+
+function _onTtsInfo(store, ev) {
+  if (store._ttsPreviewOnly || !ev?.model) return;
+  const model = String(ev.model);
+  const idx = store._ttsTargetIdx ?? _lastMayaTurnIdx(store);
+  if (idx < 0) {
+    store._pendingTtsModel = model;
+    return;
+  }
+  const turn = store.turns[idx];
+  if (!turn || turn.role !== "maya") return;
+  if (!turn.ttsModel) turn.ttsModel = model;
+}
+
 function _onTtsStart(store) {
   if (store._ttsPreviewOnly) return;
   const idx = store._ttsTargetIdx ?? _lastMayaTurnIdx(store);
@@ -109,6 +147,16 @@ function _scrollTranscript(smooth = true) {
 
 function _applyAgentEvent(store, ev) {
   if (!ev || !ev.type) return;
+  if (ev.type === "delivery" && ev.cue) {
+    _onDeliveryCue(store, ev.cue);
+    _persistConversation(store);
+    return;
+  }
+  if (ev.type === "tts_info" && ev.model) {
+    _onTtsInfo(store, ev);
+    _persistConversation(store);
+    return;
+  }
   if (ev.type === "status") {
     const v = ev.value || "idle";
     store.statusLabel = v;
@@ -181,13 +229,17 @@ function _applyAgentEvent(store, ev) {
       if (!chunk || cur.endsWith(chunk)) return;
       if (cur && chunk.startsWith(cur)) {
         last.text = chunk;
+        _applyPendingTurnMeta(store, last);
         _persistConversation(store);
         _scrollTranscript();
         return;
       }
       last.text = cur + chunk;
+      _applyPendingTurnMeta(store, last);
     } else {
-      store.turns.push({ role: "maya", text: chunk, _streaming: true });
+      const turn = { role: "maya", text: chunk, _streaming: true };
+      _applyPendingTurnMeta(store, turn);
+      store.turns.push(turn);
     }
     _persistConversation(store);
     _scrollTranscript();
@@ -216,6 +268,8 @@ document.addEventListener("alpine:init", () => {
     _ttsPendingIdx: null,
     _ttsTargetIdx: null,
     _ttsPreviewOnly: false,
+    _pendingTtsModel: null,
+    _pendingDeliveryCue: null,
 
     persist() {
       _persistConversation(this);
@@ -240,10 +294,14 @@ document.addEventListener("alpine:init", () => {
 
     formatMayaMeta(turn) {
       const parts = [];
+      if (turn.deliveryCue) {
+        parts.push(`Maya · ${turn.deliveryCue}`);
+      }
       if (turn.chatMs != null) parts.push(`chat ${_formatDuration(turn.chatMs)}`);
       const tts = turn.ttsMs != null ? _formatDuration(turn.ttsMs) : "—";
       let ttsPart = `TTS ${tts}`;
       if (turn.ttsReplay && turn.ttsMs != null) ttsPart += " (cached)";
+      if (turn.ttsModel) ttsPart += ` · ${turn.ttsModel}`;
       parts.push(ttsPart);
       return parts.join(" · ");
     },

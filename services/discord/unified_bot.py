@@ -22,6 +22,8 @@ def apply_discord_env(settings: dict) -> None:
             os.environ["VA_DISCORD_GUILD_ID"] = str(disc["guild_id"])
         if disc.get("auto_reply") is not None:
             os.environ["VA_DISCORD_AUTO_REPLY"] = "1" if disc.get("auto_reply") else "0"
+        if disc.get("attach_voice") is not None:
+            os.environ["VA_DISCORD_ATTACH_VOICE"] = "1" if disc.get("attach_voice") else "0"
     if disc.get("comfyui_url"):
         os.environ["COMFYUI_API_URL"] = str(disc["comfyui_url"])
 

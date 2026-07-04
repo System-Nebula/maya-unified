@@ -16,10 +16,29 @@ from services.llm.provider import create_llm_client, is_webllm_provider, swap_ag
 from services.operator_voice.paths import operator_data_dir as op_data_dir
 from services.paths import DATA_DIR, VOICE_RUNTIME
 from services.voice.data_migration import migrate_qwen3_data_to_unified
-from services.settings.store import apply_to_config, load_effective_settings, load_settings as load_global_settings, save_settings as save_global_settings
+from services.settings.store import (
+    apply_to_config,
+    load_effective_settings,
+    load_settings as load_global_settings,
+    save_settings as save_global_settings,
+    seed_env_defaults,
+)
 
 _RELOAD_SECTIONS = frozenset({"discord", "tools", "memory", "runtime"})
-_inference_lock = threading.Lock()
+
+from services.voice.inference import INFERENCE_LOCK as _inference_lock
+
+
+def _publish_ai_reply(hub: "VoiceHub", raw: str, *, operator_id: str | None = None, room_id: str | None = None) -> str:
+    """Strip VOICE: cues and broadcast one clean assistant turn."""
+    from agent import finalize_reply_text
+
+    reply, cue = finalize_reply_text(raw)
+    if reply:
+        hub.broadcast({"type": "ai", "text": reply}, operator_id=operator_id, room_id=room_id)
+    if cue:
+        hub.broadcast({"type": "delivery", "cue": cue}, operator_id=operator_id, room_id=room_id)
+    return reply
 
 
 @dataclass
@@ -52,6 +71,40 @@ def _nested_changed(previous: dict, merged: dict, *keys: str) -> bool:
 
 def _section_changed(previous: dict, merged: dict, section: str) -> bool:
     return (previous or {}).get(section) != (merged or {}).get(section)
+
+
+_TTS_ENGINE_KEYS = (
+    ("voice", "clone_model"),
+    ("voice", "custom_model"),
+    ("voice", "device"),
+    ("delivery", "tts_mode"),
+)
+
+
+def _tts_engine_changed(previous: dict, merged: dict) -> bool:
+    """TTS weights/mode are loaded once at agent start — require reload to apply."""
+    return any(_nested_changed(previous, merged, *keys) for keys in _TTS_ENGINE_KEYS)
+
+
+def _mirror_operator_runtime_globals(previous: dict, merged: dict) -> None:
+    """Mirror voice/TTS fields to settings.json so cold start matches operator picks."""
+    if _section_changed(previous, merged, "voice"):
+        voice = merged.get("voice")
+        if isinstance(voice, dict):
+            save_global_settings({"voice": voice})
+    if _section_changed(previous, merged, "delivery"):
+        delivery = merged.get("delivery")
+        if isinstance(delivery, dict):
+            save_global_settings({"delivery": delivery})
+
+
+def _settings_broadcast_payload(merged: dict) -> dict:
+    """SSE payload for settings changes — includes vrm subset for avatar hot reload."""
+    payload: dict[str, Any] = {"type": "settings", "unified": merged}
+    vrm = merged.get("vrm")
+    if isinstance(vrm, dict):
+        payload["vrm"] = vrm
+    return payload
 
 
 def _build_live_diff(previous: dict, merged: dict) -> dict:
@@ -251,6 +304,12 @@ class VoiceHub(Hub):
     # ----- Lifecycle --------------------------------------------------------
 
     def unload_agent(self) -> None:
+        agent = self.agent
+        if agent is not None and getattr(agent, "discord", None) is not None:
+            try:
+                agent.discord.close()
+            except Exception:  # noqa: BLE001
+                pass
         try:
             self.stop(operator_id=self._active_operator_id or "")
         except Exception:  # noqa: BLE001
@@ -273,7 +332,7 @@ class VoiceHub(Hub):
             self.last_error = ""
             migrate_qwen3_data_to_unified()
             os.makedirs(DATA_DIR, exist_ok=True)
-            settings = load_global_settings()
+            settings = load_effective_settings(self._active_operator_id)
             apply_to_config(settings)
             from services.discord.unified_bot import apply_discord_env
 
@@ -294,6 +353,7 @@ class VoiceHub(Hub):
             agent.playback.set_output_sink(CONFIG.audio.output_sink)
             self.current_voice = os.path.basename(CONFIG.tts.ref_audio)
             self.ready = True
+            self._apply_voice_settings_hot_swap(settings)
             self.broadcast({"type": "ready", "value": True})
             if agent.voice is not None and not getattr(agent.voice, "available", True):
                 reason = getattr(agent.voice, "degrade_reason", "TTS unavailable")
@@ -336,6 +396,9 @@ class VoiceHub(Hub):
         if merged == previous:
             return merged
 
+        if operator_id:
+            _mirror_operator_runtime_globals(previous, merged)
+
         apply_to_config(merged, operator_id=operator_id)
         from services.discord.unified_bot import apply_discord_env
 
@@ -345,9 +408,10 @@ class VoiceHub(Hub):
 
             invalidate_llm_health_cache()
         needs_reload = any(_section_changed(previous, merged, s) for s in _RELOAD_SECTIONS)
-        if needs_reload and (self.ready or self.agent is not None):
+        tts_reload = _tts_engine_changed(previous, merged)
+        if (needs_reload or tts_reload) and (self.ready or self.agent is not None):
             self.request_agent_reload()
-            self.broadcast({"type": "settings", "unified": merged}, operator_id=operator_id)
+            self.broadcast(_settings_broadcast_payload(merged), operator_id=operator_id)
             return merged
         if self.ready and self.agent is not None:
             if operator_id:
@@ -357,6 +421,8 @@ class VoiceHub(Hub):
             self.agent.playback.set_output_sink(CONFIG.audio.output_sink)
             if _section_changed(previous, merged, "reasoning"):
                 swap_agent_llm(self.agent)
+            if _section_changed(previous, merged, "voice"):
+                self._apply_voice_settings_hot_swap(merged)
             live = _build_live_diff(previous, merged)
             if live:
                 self.set_config(live)
@@ -364,7 +430,7 @@ class VoiceHub(Hub):
             old_pid = str(_nested_get(previous, "personality", "active_id") or "")
             if new_pid and new_pid != old_pid:
                 self.activate_personality(new_pid)
-        self.broadcast({"type": "settings", "unified": merged}, operator_id=operator_id)
+        self.broadcast(_settings_broadcast_payload(merged), operator_id=operator_id)
         return merged
 
     def get_config(self, operator_id: str | None = None) -> dict:
@@ -470,6 +536,59 @@ class VoiceHub(Hub):
             "error": None if snap["llm_ready"] else (health.get("detail") or "LLM unavailable"),
         }
 
+    def set_voice(self, path: str, *, warm: bool = True) -> dict:
+        """Hot-swap clone reference clip — serialized with LLM/TTS inference."""
+        with _inference_lock:
+            result = super().set_voice(path, warm=warm)
+        if result.get("ok"):
+            self._persist_voice_ref(path)
+        return result
+
+    @staticmethod
+    def _voice_ref_basename(path: str) -> str:
+        return os.path.basename((path or "").replace("\\", "/")).lower()
+
+    def _persist_voice_ref(self, path: str, *, operator_id: str | None = None) -> None:
+        """Keep settings.json (and operator row) aligned with the active clone clip."""
+        base = self._voice_ref_basename(path)
+        if not base:
+            return
+        voice_patch = {"voice": {"ref_audio": f"voices/{base}"}}
+        save_global_settings(voice_patch)
+        oid = operator_id or self._active_operator_id
+        if oid:
+            from services.operator_voice import context as op_ctx
+
+            op_ctx.save_settings(oid, voice_patch)
+        apply_to_config(load_effective_settings(oid))
+
+    def _apply_voice_settings_hot_swap(self, settings: dict) -> None:
+        """Keep the loaded TTS model aligned with saved voice settings."""
+        import logging
+
+        from config import CONFIG
+
+        from services.paths import resolve_voice_ref
+
+        log = logging.getLogger("maya-unified.voice")
+        voice = settings.get("voice") or {}
+        ref = str(voice.get("ref_audio") or "").strip()
+        if not ref:
+            return
+        path = resolve_voice_ref(ref)
+        if not path or not os.path.isfile(path):
+            log.warning("voice settings ref not found: %s", ref)
+            return
+        current = ""
+        if self.agent is not None and getattr(self.agent, "voice", None) is not None:
+            current = str(getattr(self.agent.voice.cfg, "ref_audio", "") or "")
+        if self._voice_ref_basename(path) == self._voice_ref_basename(current):
+            return
+        warm = bool(voice.get("warmup", CONFIG.tts.warmup))
+        result = self.set_voice(path, warm=warm)
+        if not result.get("ok"):
+            log.warning("voice settings hot-swap failed: %s", result.get("error"))
+
     def _chat_text_basic(self, text: str, operator_id: str | None = None) -> dict:
         """Text chat via create_llm_client when VoiceAgent is still loading."""
         from config import CONFIG
@@ -503,8 +622,7 @@ class VoiceHub(Hub):
             with _inference_lock:
                 for chunk in client.stream_messages(messages):
                     parts.append(chunk)
-                    self.broadcast({"type": "ai", "text": chunk}, operator_id=operator_id)
-            reply = "".join(parts).strip()
+            reply = _publish_ai_reply(self, "".join(parts), operator_id=operator_id)
             self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
             return {"ok": True, "text": reply, "mode": "basic"}
         except Exception as exc:  # noqa: BLE001
@@ -535,13 +653,40 @@ class VoiceHub(Hub):
             self.broadcast({"type": "status", "value": "thinking"}, operator_id=operator_id)
             self.broadcast({"type": "user", "text": text}, operator_id=operator_id)
             messages = self.agent._build_messages(text, history_override=history_override)  # noqa: SLF001
-            parts: list[str] = []
+
+            def _emit_chat(**ev: object) -> None:
+                self.broadcast(ev, operator_id=operator_id)
+
+            plan = None
+            if self.agent._should_orchestrate():  # noqa: SLF001
+                plan = self.agent._llm_orchestrate(text, text)  # noqa: SLF001
+
+            reply = ""
             with _inference_lock:
-                for chunk in self.agent.llm.stream_messages(messages):
-                    parts.append(chunk)
-                    self.broadcast({"type": "ai", "text": chunk}, operator_id=operator_id)
-            reply = "".join(parts).strip()
+                self.agent._avatar_mood_set_this_turn = False  # noqa: SLF001
+                if self.agent._tools_active():  # noqa: SLF001
+                    anim_label = self.agent._maybe_play_avatar_animation(  # noqa: SLF001
+                        text, plan=plan, raw_text=text,
+                    )
+                    if anim_label:
+                        messages = self.agent._messages_with_animation_hint(  # noqa: SLF001
+                            text, anim_label, history_override=history_override,
+                        )
+                        parts: list[str] = []
+                        for chunk in self.agent.llm.stream_messages(messages):  # noqa: SLF001
+                            parts.append(chunk)
+                        reply = "".join(parts).strip()
+                    else:
+                        result = self.agent.tool_loop.run(messages, emit=_emit_chat)  # noqa: SLF001
+                        reply = (result.final_text or "").strip()
+                else:
+                    parts: list[str] = []
+                    for chunk in self.agent.llm.stream_messages(messages):
+                        parts.append(chunk)
+                    reply = "".join(parts).strip()
+            reply = _publish_ai_reply(self, reply, operator_id=operator_id)
             if reply:
+                self.agent._maybe_emit_avatar_mood(reply)  # noqa: SLF001
                 if operator_id:
                     from services.operator_voice import context as op_ctx
 
@@ -582,8 +727,7 @@ class VoiceHub(Hub):
             with _inference_lock:
                 for chunk in self.agent.llm.stream_messages(messages):
                     parts.append(chunk)
-                    self.broadcast({"type": "ai", "text": chunk}, room_id=room_id)
-            reply = "".join(parts).strip()
+            reply = _publish_ai_reply(self, "".join(parts), room_id=room_id)
             self.broadcast({"type": "status", "value": "idle"}, room_id=room_id)
             return {"ok": True, "text": reply}
         except Exception as exc:  # noqa: BLE001
@@ -602,7 +746,12 @@ class VoiceHub(Hub):
         text = (text or "").strip()
         if not text:
             return {"ok": False, "error": "empty text"}
-        instruct = (instruct or "").strip() or None
+        from agent import finalize_reply_text
+
+        text, cue = finalize_reply_text(text)
+        if not text:
+            return {"ok": False, "error": "empty text"}
+        instruct = (instruct or "").strip() or cue or None
 
         def _run() -> None:
             try:
@@ -629,7 +778,12 @@ class VoiceHub(Hub):
         text = (text or "").strip()
         if not text:
             raise ValueError("empty text")
-        instruct = (instruct or "").strip() or None
+        from agent import finalize_reply_text
+
+        text, cue = finalize_reply_text(text)
+        if not text:
+            raise ValueError("empty text")
+        instruct = (instruct or "").strip() or cue or None
         with _inference_lock:
             return self.agent.render_speech(text, instruct=instruct)
 

@@ -248,6 +248,58 @@
   color: #9dffc4;
 }
 
+.ma-card.editing {
+  grid-template-columns: 1fr;
+  background: rgba(124, 140, 255, 0.05);
+}
+
+.ma-card-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  grid-column: 1 / -1;
+}
+
+.ma-card-edit label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--mv-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ma-card-edit input[type="text"] {
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--mv-border);
+  background: rgba(0, 0, 0, 0.2);
+  color: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.ma-check {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  text-transform: none !important;
+  font-size: 12px !important;
+  color: var(--mv-fg, #fff) !important;
+}
+
+.ma-check input {
+  width: auto;
+}
+
+.ma-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .ma-card-actions {
   display: flex;
   flex-direction: column;
