@@ -40,28 +40,65 @@ function _formatSentAt(ts) {
   }
 }
 
-/** Drop leading VOICE: delivery cues from displayed / TTS replay text. */
-function _stripVoiceDeliveryFromText(text) {
-  let remaining = String(text || "").trimStart();
-  const inlineRe = /(?<=[a-z,])\s+(?=[A-Z])/;
+function _collapseDuplicateText(text) {
+  const t = String(text || "").trim();
+  if (t.length < 16) return t;
+  const half = Math.floor(t.length / 2);
+  if (t.slice(0, half) === t.slice(half)) return t.slice(0, half).trim();
+  return t;
+}
 
-  while (remaining) {
-    const probe = remaining.trimStart();
-    const md = probe.match(/^\s*(?:[*_#\s])*/);
-    const rest = probe.slice(md ? md[0].length : 0);
-    if (!/^voice:/i.test(rest)) break;
-    const afterVoice = rest.replace(/^voice:\s*/i, "");
-    const nl = afterVoice.indexOf("\n");
-    const inline = inlineRe.exec(afterVoice);
-    let reply = "";
-    if (nl !== -1 && (inline === null || nl <= inline.index)) {
-      reply = afterVoice.slice(nl + 1).replace(/^\n+/, "");
-    } else if (inline) {
-      reply = afterVoice.slice(inline.index + inline[0].length);
-    }
-    remaining = reply.trimStart();
+function _stripDialogueNamePrefix(text) {
+  let body = String(text || "").trim();
+  const re = /^(?:Maya(?:-sama)?|[A-Z][A-Za-z0-9_-]*(?:-sama)?)\s*:\s*/i;
+  while (re.test(body)) body = body.replace(re, "").trim();
+  return body;
+}
+
+function _stripWrappingQuotes(text) {
+  let body = String(text || "").trim();
+  if (body.length >= 2 && body[0] === body[body.length - 1] && (body[0] === '"' || body[0] === "'")) {
+    const inner = body.slice(1, -1).trim();
+    if (inner) return inner;
   }
-  return remaining;
+  return body;
+}
+
+function _stripLlmArtifacts(text) {
+  let body = String(text || "").trim();
+  if (!body) return "";
+  body = body.replace(/<\s*START\s*>/gi, " ");
+  body = body.replace(
+    /(?:play_avatar_animation|set_avatar_expression|list_avatar_animations|list_avatar_expressions)\s*\([^)]*\)/gi,
+    " ",
+  );
+  return body.replace(/\s{2,}/g, " ").trim();
+}
+
+/** Drop VOICE: delivery cues from displayed / TTS replay text (anywhere in the message). */
+function _stripVoiceDeliveryFromText(text) {
+  let body = _stripLlmArtifacts(text);
+  if (!body) return "";
+
+  const embeddedLineRe = /(?:^|[\n\r]+)\s*(?:[*_#]\s*)*VOICE:\s*([^\n\r]+)/gi;
+  const inlineRe = /VOICE:\s*([^A-Z\n\r]+?)\s+(?=[A-Z"'!])/gi;
+  const actionRe = /\*[^*]+\*/g;
+
+  body = body.replace(embeddedLineRe, " ");
+  let match;
+  while ((match = inlineRe.exec(body)) !== null) {
+    body = `${body.slice(0, match.index)} ${body.slice(match.index + match[0].length)}`;
+    inlineRe.lastIndex = 0;
+  }
+  const leadingCue = body.match(/^\s*\*([^*]{1,60}?)\*\s+(?=\S)/i);
+  if (leadingCue && !/^(?:flips?|waves?|lands?|smirks?|dances?|spins?|jumps?)\b/i.test(leadingCue[1].trim())) {
+    body = body.slice(leadingCue[0].length).trimStart();
+  }
+  body = body.replace(actionRe, " ");
+  body = _collapseDuplicateText(body);
+  body = _stripDialogueNamePrefix(body);
+  body = _stripWrappingQuotes(body);
+  return body.replace(/\s{2,}/g, " ").trim();
 }
 
 function _sanitizeMayaTurnText(text) {
@@ -300,6 +337,47 @@ function _mergeServerTurns(localTurns, serverTurns) {
       text: s.role === "maya" ? _sanitizeMayaTurnText(s.text) : s.text,
     };
   });
+}
+
+function _findMayaTurnForEvent(store, ev) {
+  const mid = ev.message_id;
+  const corr = _evCorrId(ev);
+  if (mid) {
+    const byId = store.turns.find((t) => t.role === "maya" && t.messageId === mid);
+    if (byId) return byId;
+  }
+  if (corr) {
+    for (let i = store.turns.length - 1; i >= 0; i--) {
+      const t = store.turns[i];
+      if (t?.role === "maya" && t.corrId === corr) return t;
+    }
+  }
+  const last = store.turns[store.turns.length - 1];
+  if (last?.role === "maya" && last._streaming) return last;
+  return null;
+}
+
+function _mergeAiChunk(turn, chunk, { final = false } = {}) {
+  const piece = String(chunk || "");
+  if (!piece) return false;
+  const cur = turn.text || "";
+  if (final) {
+    turn.text = _sanitizeMayaTurnText(piece);
+    return true;
+  }
+  if (!turn._streaming) return false;
+  if (piece === cur) return false;
+  if (!cur) {
+    turn.text = piece;
+    return true;
+  }
+  if (cur.endsWith(piece)) return false;
+  if (piece.startsWith(cur) || (piece.length > cur.length && piece.includes(cur))) {
+    turn.text = piece;
+    return true;
+  }
+  turn.text = cur + piece;
+  return true;
 }
 
 function _attachCompletionMeta(store, ev) {
@@ -1110,7 +1188,6 @@ function _applyAgentEvent(store, ev) {
       _endStreaming(store);
       _finalizeChatMs(store);
       _onTtsStart(store);
-      store._expectingReply = true;
     } else if (v === "idle") {
       for (const t of store.turns) {
         if (t._remarkStreaming) t._remarkStreaming = false;
@@ -1236,10 +1313,10 @@ function _applyAgentEvent(store, ev) {
     if (corrId && (ev.artifacts?.length || ev.text)) {
       _markSseHandledCorr(store, corrId);
     }
-    const last = store.turns[store.turns.length - 1];
     const chunk = String(ev.text || "");
+    const isFinal = ev.final === true;
     const isCmd = ev.mode === "cmd";
-    const streamingMaya = last && last.role === "maya" && last._streaming;
+    const last = store.turns[store.turns.length - 1];
     if (last && last.role === "maya" && !last._streaming && chunk.trim() === (last.text || "").trim()) {
       if (ev.artifacts?.length && !last.artifacts?.length) {
         last.artifacts = ev.artifacts;
@@ -1254,16 +1331,19 @@ function _applyAgentEvent(store, ev) {
       }
       return;
     }
+    let turn = _findMayaTurnForEvent(store, ev);
+    const streamingMaya = turn && turn._streaming;
     const allowReply =
       streamingMaya ||
+      turn ||
       store._expectingReply ||
       store._chatPendingAt != null ||
       isCmd ||
+      isFinal ||
       (ev.artifacts?.length > 0);
     if (!allowReply) return;
 
     if (isCmd) {
-      const corrId = _evCorrId(ev);
       _upsertCmdMayaTurn(store, {
         corrId,
         text: chunk,
@@ -1277,44 +1357,40 @@ function _applyAgentEvent(store, ev) {
       return;
     }
 
-    if (streamingMaya) {
-      if (ev.message_id) last.messageId = ev.message_id;
-      const corrId = _evCorrId(ev);
-      if (corrId) last.corrId = corrId;
+    if (turn) {
+      if (ev.message_id) turn.messageId = ev.message_id;
+      if (corrId) turn.corrId = corrId;
       if (ev.artifacts?.length) {
-        last.artifacts = ev.artifacts;
-        _applyImagineTurnMeta(last, {
+        turn.artifacts = ev.artifacts;
+        _applyImagineTurnMeta(turn, {
           traceId: ev.trace_id || null,
           jobId: ev.job_id || null,
           artifacts: ev.artifacts,
           ev,
         });
       }
-      const cur = last.text || "";
-      if (chunk && last.artifacts?.length) last._remarkStreaming = true;
-      if (!chunk || cur.endsWith(chunk)) {
-        if (ev.artifacts?.length) {
-          _persistConversation(store);
-          _scrollTranscript();
+      if (chunk && turn.artifacts?.length) turn._remarkStreaming = true;
+      if (chunk) {
+        if (!_mergeAiChunk(turn, chunk, { final: isFinal })) {
+          if (ev.artifacts?.length) {
+            _persistConversation(store);
+            _scrollTranscript();
+          }
+          return;
         }
+      } else if (!ev.artifacts?.length) {
         return;
       }
-      if (cur && chunk.startsWith(cur)) {
-        last.text = chunk;
-        _applyPendingTurnMeta(store, last);
-        _persistConversation(store);
-        _scrollTranscript();
-        return;
-      }
-      last.text = cur + chunk;
-      _applyPendingTurnMeta(store, last);
+      if (isFinal) turn._streaming = false;
+      else if (!turn._streaming) turn._streaming = true;
+      _applyPendingTurnMeta(store, turn);
     } else {
       const mayaTurn = {
         messageId: ev.message_id || _nextMessageId(),
-        corrId: _evCorrId(ev),
+        corrId,
         role: "maya",
         text: chunk,
-        _streaming: true,
+        _streaming: chunk ? !isFinal : false,
       };
       if (ev.artifacts?.length) {
         mayaTurn.artifacts = ev.artifacts;
@@ -1349,6 +1425,9 @@ document.addEventListener("alpine:init", () => {
     ttsError: "",
     turns: [],
     useWebLLM: false,
+    visionActive: false,
+    visionLabel: "",
+    visionError: "",
     sending: false,
     detailed: true,
     sidebarOpen: true,
@@ -1367,6 +1446,34 @@ document.addEventListener("alpine:init", () => {
     _pendingDeliveryCue: null,
     _cmdFailedCorrIds: {},
     _sseHandledCorrIds: {},
+    _visionUnsub: null,
+
+    _syncVisionState() {
+      const cap = window.mayaVisionCapture;
+      if (!cap) return;
+      this.visionActive = !!cap.active;
+      this.visionLabel = cap.label || "";
+      this.visionError = cap.error || "";
+    },
+
+    async startVisionShare() {
+      const cap = window.mayaVisionCapture;
+      if (!cap) return;
+      const result = await cap.startShare();
+      this._syncVisionState();
+      if (!result.ok && result.error) {
+        this.turns.push({ messageId: _nextMessageId(), role: "system", text: result.error });
+        this.persist();
+        _scrollTranscript();
+      }
+    },
+
+    async stopVisionShare() {
+      const cap = window.mayaVisionCapture;
+      if (!cap) return;
+      await cap.stopShare();
+      this._syncVisionState();
+    },
 
     persist() {
       _persistConversation(this);
@@ -1522,6 +1629,13 @@ document.addEventListener("alpine:init", () => {
       await this.rehydrateAudio();
       await this.loadSettings();
       await this.syncFromServer();
+      this._syncVisionState();
+      if (!this._visionUnsub && window.mayaVisionCapture?.subscribe) {
+        this._visionUnsub = window.mayaVisionCapture.subscribe(() => this._syncVisionState());
+      }
+      window.addEventListener("maya-session-stop", () => {
+        this.stopVisionShare();
+      });
       this._hydrated = true;
     },
 
@@ -1881,6 +1995,14 @@ document.addEventListener("alpine:init", () => {
     },
     get enrichedChatReady() {
       return Alpine.store("mayaShell")?.capabilities?.text_chat_enriched === true;
+    },
+    get visionReady() {
+      const shell = Alpine.store("mayaShell");
+      const store = Alpine.store("mayaConversation");
+      return shell?.capabilities?.vision === true && !store?.useWebLLM;
+    },
+    get useWebLLM() {
+      return Alpine.store("mayaConversation")?.useWebLLM || false;
     },
     get llmError() {
       return Alpine.store("mayaShell")?.llmError || "";

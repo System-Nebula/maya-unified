@@ -32,7 +32,9 @@ _CONTROL_TOKEN_RE = re.compile(r"\s*/no[-_]think\b", re.I)
 
 
 def sanitize_llm_output(text: str) -> str:
-    return _CONTROL_TOKEN_RE.sub("", text or "").strip()
+    from memory.character_card import strip_llm_artifacts
+
+    return strip_llm_artifacts(_CONTROL_TOKEN_RE.sub("", text or ""))
 
 # Guidance appended to the system prompt when auto-delivery is on. The agent parses
 # the first "VOICE:" line out of the stream and feeds it to TTS as a per-reply

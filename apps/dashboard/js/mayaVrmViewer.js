@@ -54,6 +54,9 @@ document.addEventListener("alpine:init", () => {
     cameraDistance: 1.8,
     idleEnabled: true,
     idleAnimation: "Idle.fbx",
+    idleVariants: [],
+    idleVariantMinS: 10,
+    idleVariantMaxS: 28,
     loading: false,
     loadError: "",
     speaking: false,
@@ -230,6 +233,9 @@ document.addEventListener("alpine:init", () => {
         this.cameraDistance = Number(vrm.camera_distance ?? 1.8);
         this.idleEnabled = vrm.idle_enabled !== false;
         this.idleAnimation = vrm.idle_animation || "Idle.fbx";
+        this.idleVariants = Array.isArray(vrm.idle_variants) ? [...vrm.idle_variants] : [];
+        this.idleVariantMinS = Number(vrm.idle_variant_min_s ?? 10);
+        this.idleVariantMaxS = Number(vrm.idle_variant_max_s ?? 28);
         this.modelLabel = this.model ? this.model.replace(/^.*[/\\]/, "") : DEFAULT_VRM_LOCAL;
         this._syncToStore();
       } catch (_) {}
@@ -248,8 +254,12 @@ document.addEventListener("alpine:init", () => {
           lipSyncMode: this.lipSyncMode,
           lookAtCamera: this.lookAtCamera,
           cameraDistance: this.cameraDistance,
+          frameProfile: this.immersive ? "immersive" : "default",
           idleEnabled: this.idleEnabled,
           idleAnimation: this.idleAnimation,
+          idleVariants: this.idleVariants,
+          idleVariantMinS: this.idleVariantMinS,
+          idleVariantMaxS: this.idleVariantMaxS,
         });
         engine.watchResize();
         engine.start();
@@ -278,6 +288,8 @@ document.addEventListener("alpine:init", () => {
         engine.setMouthSmoothing(this.mouthSmoothing);
         engine.setLipSyncMode(this.lipSyncMode);
         engine.setIdleEnabled(this.idleEnabled);
+        engine.setIdleVariants(this.idleVariants);
+        engine.setIdleVariantInterval(this.idleVariantMinS, this.idleVariantMaxS);
         await engine.loadModel(resolveVrmUrl(this.model));
         const keys = engine.lipSyncInfo?.keys || {};
         this.lipSyncLabel = Object.entries(keys).map(([k, v]) => `${k}→${v}`).join(" ") || "no mouth expressions";
@@ -457,12 +469,19 @@ document.addEventListener("alpine:init", () => {
         if (v.camera_distance != null) this.cameraDistance = Number(v.camera_distance);
         if (v.idle_enabled != null) this.idleEnabled = !!v.idle_enabled;
         if (v.idle_animation != null) this.idleAnimation = v.idle_animation;
+        if (v.idle_variants != null) {
+          this.idleVariants = Array.isArray(v.idle_variants) ? [...v.idle_variants] : [];
+        }
+        if (v.idle_variant_min_s != null) this.idleVariantMinS = Number(v.idle_variant_min_s);
+        if (v.idle_variant_max_s != null) this.idleVariantMaxS = Number(v.idle_variant_max_s);
         this.modelLabel = (this.model || DEFAULT_VRM_LOCAL).replace(/^.*[/\\]/, "");
         if (!this.poppedOut) {
           this._engine?.setMouthGain(this.mouthGain);
           this._engine?.setMouthSmoothing(this.mouthSmoothing);
           this._engine?.setLipSyncMode(this.lipSyncMode);
           this._engine?.setIdleEnabled(this.idleEnabled);
+          this._engine?.setIdleVariants(this.idleVariants);
+          this._engine?.setIdleVariantInterval(this.idleVariantMinS, this.idleVariantMaxS);
           if (v.idle_animation != null) this._engine?.setIdleAnimation(v.idle_animation);
           const modelChanged = v.model != null && String(v.model) !== String(prevModel);
           if (modelChanged || (v.model != null && !this._engine?.vrm)) {

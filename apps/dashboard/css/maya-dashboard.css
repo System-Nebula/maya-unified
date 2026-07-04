@@ -28,6 +28,17 @@
     padding-left: 12px;
     padding-right: 12px;
   }
+  .md-log--detailed {
+    padding: 14px 16px 18px;
+  }
+  .md-log--detailed .md-turn {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+  .md-log--detailed .md-turn.md-turn-grouped {
+    padding-left: 14px;
+    margin-left: 4px;
+  }
 }
 .md-hero {
   margin-bottom: 20px;
@@ -442,6 +453,70 @@
   font-weight: 300;
   filter: blur(0.15px);
 }
+
+/* Detailed transcript — roomier padding and clearer turn grouping */
+.md-log--detailed {
+  padding: 16px 22px 20px;
+}
+.md-log--detailed .md-turn {
+  padding: 16px 8px;
+}
+.md-log--detailed .md-turn.md-turn-grouped {
+  padding-left: 18px;
+  margin-left: 8px;
+  border-left-width: 3px;
+}
+.md-log--detailed .md-turn-head {
+  margin-bottom: 8px;
+}
+.md-log--detailed .md-turn-body {
+  padding-right: 6px;
+}
+.md-log--detailed .md-turn-footer {
+  margin-top: 12px;
+  padding-top: 6px;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.md-log--detailed .md-turn-meta {
+  margin-top: 0;
+  line-height: 1.55;
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.md-log--detailed .md-turn.operator.md-turn-grouped:has(+ .md-turn.maya.md-turn-stacked) {
+  padding-bottom: 10px;
+  border-bottom: none;
+}
+.md-log--detailed .md-turn.md-turn-stacked {
+  padding-top: 12px;
+  margin-top: 0;
+  border-top: none;
+}
+.md-log--detailed .md-turn.maya.md-turn-stacked {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--mv-border);
+}
+.md-log--detailed .md-turn.maya.md-turn-playing {
+  margin: 0;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.md-detailed-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--mv-muted);
+  cursor: pointer;
+  user-select: none;
+  margin-left: 4px;
+}
+.md-detailed-toggle-label {
+  line-height: 1;
+}
 .md-turn-play {
   flex: 0 0 auto;
   display: inline-flex;
@@ -510,6 +585,7 @@
     "banners banners"
     "avatar  session";
   gap: 14px;
+  min-height: calc(100vh - 55px);
 }
 .md-col-main--immersive .md-main-banners { grid-area: banners; }
 .md-col-main--immersive .md-vrm-immersive {
@@ -1349,6 +1425,15 @@
   }
 }
 
+/* Immersive: drop page chrome so content sits flush under the nav */
+.md-page:has(.md-col-main--immersive) {
+  padding-top: 0;
+  padding-bottom: 12px;
+}
+.md-page:has(.md-col-main--immersive) .md-hero {
+  display: none;
+}
+
 /* Immersive: full-window three-column layout (avatar | chat | controls) */
 @media (min-width: 1024px) {
   .md-page:has(.md-col-main--immersive) {
@@ -1357,9 +1442,6 @@
     padding-left: 0;
     padding-right: 0;
     overflow-x: clip;
-  }
-  .md-page:has(.md-col-main--immersive) .md-hero {
-    padding-inline: 20px;
   }
   .md-grid:has(.md-col-main--immersive) {
     grid-template-columns: 1fr 360px;

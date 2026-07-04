@@ -1,4 +1,6 @@
-/** Animation manager — upload Mixamo clips, preview on VRM, set idle loop. */
+/** Animation manager — upload Mixamo clips, preview on VRM, idle pool + gestures. */
+const ANIM_DRAG_MIME = "application/x-maya-anim-file";
+
 document.addEventListener("alpine:init", () => {
   Alpine.data("mayaAnimations", () => ({
     catalog: [],
@@ -11,10 +13,15 @@ document.addEventListener("alpine:init", () => {
     toast: "",
     modelLabel: "",
     idleAnimation: "Idle.fbx",
+    idleVariants: [],
+    idleVariantMinS: 10,
+    idleVariantMaxS: 28,
     uploadName: "",
     uploadLabel: "",
     uploadDesc: "",
     dragOver: false,
+    idleDragHover: false,
+    idleDragIdx: null,
     editingFile: null,
     editDraft: { label: "", description: "", tags: "", loop: false },
     savingEdit: false,
@@ -22,9 +29,25 @@ document.addEventListener("alpine:init", () => {
     _enginePromise: null,
     _unsub: null,
     _toastTimer: null,
+    _savingIdle: false,
 
     get agentReady() {
       return Alpine.store("mayaShell")?.ready || false;
+    },
+
+    get idleClips() {
+      const clips = [];
+      const base = String(this.idleAnimation || "").trim();
+      if (base) clips.push(base);
+      for (const file of this.idleVariants || []) {
+        if (file && file !== base && !clips.includes(file)) clips.push(file);
+      }
+      return clips;
+    },
+
+    get libraryItems() {
+      const inIdle = new Set(this.idleClips);
+      return (this.catalog || []).filter((item) => !inIdle.has(item.file));
     },
 
     async init() {
@@ -48,6 +71,11 @@ document.addEventListener("alpine:init", () => {
       }, 3200);
     },
 
+    catalogLabel(file) {
+      const item = this.catalog.find((c) => c.file === file);
+      return item?.label || String(file || "").replace(/\.[^.]+$/, "").replace(/[_-]/g, " ");
+    },
+
     async loadSettings() {
       try {
         const r = await fetch("/api/voice/settings");
@@ -55,8 +83,142 @@ document.addEventListener("alpine:init", () => {
         const data = await r.json();
         const vrm = data.settings?.vrm || {};
         this.idleAnimation = vrm.idle_animation || "Idle.fbx";
+        this.idleVariants = Array.isArray(vrm.idle_variants) ? [...vrm.idle_variants] : [];
+        this.idleVariantMinS = Number(vrm.idle_variant_min_s ?? 10);
+        this.idleVariantMaxS = Number(vrm.idle_variant_max_s ?? 28);
         this.modelLabel = (vrm.model || "Yuki.vrm").replace(/^.*[/\\]/, "");
+        this._applyIdleToEngine();
       } catch (_) {}
+    },
+
+    _applyIdleToEngine() {
+      const engine = this._engine;
+      if (!engine) return;
+      engine.setIdleVariants(this.idleVariants);
+      engine.setIdleVariantInterval(this.idleVariantMinS, this.idleVariantMaxS);
+    },
+
+    async saveIdleSettings() {
+      if (this._savingIdle) return;
+      this._savingIdle = true;
+      this.error = "";
+      try {
+        const r = await fetch("/api/voice/settings");
+        const data = await r.json();
+        const settings = data.settings || {};
+        settings.vrm = {
+          ...(settings.vrm || {}),
+          idle_animation: this.idleAnimation,
+          idle_variants: [...this.idleVariants],
+          idle_enabled: true,
+          idle_variant_min_s: this.idleVariantMinS,
+          idle_variant_max_s: this.idleVariantMaxS,
+        };
+        const save = await fetch("/api/voice/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings }),
+        });
+        const saved = await save.json();
+        if (!save.ok || saved.ok === false) {
+          this.error = saved.error || saved.detail || "Could not save idle pool";
+          return;
+        }
+        await this._engine?.setIdleAnimation(this.idleAnimation);
+        this._applyIdleToEngine();
+      } catch (e) {
+        this.error = String(e.message || e);
+      } finally {
+        this._savingIdle = false;
+      }
+    },
+
+    async _setIdleClips(clips, toastMsg) {
+      const ordered = (clips || []).filter(Boolean);
+      this.idleAnimation = ordered[0] || this.idleAnimation || "Idle.fbx";
+      this.idleVariants = ordered.slice(1);
+      await this.saveIdleSettings();
+      if (toastMsg) this.showToast(toastMsg);
+    },
+
+    async addToIdle(file) {
+      const name = String(file || "").trim();
+      if (!name) return;
+      if (this.idleClips.includes(name)) return;
+      const next = [...this.idleClips, name];
+      await this._setIdleClips(next, `${this.catalogLabel(name)} added to idle pool`);
+    },
+
+    async removeFromIdle(file) {
+      const name = String(file || "").trim();
+      const next = this.idleClips.filter((f) => f !== name);
+      if (!next.length) {
+        this.error = "Keep at least one default idle clip in the pool";
+        return;
+      }
+      await this._setIdleClips(next, `${this.catalogLabel(name)} removed from idle pool`);
+    },
+
+    onLibraryDragStart(ev, item) {
+      if (!item?.file) return;
+      ev.dataTransfer.setData(ANIM_DRAG_MIME, item.file);
+      ev.dataTransfer.setData("text/plain", item.file);
+      ev.dataTransfer.effectAllowed = "move";
+    },
+
+    onIdleDragStart(ev, idx) {
+      this.idleDragIdx = idx;
+      const file = this.idleClips[idx];
+      if (!file) return;
+      ev.dataTransfer.setData(ANIM_DRAG_MIME, file);
+      ev.dataTransfer.setData("text/plain", file);
+      ev.dataTransfer.effectAllowed = "move";
+    },
+
+    onIdleDragEnd() {
+      this.idleDragIdx = null;
+      this.idleDragHover = false;
+    },
+
+    onIdleDragOver(ev, idx) {
+      ev.dataTransfer.dropEffect = "move";
+      if (this.idleDragIdx == null || this.idleDragIdx === idx) return;
+      const clips = [...this.idleClips];
+      const [moved] = clips.splice(this.idleDragIdx, 1);
+      clips.splice(idx, 0, moved);
+      this.idleDragIdx = idx;
+      this.idleAnimation = clips[0] || this.idleAnimation;
+      this.idleVariants = clips.slice(1);
+    },
+
+    async onIdleDrop(ev, idx) {
+      this.idleDragHover = false;
+      const file = String(
+        ev.dataTransfer.getData(ANIM_DRAG_MIME) || ev.dataTransfer.getData("text/plain") || "",
+      ).trim();
+      const wasInternal = this.idleDragIdx != null;
+      this.idleDragIdx = null;
+      if (!file) return;
+      if (wasInternal && this.idleClips.includes(file)) {
+        await this._setIdleClips([...this.idleClips], "Idle order updated");
+        return;
+      }
+      let clips = [...this.idleClips];
+      const existing = clips.indexOf(file);
+      if (existing >= 0) clips.splice(existing, 1);
+      const insertAt = Number.isFinite(idx) ? Math.max(0, Math.min(idx, clips.length)) : clips.length;
+      clips.splice(insertAt, 0, file);
+      await this._setIdleClips(clips, `${this.catalogLabel(file)} moved in idle pool`);
+    },
+
+    async onDropToIdle(ev) {
+      this.idleDragHover = false;
+      const file = String(
+        ev.dataTransfer.getData(ANIM_DRAG_MIME) || ev.dataTransfer.getData("text/plain") || "",
+      ).trim();
+      if (!file) return;
+      if (this.idleClips.includes(file)) return;
+      await this.addToIdle(file);
     },
 
     async loadCatalog() {
@@ -88,6 +250,7 @@ document.addEventListener("alpine:init", () => {
       const model = vrm.model || "Yuki.vrm";
       this.modelLabel = model.replace(/^.*[/\\]/, "");
       if (vrm.idle_animation) this.idleAnimation = vrm.idle_animation;
+      if (Array.isArray(vrm.idle_variants)) this.idleVariants = [...vrm.idle_variants];
       return resolveVrmUrl(model);
     },
 
@@ -103,6 +266,9 @@ document.addEventListener("alpine:init", () => {
           cameraDistance: 1.75,
           idleEnabled: true,
           idleAnimation: this.idleAnimation,
+          idleVariants: this.idleVariants,
+          idleVariantMinS: this.idleVariantMinS,
+          idleVariantMaxS: this.idleVariantMaxS,
         });
         engine.watchResize();
         engine.start();
@@ -141,10 +307,6 @@ document.addEventListener("alpine:init", () => {
       await this.bootPreview();
     },
 
-    isIdle(item) {
-      return item?.file === this.idleAnimation;
-    },
-
     async playItem(item, loop = null) {
       if (!this.previewReady) {
         this.error = "Wait for the avatar preview to finish loading";
@@ -170,31 +332,6 @@ document.addEventListener("alpine:init", () => {
     async stopPlayback() {
       this._engine?.stopGesture();
       this.playing = "";
-    },
-
-    async setAsIdle(item) {
-      this.error = "";
-      try {
-        const r = await fetch("/api/voice/settings");
-        const data = await r.json();
-        const settings = data.settings || {};
-        settings.vrm = { ...(settings.vrm || {}), idle_animation: item.file, idle_enabled: true };
-        const save = await fetch("/api/voice/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ settings }),
-        });
-        const saved = await save.json();
-        if (!save.ok || saved.ok === false) {
-          this.error = saved.error || saved.detail || "Could not save idle animation";
-          return;
-        }
-        this.idleAnimation = item.file;
-        await this._engine?.setIdleAnimation(item.file);
-        this.showToast(`${item.label || item.file} is now the idle loop`);
-      } catch (e) {
-        this.error = String(e.message || e);
-      }
     },
 
     onDrop(ev) {
@@ -271,7 +408,15 @@ document.addEventListener("alpine:init", () => {
         }
         this.catalog = data.catalog || [];
         if (this.playing === item.file) this.playing = "";
-        if (this.idleAnimation === item.file) this.idleAnimation = "Idle.fbx";
+        const nextClips = this.idleClips.filter((f) => f !== item.file);
+        if (nextClips.length !== this.idleClips.length) {
+          if (!nextClips.length) {
+            this.idleAnimation = "Idle.fbx";
+            this.idleVariants = [];
+          } else {
+            await this._setIdleClips(nextClips);
+          }
+        }
         this.showToast(`Deleted ${item.file}`);
       } catch (e) {
         this.error = String(e.message || e);
@@ -328,23 +473,10 @@ document.addEventListener("alpine:init", () => {
       }
     },
 
-    async saveMeta(item, field, value) {
-      try {
-        const body = { file: item.file, [field]: value };
-        const r = await fetch("/api/voice/agent/animation/meta", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        const data = await r.json();
-        if (data.catalog) this.catalog = data.catalog;
-      } catch (_) {}
-    },
-
     onAgentEvent(ev) {
       if (ev.type === "settings") {
         const vrm = ev.vrm || ev.unified?.vrm;
-        if (vrm?.model != null || vrm?.idle_animation != null) {
+        if (vrm?.model != null || vrm?.idle_animation != null || vrm?.idle_variants != null) {
           this.loadSettings().then(() => {
             if (this.previewReady) this.reloadPreview();
           });

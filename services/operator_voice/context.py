@@ -15,6 +15,7 @@ from services.operator_voice import store as op_store
 from services.operator_voice.paths import (
     load_legacy_global_personalities,
     load_legacy_global_settings,
+    load_operator_personalities_file,
     seed_operator_dirs,
     sync_personalities_file,
     sync_settings_file,
@@ -48,6 +49,8 @@ __all__ = [
     "get_history_messages",
     "clear_conversation",
     "sync_operator_files",
+    "reconcile_operator_personalities",
+    "persist_operator_personalities_from_file",
 ]
 
 
@@ -160,10 +163,45 @@ def get_history_messages(operator_id: str | uuid.UUID, *, limit: int = 40) -> li
 
 def sync_operator_files(operator_id: str | uuid.UUID) -> None:
     settings = load_settings(operator_id)
-    pers = load_personalities(operator_id)
+    pers = reconcile_operator_personalities(operator_id)
     sync_settings_file(operator_id, settings)
     sync_personalities_file(operator_id, pers.get("active", ""), pers.get("personalities", {}))
     seed_operator_dirs(operator_id)
+
+
+def reconcile_operator_personalities(operator_id: str | uuid.UUID) -> dict[str, Any]:
+    """Keep Postgres and personalities.json aligned — never wipe file data with an empty DB row."""
+    file_data = load_operator_personalities_file(operator_id)
+    file_pers = file_data.get("personalities") if isinstance(file_data.get("personalities"), dict) else {}
+    file_active = str(file_data.get("active") or "")
+
+    db_data = load_personalities(operator_id)
+    db_pers = db_data.get("personalities") if isinstance(db_data.get("personalities"), dict) else {}
+    db_active = str(db_data.get("active") or "")
+
+    if file_pers and not db_pers:
+        active = file_active or db_active or "default"
+        save_personalities(operator_id, active=active, personalities=file_pers)
+        return {"active": active, "personalities": file_pers}
+
+    if db_pers:
+        active = db_active or file_active or "default"
+        sync_personalities_file(operator_id, active, db_pers)
+        return {"active": active, "personalities": db_pers}
+
+    return {"active": file_active or db_active, "personalities": {}}
+
+
+def persist_operator_personalities_from_file(operator_id: str | uuid.UUID) -> dict[str, Any]:
+    """After a runtime personality mutation, mirror personalities.json back into Postgres."""
+    raw = load_operator_personalities_file(operator_id)
+    personalities = raw.get("personalities") if isinstance(raw.get("personalities"), dict) else {}
+    active = str(raw.get("active") or "")
+    return save_personalities(
+        operator_id,
+        active=active or None,
+        personalities=personalities,
+    )
 
 
 from maya_db.models.operator_voice import OperatorVoiceSettings
@@ -176,6 +214,13 @@ async def ensure_operator_seeded(session, operator_id: str | uuid.UUID) -> bool:
     if existing is not None:
         seed_operator_dirs(operator_id)
         pers_row = await op_store.get_or_create_personalities(session, oid)
+        db_pers = pers_row.get("personalities") if isinstance(pers_row.get("personalities"), dict) else {}
+        file_data = load_operator_personalities_file(operator_id)
+        file_pers = file_data.get("personalities") if isinstance(file_data.get("personalities"), dict) else {}
+        if file_pers and not db_pers:
+            active = str(file_data.get("active") or pers_row.get("active") or "default")
+            await op_store.save_personalities(session, oid, active=active, personalities=file_pers)
+            pers_row = {"active": active, "personalities": file_pers}
         _sync_operator_files_from_data(
             operator_id,
             existing.settings if isinstance(existing.settings, dict) else {},

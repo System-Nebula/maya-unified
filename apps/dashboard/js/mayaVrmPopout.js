@@ -38,6 +38,9 @@ async function boot() {
       cameraDistance: Number(vrm.camera_distance ?? 1.8),
       idleEnabled: vrm.idle_enabled !== false,
       idleAnimation: vrm.idle_animation || "Idle.fbx",
+      idleVariants: Array.isArray(vrm.idle_variants) ? vrm.idle_variants : [],
+      idleVariantMinS: Number(vrm.idle_variant_min_s ?? 10),
+      idleVariantMaxS: Number(vrm.idle_variant_max_s ?? 28),
     });
     engine.watchResize();
     engine.start();
@@ -73,6 +76,10 @@ bus.on((msg) => {
     if (v.mouth_smoothing != null) engine.setMouthSmoothing(v.mouth_smoothing);
     if (v.lip_sync_mode != null) engine.setLipSyncMode(v.lip_sync_mode);
     if (v.idle_animation != null) engine.setIdleAnimation(v.idle_animation);
+    if (v.idle_variants != null) engine.setIdleVariants(v.idle_variants);
+    if (v.idle_variant_min_s != null || v.idle_variant_max_s != null) {
+      engine.setIdleVariantInterval(v.idle_variant_min_s, v.idle_variant_max_s);
+    }
     if (v.model != null) engine.loadModel(resolveVrmUrl(v.model));
   }
 });

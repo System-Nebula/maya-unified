@@ -122,9 +122,11 @@ class ToolLoop:
                         if remark is not None:
                             return ToolLoopResult(remark, trace, rnd)
                         continue
-                    # Some models (e.g. Gemma) emit tool JSON as plain text instead of
-                    # structured tool_calls — parse and run it rather than speaking it.
+                    # Some models emit tool syntax as plain text instead of structured
+                    # tool_calls — parse and run it rather than speaking it.
                     call = self._parse_json_call(resp.content or "")
+                    if call is None:
+                        call = self._parse_text_call(resp.content or "")
                     if call is not None and self.registry.get(call.get("tool", "")):
                         name = call["tool"]
                         args = call.get("args", {}) if isinstance(call.get("args"), dict) else {}
@@ -152,6 +154,8 @@ class ToolLoop:
                 json_injected = True
             resp = self.llm.complete(messages)
             call = self._parse_json_call(resp.content)
+            if call is None:
+                call = self._parse_text_call(resp.content or "")
             if call is None:
                 return ToolLoopResult(self._strip_json(resp.content), trace, rnd)
             name = call.get("tool", "")
@@ -276,8 +280,20 @@ class ToolLoop:
         return None
 
     @staticmethod
+    def _parse_text_call(text: str) -> Optional[dict]:
+        from tools.text_calls import parse_text_tool_calls
+
+        calls = parse_text_tool_calls(text or "")
+        if not calls:
+            return None
+        name, args = calls[0]
+        return {"tool": name, "args": args if isinstance(args, dict) else {}}
+
+    @staticmethod
     def _strip_json(text: str) -> str:
         """Remove any leftover tool-call JSON / code fences from spoken text."""
+        from memory.character_card import strip_llm_artifacts
+
         if not text:
             return ""
         cleaned = text
@@ -289,4 +305,4 @@ class ToolLoop:
             if isinstance(obj, dict) and "tool" in obj:
                 cleaned = cleaned[:_start] + cleaned[_end:]
         cleaned = re.sub(r"```(?:json)?\s*```", "", cleaned)
-        return cleaned.strip()
+        return strip_llm_artifacts(cleaned)

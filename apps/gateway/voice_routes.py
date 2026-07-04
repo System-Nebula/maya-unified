@@ -207,6 +207,37 @@ def register_agent_routes(app) -> None:
             return cmd_response
         return hub.chat_text(text, operator_id=oid)
 
+    @app.post(f"{prefix}/vision/frame")
+    def agent_vision_frame(request: Request, data: dict = Body(...)) -> dict:
+        from services.voice import vision_frames
+
+        oid = _operator_id(request)
+        if not oid:
+            return {"ok": False, "error": "not authenticated"}
+        payload = data or {}
+        image = str(payload.get("image", "") or payload.get("data", ""))
+        label = str(payload.get("label", "") or "")
+        return vision_frames.put_frame(oid, image, label=label)
+
+    @app.post(f"{prefix}/vision/stop")
+    def agent_vision_stop(request: Request) -> dict:
+        from services.voice import vision_frames
+
+        oid = _operator_id(request)
+        if not oid:
+            return {"ok": False, "error": "not authenticated"}
+        vision_frames.clear_frame(oid)
+        return {"ok": True}
+
+    @app.get(f"{prefix}/vision/status")
+    def agent_vision_status(request: Request) -> dict:
+        from services.voice import vision_frames
+
+        oid = _operator_id(request)
+        if not oid:
+            return {"ok": False, "error": "not authenticated"}
+        return {"ok": True, **vision_frames.status_for(oid)}
+
     @app.post(f"{prefix}/speak")
     def agent_speak(request: Request, data: dict = Body(...)) -> dict:
         payload = data or {}
@@ -255,6 +286,7 @@ def register_agent_routes(app) -> None:
             hub.current_voice or "",
             CONFIG.tts.mode,
             model_id,
+            xvec_only=CONFIG.tts.xvec_only,
         )
         cached = tts_cache.get(cache_key)
         if cached is not None:
@@ -310,6 +342,7 @@ def register_agent_routes(app) -> None:
             hub.current_voice or "",
             CONFIG.tts.mode,
             model_id,
+            xvec_only=CONFIG.tts.xvec_only,
         )
         cached = tts_cache.get(cache_key)
         if cached is not None:
@@ -427,31 +460,32 @@ def register_agent_routes(app) -> None:
     def save_personality(request: Request, data: dict = Body(...)) -> dict:
         oid = _operator_id(request)
         if oid:
-            hub.apply_operator_context(oid)
+            return hub.save_personality_for_operator(oid, data or {})
         return hub.save_personality(data or {})
 
     @app.post(f"{prefix}/personalities/delete")
     def delete_personality(request: Request, data: dict = Body(...)) -> dict:
         oid = _operator_id(request)
+        pid = str((data or {}).get("id", ""))
         if oid:
-            hub.apply_operator_context(oid)
-        return hub.delete_personality(str((data or {}).get("id", "")))
+            return hub.delete_personality_for_operator(oid, pid)
+        return hub.delete_personality(pid)
 
     @app.post(f"{prefix}/personalities/import")
     def import_personality(request: Request, data: dict = Body(...)) -> dict:
         oid = _operator_id(request)
         if oid:
-            hub.apply_operator_context(oid)
+            return hub.import_personality_for_operator(oid, data or {})
         return hub.import_personality(data or {})
 
     @app.post(f"{prefix}/personalities/import-png")
     async def import_personality_png(request: Request, file: UploadFile = File(...)) -> dict:
         oid = _operator_id(request)
-        if oid:
-            hub.apply_operator_context(oid)
         data = await file.read()
         if not data:
             return {"ok": False, "error": "empty file"}
+        if oid:
+            return hub.import_personality_png_for_operator(oid, data)
         return hub.import_personality_png(data)
 
     @app.post(f"{prefix}/personalities/build")

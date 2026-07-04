@@ -1,5 +1,7 @@
 # Google OAuth — platform login and app integrations
 
+> **Canonical docs:** [operations/google-oauth](https://system-nebula.github.io/maya-unified/operations/google-oauth) on the docs site. This file is kept as a repo-local reference.
+
 Maya Unified supports two separate Google OAuth flows:
 
 1. **Platform sign-in** — authenticate an operator via Google (login page).

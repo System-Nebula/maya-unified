@@ -36,7 +36,10 @@
       </nav>
       <div class="mu-status">
         <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
-        <span class="mu-hint" x-show="s.hint()" x-text="s.hint()"></span>
+        <span class="mu-hint-wrap" x-show="s.hint()">
+          <span class="mu-hint" x-text="s.hint()"></span>
+          <span class="mu-llm-dot" x-show="s.ready && s.llmOk && s.llmModel" aria-hidden="true"></span>
+        </span>
       </div>
       <div class="mu-user" x-show="currentUser" x-data="{ open: false }" @click.away="open = false">
         <button class="mu-user-btn" @click="open = !open">
@@ -46,7 +49,8 @@
         </button>
         <div class="mu-dropdown" x-show="open" x-cloak>
           <a href="/settings" class="mu-dd-item" :class="{ active: s.page === 'settings' }">Settings</a>
-          <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'">Admin — Users</a>
+          <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'" :class="{ active: s.page === 'admin' }">Admin — Users</a>
+          <a href="/admin/workspaces" class="mu-dd-item" x-show="currentUser?.role === 'admin'">Admin — Workspaces</a>
           <div class="mu-dd-sep"></div>
           <button class="mu-dd-item mu-dd-signout" @click="signOut()">Sign out</button>
         </div>
@@ -56,7 +60,7 @@
     <div class="ma-page mv-root" data-mv-theme="dark" x-data="mayaAnimations()" x-init="init()">
       <div class="ma-hero">
         <h1>Animation manager</h1>
-        <p>Upload Mixamo FBX clips, preview them live on your VRM avatar, and set the idle loop. Maya can play gestures via <code style="font-size:12px">play_avatar_animation</code> while you talk.</p>
+        <p>Upload Mixamo FBX clips, preview them live on your VRM avatar, and build an idle pool. Drag clips into the idle category — the top clip is the default loop; others play at random intervals.</p>
       </div>
 
       <p class="ma-banner error" x-show="error" x-text="error"></p>
@@ -76,7 +80,8 @@
             <div class="ma-preview-overlay" x-show="previewLoading">Loading avatar…</div>
             <div class="ma-preview-badge" x-show="previewReady && !previewLoading">
               <span x-text="modelLabel"></span>
-              · idle: <strong x-text="idleAnimation"></strong>
+              · default idle: <strong x-text="idleAnimation"></strong>
+              <span x-show="idleVariants.length"> · <span x-text="idleVariants.length"></span> variant(s)</span>
             </div>
           </div>
           <div class="ma-tools-hint">
@@ -119,21 +124,60 @@
             </label>
           </div>
 
+          <div
+            class="ma-idle-zone"
+            :class="{ 'drag-hover': idleDragHover }"
+            @dragover.prevent="idleDragHover = true"
+            @dragleave.prevent="idleDragHover = false"
+            @drop.prevent="onDropToIdle($event)"
+          >
+            <div class="ma-idle-head">
+              <h3>Idle category</h3>
+              <p>Drag clips here from the library. Top = default loop; others play randomly, then tween back.</p>
+            </div>
+            <div class="ma-idle-list" x-show="idleClips.length">
+              <template x-for="(file, idx) in idleClips" :key="file">
+                <div
+                  class="ma-idle-item"
+                  :class="{ default: idx === 0, dragging: idleDragIdx === idx }"
+                  draggable="true"
+                  @dragstart="onIdleDragStart($event, idx)"
+                  @dragend="onIdleDragEnd()"
+                  @dragover.prevent="onIdleDragOver($event, idx)"
+                  @drop.prevent="onIdleDrop($event, idx)"
+                >
+                  <span class="ma-idle-grip" aria-hidden="true">⋮⋮</span>
+                  <div class="ma-idle-meta">
+                    <strong x-text="catalogLabel(file)"></strong>
+                    <span class="ma-idle-file" x-text="file"></span>
+                  </div>
+                  <span class="ma-tag idle" x-show="idx === 0">default loop</span>
+                  <span class="ma-tag" x-show="idx > 0">random idle</span>
+                  <button type="button" class="ma-idle-remove" title="Remove from idle" @click.stop="removeFromIdle(file)">×</button>
+                </div>
+              </template>
+            </div>
+            <div class="ma-idle-empty" x-show="!idleClips.length">
+              Drop animations here to add them to the idle pool
+            </div>
+          </div>
+
           <div class="ma-library">
-            <div class="ma-empty" x-show="!catalogLoading && !catalog.length">No animations yet — upload a Mixamo FBX (With Skin is fine; we retarget to your VRM).</div>
+            <div class="ma-empty" x-show="!catalogLoading && !libraryItems.length">No gesture clips outside the idle pool — upload or drag clips out of idle above.</div>
             <div class="ma-empty" x-show="catalogLoading">Loading library…</div>
-            <template x-for="item in catalog" :key="item.file">
+            <template x-for="item in libraryItems" :key="item.file">
               <article
                 class="ma-card"
-                :class="{ playing: playing === item.file, 'idle-mark': isIdle(item), editing: editingFile === item.file }"
+                :class="{ playing: playing === item.file, editing: editingFile === item.file }"
+                draggable="true"
+                @dragstart="onLibraryDragStart($event, item)"
               >
                 <div class="ma-card-main" x-show="editingFile !== item.file">
                   <h3 class="ma-card-title" x-text="item.label || item.file"></h3>
                   <p class="ma-card-file" x-text="item.file"></p>
                   <p class="ma-card-desc" x-show="item.description" x-text="item.description"></p>
                   <div class="ma-card-tags">
-                    <span class="ma-tag idle" x-show="isIdle(item)">idle loop</span>
-                    <span class="ma-tag" x-show="item.loop && !isIdle(item)">loops</span>
+                    <span class="ma-tag" x-show="item.loop">loops</span>
                     <template x-for="tag in (item.tags || [])" :key="tag">
                       <span class="ma-tag" x-text="tag"></span>
                     </template>
@@ -164,7 +208,7 @@
                 <div class="ma-card-actions" x-show="editingFile !== item.file">
                   <button type="button" class="ma-btn primary" @click="playItem(item)">Play</button>
                   <button type="button" class="ma-btn" @click="startEdit(item)">Edit</button>
-                  <button type="button" class="ma-btn" @click="setAsIdle(item)">Set idle</button>
+                  <button type="button" class="ma-btn" @click="addToIdle(item.file)">Add to idle</button>
                   <button type="button" class="ma-btn danger" @click="deleteItem(item)">Delete</button>
                 </div>
               </article>

@@ -80,11 +80,22 @@ def llm_ready_from_health(result: dict[str, Any]) -> bool:
 def build_agent_capabilities(
     voice_ready: bool,
     health: dict[str, Any],
+    reasoning: dict[str, Any] | None = None,
     *,
     imagine_ready: bool = True,
 ) -> dict[str, bool]:
     """Capability matrix for progressive UI disclosure."""
+    from vision import model_supports_vision
+
     llm_ready = llm_ready_from_health(health)
+    reasoning = reasoning or {}
+    provider = str(reasoning.get("provider", health.get("provider", ""))).lower()
+    model = str(health.get("model") or _resolved_model(reasoning))
+    vision_ready = (
+        llm_ready
+        and provider != "webllm"
+        and model_supports_vision(model, reasoning)
+    )
     return {
         "text_chat": llm_ready,
         "text_chat_enriched": voice_ready and llm_ready,
@@ -93,6 +104,7 @@ def build_agent_capabilities(
         "eq_live": voice_ready,
         "tools": voice_ready,
         "imagine": imagine_ready,
+        "vision": vision_ready,
     }
 
 

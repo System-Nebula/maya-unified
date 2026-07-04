@@ -2,6 +2,8 @@
 
 Local voice AI with a web dashboard: mic → Whisper → LLM → Qwen3-TTS, plus Discord tools, memory, and optional platform APIs (arena, discover, research).
 
+**Full documentation → [docs site](https://system-nebula.github.io/maya-unified/)**
+
 **One repo. One clone. One venv. One launcher.**
 
 ```
@@ -165,7 +167,7 @@ Protected APIs (`/api/voice/agent/*`, `/api/voice/settings/*`, `/api/operators/*
 
 Optional **Sign in with Google** on `/login` and **Settings → Integrations** for Gmail/Calendar connect. Requires `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in `.env`, Postgres migrations, and redirect URIs registered in Google Cloud Console.
 
-See [app-integrations-google-oauth.md](app-integrations-google-oauth.md) for setup, Console checklist, and troubleshooting.
+See [Google OAuth documentation](https://system-nebula.github.io/maya-unified/operations/google-oauth) (or `docs/content/operations/google-oauth.md`) for setup, Console checklist, and troubleshooting.
 
 ---
 

@@ -58,12 +58,17 @@
       <div class="mu-brand">Maya <span>Unified</span></div>
       <nav class="mu-nav">
         <a href="/" :class="{ active: s.page === 'dashboard' }">Dashboard</a>
+        <a href="/animations" :class="{ active: s.page === 'animations' }">Animations</a>
+        <a href="/memory" :class="{ active: s.page === 'memory' }">Memory</a>
         <a href="/experimental" :class="{ active: s.page === 'experimental' }">Standalone</a>
         <a href="/docs" target="_blank" rel="noopener">API</a>
       </nav>
       <div class="mu-status">
         <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
-        <span class="mu-hint" x-show="s.hint()" x-text="s.hint()"></span>
+        <span class="mu-hint-wrap" x-show="s.hint()">
+          <span class="mu-hint" x-text="s.hint()"></span>
+          <span class="mu-llm-dot" x-show="s.ready && s.llmOk && s.llmModel" aria-hidden="true"></span>
+        </span>
       </div>
       <div class="mu-user" x-show="currentUser" x-data="{ open: false }" @click.away="open = false">
         <button class="mu-user-btn" @click="open = !open" id="user-menu-btn">
@@ -74,6 +79,7 @@
         <div class="mu-dropdown" x-show="open" x-cloak>
           <a href="/settings" class="mu-dd-item" :class="{ active: s.page === 'settings' }">Settings</a>
           <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'" :class="{ active: s.page === 'admin' }">Admin — Users</a>
+          <a href="/admin/workspaces" class="mu-dd-item" x-show="currentUser?.role === 'admin'">Admin — Workspaces</a>
           <div class="mu-dd-sep"></div>
           <button class="mu-dd-item mu-dd-signout" id="signout-btn" @click="signOut()">Sign out</button>
         </div>

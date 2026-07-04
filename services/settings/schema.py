@@ -46,6 +46,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "top_p": 0.9,
         "reasoning_effort": "",
         "disable_thinking": True,
+        "vision_capable": "auto",
         "reasoning_model": "maya-reason-mini",
         "persona": "maya",
         "litellm": {
@@ -116,6 +117,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "camera_distance": 1.8,
         "idle_enabled": True,
         "idle_animation": "Idle.fbx",
+        "idle_variants": [],
+        "idle_variant_min_s": 10,
+        "idle_variant_max_s": 28,
     },
     "delivery": {
         "tts_mode": "clone",

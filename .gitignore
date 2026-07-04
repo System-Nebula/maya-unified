@@ -1,6 +1,7 @@
 # Maya Unified runtime
 .env
 .data/
+.understand-anything/
 data/*
 !data/vrm/
 !data/vrm/*.vrm
@@ -45,3 +46,8 @@ infra/comfyui/ComfyUI/*
 local/
 *.db
 *.sqlite3
+
+# Quartz documentation site
+docs/node_modules/
+docs/public/
+docs/.quartz-cache/

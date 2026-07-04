@@ -1,0 +1,15 @@
+<!-- User menu — Settings lives here, not in the main nav. -->
+<div class="mu-user" x-show="currentUser" x-data="{ open: false }" @click.away="open = false">
+  <button class="mu-user-btn" @click="open = !open" id="user-menu-btn">
+    <span class="mu-avatar-dot" :style="`background:${currentUser?.avatar_color}`"></span>
+    <span x-text="currentUser?.display_name || currentUser?.username"></span>
+    <span class="mu-chevron">▾</span>
+  </button>
+  <div class="mu-dropdown" x-show="open" x-cloak>
+    <a href="/settings" class="mu-dd-item" :class="{ active: s.page === 'settings' }">Settings</a>
+    <a href="/admin/users" class="mu-dd-item" x-show="currentUser?.role === 'admin'" :class="{ active: s.page === 'admin' }">Admin — Users</a>
+    <a href="/admin/workspaces" class="mu-dd-item" x-show="currentUser?.role === 'admin'">Admin — Workspaces</a>
+    <div class="mu-dd-sep"></div>
+    <button class="mu-dd-item mu-dd-signout" id="signout-btn" @click="signOut()">Sign out</button>
+  </div>
+</div>
