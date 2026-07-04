@@ -295,6 +295,8 @@ class DiscordConfig:
     queue_max: int = field(default_factory=lambda: _env_int("VA_DISCORD_QUEUE_MAX", 30))
     # Reply in text channels when @mentioned or when someone replies to the bot.
     auto_reply: bool = field(default_factory=lambda: _env_bool("VA_DISCORD_AUTO_REPLY", True))
+    # Attach a TTS WAV clip alongside text replies in Discord channels.
+    attach_voice: bool = field(default_factory=lambda: _env_bool("VA_DISCORD_ATTACH_VOICE", True))
 
 
 @dataclass

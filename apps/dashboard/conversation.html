@@ -275,7 +275,6 @@
                   </div>
                 </div>
               </div>
-
               <!-- Equalizer -->
               <div
                 class="md-group"
@@ -535,6 +534,9 @@
                     <span x-text="$store.mayaVrm.lipSyncMode === 'viseme' ? 'Viseme sync' : 'Jaw sync'"></span>
                     <span class="md-vrm-dot">·</span>
                     <a href="/settings?tab=expressions">Configure</a>
+                  </p>
+                  <p class="mv-desc md-vrm-visemes" x-show="$store.mayaVrm.moodLabel && $store.mayaVrm.modelLoaded">
+                    face: <span x-text="$store.mayaVrm.moodLabel"></span>
                   </p>
                   <p class="mv-desc md-vrm-visemes" x-show="$store.mayaVrm.lipSyncLabel && $store.mayaVrm.modelLoaded" x-text="$store.mayaVrm.lipSyncLabel"></p>
                   <p class="mv-desc md-vrm-hint">Powered by <a href="https://github.com/pixiv/three-vrm" target="_blank" rel="noopener">three-vrm</a> — drag to orbit</p>

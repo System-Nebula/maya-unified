@@ -63,6 +63,10 @@ bus.on((msg) => {
   if (msg.type === "animation" && msg.name) {
     engine.playAnimation(msg.name, { loop: !!msg.loop });
   }
+  if (msg.type === "expression" && msg.mood) {
+    if (msg.ease && String(msg.mood).toLowerCase() === "idle") engine.easeMoodToIdle();
+    else engine.setMood(msg.mood);
+  }
   if (msg.type === "settings" && msg.vrm) {
     const v = msg.vrm;
     if (v.mouth_gain != null) engine.setMouthGain(v.mouth_gain);

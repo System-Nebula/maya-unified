@@ -1,5 +1,6 @@
 /** Alpine panel — in-browser VRM avatar with TTS lip-sync + pop-out window. */
 import { createVrmBus } from "/dashboard/js/mayaVrmBus.js";
+import { DEFAULT_VRM_LOCAL } from "/dashboard/js/mayaVrmEngine.js";
 
 const POPOUT_NAME = "maya-vrm-popout";
 const POPOUT_FEATURES = "popup,width=420,height=560,left=120,top=80,resizable=yes";
@@ -37,6 +38,7 @@ document.addEventListener("alpine:init", () => {
     showPlaceholder: false,
     avatarImage: "",
     placeholderCaption: "No avatar model",
+    moodLabel: "",
     toggleImmersive() {},
     openPopout() {},
     closeImmersive() {},
@@ -62,6 +64,9 @@ document.addEventListener("alpine:init", () => {
     avatarImage: "",
     modelLoaded: false,
     placeholderHint: "",
+    moodLabel: "",
+    _moodFromTurn: false,
+    _moodReleaseTimer: null,
     _engine: null,
     _enginePromise: null,
     _specTimer: null,
@@ -127,6 +132,7 @@ document.addEventListener("alpine:init", () => {
       s.showPlaceholder = this.showPlaceholder;
       s.avatarImage = this.avatarImage;
       s.placeholderCaption = this.placeholderCaption;
+      s.moodLabel = this.moodLabel;
     },
 
     _activeCanvas() {
@@ -224,7 +230,7 @@ document.addEventListener("alpine:init", () => {
         this.cameraDistance = Number(vrm.camera_distance ?? 1.8);
         this.idleEnabled = vrm.idle_enabled !== false;
         this.idleAnimation = vrm.idle_animation || "Idle.fbx";
-        this.modelLabel = this.model ? this.model.replace(/^.*[/\\]/, "") : "1556438947145020822.vrm";
+        this.modelLabel = this.model ? this.model.replace(/^.*[/\\]/, "") : DEFAULT_VRM_LOCAL;
         this._syncToStore();
       } catch (_) {}
     },
@@ -278,6 +284,8 @@ document.addEventListener("alpine:init", () => {
         this.modelLoaded = true;
         this.placeholderHint = "";
         this.loadError = "";
+        this.moodLabel = engine.getMood?.() || "idle";
+        this._syncToStore();
       } catch (e) {
         this.modelLoaded = false;
         const friendly = this._friendlyLoadError(e.message || e);
@@ -353,6 +361,52 @@ document.addEventListener("alpine:init", () => {
       await this.bootViewer();
     },
 
+    async applyMood(mood, opts = {}) {
+      const normalized = String(mood || "idle").toLowerCase();
+      const ease = !!opts.ease;
+      const payload = { type: "expression", mood: normalized, ease };
+      if (this.poppedOut) {
+        this._bus.post(payload);
+        this.moodLabel = normalized;
+        this._syncToStore();
+        return;
+      }
+      const engine = this._engine || (await this.ensureEngine().catch(() => null));
+      if (normalized === "idle" && ease) engine?.easeMoodToIdle?.();
+      else engine?.setMood?.(normalized);
+      this.moodLabel = engine?.getMood?.() || normalized;
+      this._syncToStore();
+    },
+
+    releaseMoodAfterSpeech() {
+      if (this._moodReleaseTimer) {
+        clearTimeout(this._moodReleaseTimer);
+        this._moodReleaseTimer = null;
+      }
+      if (!this._moodFromTurn) return;
+      this._moodFromTurn = false;
+      this.applyMood("idle", { ease: true });
+    },
+
+    scheduleMoodReleaseAfterSpeech() {
+      if (!this._moodFromTurn) return;
+      if (this._moodReleaseTimer) clearTimeout(this._moodReleaseTimer);
+      this._moodReleaseTimer = setTimeout(() => this.releaseMoodAfterSpeech(), 400);
+    },
+
+    onMoodForTurn(mood) {
+      const m = String(mood || "idle").toLowerCase();
+      this._moodFromTurn = m !== "idle";
+      this.applyMood(mood);
+      if (this._moodReleaseTimer) {
+        clearTimeout(this._moodReleaseTimer);
+        this._moodReleaseTimer = null;
+      }
+      if (!this.speaking && this._moodFromTurn) {
+        this._moodReleaseTimer = setTimeout(() => this.releaseMoodAfterSpeech(), 2200);
+      }
+    },
+
     async playAvatarAnimation(name, loop = false) {
       const payload = { type: "animation", name, loop: !!loop };
       if (this.poppedOut) {
@@ -364,12 +418,19 @@ document.addEventListener("alpine:init", () => {
     },
 
     onAgentEvent(ev) {
+      if (ev.type === "avatar_expression" && ev.mood) {
+        this.onMoodForTurn(ev.mood);
+      }
       if (ev.type === "avatar_animation" && ev.name) {
         this.playAvatarAnimation(ev.name, !!ev.loop);
       }
       if (ev.type === "status") {
         const v = ev.value || "idle";
         if (v === "speaking") {
+          if (this._moodReleaseTimer) {
+            clearTimeout(this._moodReleaseTimer);
+            this._moodReleaseTimer = null;
+          }
           this.speaking = true;
           this._syncToStore();
           this.startSpectrumPoll();
@@ -377,24 +438,36 @@ document.addEventListener("alpine:init", () => {
           this.speaking = false;
           this._syncToStore();
           this._bus.post({ type: "lip", level: 0, bands: [] });
+          this.scheduleMoodReleaseAfterSpeech();
         }
       }
-      if (ev.type === "settings" && ev.vrm) {
-        const v = ev.vrm;
+      if (ev.type === "audio_stop") {
+        this.scheduleMoodReleaseAfterSpeech();
+      }
+      if (ev.type === "settings") {
+        const v = ev.vrm || ev.unified?.vrm;
+        if (!v) return;
+        const prevModel = this.model;
         if (typeof v.enabled === "boolean") this.enabled = v.enabled;
         if (v.model != null) this.model = v.model;
         if (v.mouth_gain != null) this.mouthGain = Number(v.mouth_gain);
         if (v.mouth_smoothing != null) this.mouthSmoothing = Number(v.mouth_smoothing);
         if (v.lip_sync_mode != null) this.lipSyncMode = v.lip_sync_mode;
+        if (v.look_at_camera != null) this.lookAtCamera = v.look_at_camera !== false;
+        if (v.camera_distance != null) this.cameraDistance = Number(v.camera_distance);
         if (v.idle_enabled != null) this.idleEnabled = !!v.idle_enabled;
         if (v.idle_animation != null) this.idleAnimation = v.idle_animation;
+        this.modelLabel = (this.model || DEFAULT_VRM_LOCAL).replace(/^.*[/\\]/, "");
         if (!this.poppedOut) {
           this._engine?.setMouthGain(this.mouthGain);
           this._engine?.setMouthSmoothing(this.mouthSmoothing);
           this._engine?.setLipSyncMode(this.lipSyncMode);
           this._engine?.setIdleEnabled(this.idleEnabled);
           if (v.idle_animation != null) this._engine?.setIdleAnimation(v.idle_animation);
-          if (v.model != null) this.reloadModel();
+          const modelChanged = v.model != null && String(v.model) !== String(prevModel);
+          if (modelChanged || (v.model != null && !this._engine?.vrm)) {
+            this.reloadModel();
+          }
         }
         this._syncToStore();
         this._bus.post({ type: "settings", vrm: v });
@@ -442,6 +515,7 @@ document.addEventListener("alpine:init", () => {
           if (!this.poppedOut) {
             this._engine?.setAudioFrame({ level: 0, bands: [] });
           }
+          this.scheduleMoodReleaseAfterSpeech();
         }
       }, 50);
     },

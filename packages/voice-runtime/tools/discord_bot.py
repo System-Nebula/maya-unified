@@ -261,7 +261,23 @@ class _QueueItem:
     query: str
 
 
-IncomingMessageHandler = Callable[[dict[str, Any]], Optional[str]]
+IncomingMessageHandler = Callable[[dict[str, Any]], Optional[str] | tuple[str, Optional[bytes]]]
+VoiceClipHandler = Callable[[str], Optional[bytes]]
+
+
+def _discord_files_from_wav(wav: Optional[bytes]) -> list:
+    if not wav:
+        return []
+    if len(wav) > 8 * 1024 * 1024:
+        log.warning("discord voice clip too large (%s bytes) — skipping attach", len(wav))
+        return []
+    import io
+
+    import discord
+
+    buf = io.BytesIO(wav)
+    buf.seek(0)
+    return [discord.File(buf, filename="maya-voice.wav")]
 
 
 class DiscordManager:
@@ -273,12 +289,13 @@ class DiscordManager:
         default_guild_id: int | None = None,
         music_volume: float = 0.85,
         on_incoming_message: IncomingMessageHandler | None = None,
+        voice_clip_fn: VoiceClipHandler | None = None,
     ):
         self.token = token.strip()
         self._default_guild_id = int(default_guild_id) if default_guild_id else None
         self._music_volume = max(0.0, min(2.0, float(music_volume)))
         self._on_incoming_message = on_incoming_message
-        self._auto_reply_enabled = bool(getattr(CONFIG.discord, "auto_reply", True))
+        self._voice_clip_fn = voice_clip_fn
         self._reply_cooldown_sec = 2.5
         self._last_reply_at: dict[int, float] = {}
         self._now_playing: Optional[str] = None
@@ -837,12 +854,63 @@ class DiscordManager:
     def _user_matches(self, target_user: str, author) -> bool:
         return _user_matches_name(target_user, author)
 
+    def _attach_voice_enabled(self) -> bool:
+        return bool(
+            self._voice_clip_fn
+            and getattr(CONFIG.discord, "attach_voice", True)
+        )
+
+    async def _reply_voice_files(self, text: str) -> list:
+        if not self._attach_voice_enabled():
+            if getattr(CONFIG.discord, "attach_voice", True) and not self._voice_clip_fn:
+                log.warning("discord voice clip skipped — no TTS hook (restart agent)")
+            elif not getattr(CONFIG.discord, "attach_voice", True):
+                log.debug("discord voice clip skipped — attach_voice off")
+            return []
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        try:
+            wav = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: self._voice_clip_fn(text)),
+                timeout=120.0,
+            )
+        except asyncio.TimeoutError:
+            log.warning("discord voice clip synthesis timed out")
+            return []
+        except Exception as exc:  # noqa: BLE001
+            log.warning("discord voice clip synthesis failed: %s", exc)
+            return []
+        files = _discord_files_from_wav(wav)
+        if wav and files:
+            log.info("discord voice clip ready (%s bytes)", len(wav))
+        return files
+
+    @staticmethod
+    def _parse_incoming_reply(raw) -> tuple[Optional[str], Optional[bytes]]:
+        if raw is None:
+            return None, None
+        if isinstance(raw, tuple) and raw:
+            text = str(raw[0] or "").strip()
+            wav = raw[1] if len(raw) > 1 and isinstance(raw[1], (bytes, bytearray)) else None
+            return text or None, bytes(wav) if wav else None
+        text = str(raw).strip()
+        return text or None, None
+
+    def _auto_reply_enabled(self) -> bool:
+        return bool(getattr(CONFIG.discord, "auto_reply", True))
+
     async def _on_incoming_discord_message(self, message) -> None:
-        if not self._auto_reply_enabled or not self._on_incoming_message:
+        if not self._auto_reply_enabled() or not self._on_incoming_message:
             return
         if message.author.bot or not message.guild:
             return
         if self._default_guild_id and message.guild.id != self._default_guild_id:
+            log.debug(
+                "discord auto-reply skipped guild %s (configured %s)",
+                message.guild.id,
+                self._default_guild_id,
+            )
             return
         trigger = await self._incoming_message_trigger(message)
         if trigger is None:
@@ -854,17 +922,25 @@ class DiscordManager:
         try:
             context = await self._build_incoming_message_context(message, trigger)
             loop = asyncio.get_event_loop()
-            reply_text = await loop.run_in_executor(
+            reply_raw = await loop.run_in_executor(
                 None, lambda: self._on_incoming_message(context),
             )
-            text = (reply_text or "").strip()
+            text, _prebuilt_wav = self._parse_incoming_reply(reply_raw)
             if not text:
                 return
             if len(text) > 2000:
                 text = text[:1997] + "..."
-            await message.reply(text, mention_author=True)
+            files = _discord_files_from_wav(_prebuilt_wav) if _prebuilt_wav else []
+            if not files and getattr(CONFIG.discord, "attach_voice", True):
+                files = await self._reply_voice_files(text)
+            await message.reply(text, mention_author=True, files=files or None)
             self._last_reply_at[ch_id] = now
-            log.info("auto-replied in #%s to %s", message.channel.name, message.author)
+            log.info(
+                "auto-replied in #%s to %s%s",
+                message.channel.name,
+                message.author,
+                " (+ voice)" if files else "",
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("discord auto-reply failed: %s", exc)
 
@@ -926,13 +1002,20 @@ class DiscordManager:
                 f"Text channel '{channel_name}' not found in {guild.name}. "
                 f"Available: {names}"
             )
+        recent: list[dict[str, Any]] = []
         match = None
         async for msg in channel.history(limit=80):
             if msg.author.bot:
                 continue
-            if self._user_matches(target_user, msg.author):
+            entry = {
+                "author": getattr(msg.author, "display_name", str(msg.author)),
+                "content": self._message_snippet(msg),
+            }
+            if len(recent) < 25:
+                recent.append(entry)
+            if match is None and self._user_matches(target_user, msg.author):
                 match = msg
-                break
+        recent.reverse()
         if match is None:
             raise ValueError(
                 f"No recent message from '{target_user}' in #{channel.name}."
@@ -944,6 +1027,7 @@ class DiscordManager:
             "message_id": match.id,
             "content": self._message_snippet(match),
             "timestamp": match.created_at.isoformat() if match.created_at else None,
+            "recent_messages": recent[-15:],
         }
 
     async def _reply_to_user(
@@ -969,8 +1053,14 @@ class DiscordManager:
             ref_msg = await channel.fetch_message(int(info["message_id"]))
         except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
             raise ValueError(f"Couldn't load message to reply to: {exc}") from exc
-        msg = await ref_msg.reply(text, mention_author=True)
-        log.info("replied to %s in #%s", info["target_user"], channel.name)
+        files = await self._reply_voice_files(text)
+        msg = await ref_msg.reply(text, mention_author=True, files=files or None)
+        log.info(
+            "replied to %s in #%s%s",
+            info["target_user"],
+            channel.name,
+            " (+ voice)" if files else "",
+        )
         return {
             "sent": True,
             "channel": channel.name,
@@ -979,6 +1069,7 @@ class DiscordManager:
             "reply_to_message_id": info["message_id"],
             "message_id": msg.id,
             "content": text,
+            "voice_attached": bool(files),
         }
 
     async def _fetch_channel_messages(

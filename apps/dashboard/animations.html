@@ -125,21 +125,42 @@
             <template x-for="item in catalog" :key="item.file">
               <article
                 class="ma-card"
-                :class="{ playing: playing === item.file, 'idle-mark': isIdle(item) }"
+                :class="{ playing: playing === item.file, 'idle-mark': isIdle(item), editing: editingFile === item.file }"
               >
-                <div class="ma-card-main">
+                <div class="ma-card-main" x-show="editingFile !== item.file">
                   <h3 class="ma-card-title" x-text="item.label || item.file"></h3>
                   <p class="ma-card-file" x-text="item.file"></p>
                   <p class="ma-card-desc" x-show="item.description" x-text="item.description"></p>
                   <div class="ma-card-tags">
                     <span class="ma-tag idle" x-show="isIdle(item)">idle loop</span>
+                    <span class="ma-tag" x-show="item.loop && !isIdle(item)">loops</span>
                     <template x-for="tag in (item.tags || [])" :key="tag">
                       <span class="ma-tag" x-text="tag"></span>
                     </template>
                   </div>
                 </div>
-                <div class="ma-card-actions">
+                <div class="ma-card-edit" x-show="editingFile === item.file">
+                  <label>Label
+                    <input type="text" x-model="editDraft.label" placeholder="Friendly wave" />
+                  </label>
+                  <label>Description (for the agent)
+                    <input type="text" x-model="editDraft.description" placeholder="Greet the audience with a wave" />
+                  </label>
+                  <label>Tags (comma-separated)
+                    <input type="text" x-model="editDraft.tags" placeholder="wave, greet, hello" />
+                  </label>
+                  <label class="ma-check">
+                    <input type="checkbox" x-model="editDraft.loop" />
+                    Loop when played by agent
+                  </label>
+                  <div class="ma-edit-actions">
+                    <button type="button" class="ma-btn primary" @click="saveEdit(item)">Save</button>
+                    <button type="button" class="ma-btn" @click="cancelEdit()">Cancel</button>
+                  </div>
+                </div>
+                <div class="ma-card-actions" x-show="editingFile !== item.file">
                   <button type="button" class="ma-btn primary" @click="playItem(item)">Play</button>
+                  <button type="button" class="ma-btn" @click="startEdit(item)">Edit</button>
                   <button type="button" class="ma-btn" @click="setAsIdle(item)">Set idle</button>
                   <button type="button" class="ma-btn danger" @click="deleteItem(item)">Delete</button>
                 </div>

@@ -76,8 +76,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "discord": {
         "enabled": False,
         "token": "",
-        "guild_id": 0,
+        "guild_id": "",
         "auto_reply": True,
+        "attach_voice": True,
         "music_volume": 0.85,
         "imagine_enabled": False,
         "comfyui_url": "http://localhost:3000",
@@ -102,7 +103,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "vrm": {
         "enabled": True,
-        "model": "1556438947145020822.vrm",
+        "model": "Yuki.vrm",
         "lip_sync_mode": "viseme",
         "mouth_gain": 6.0,
         "mouth_smoothing": 0.5,

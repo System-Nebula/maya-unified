@@ -585,7 +585,10 @@ def register_agent_routes(app) -> None:
         return FileResponse(path, media_type="application/octet-stream", filename=os.path.basename(path))
 
     @app.post(f"{prefix}/upload-vrm")
-    async def upload_vrm(file: UploadFile = File(...)) -> dict:
+    async def upload_vrm(
+        file: UploadFile = File(...),
+        name: str = Form(""),
+    ) -> dict:
         os.makedirs(VRM_DIR, exist_ok=True)
         ext = os.path.splitext(file.filename or "")[1].lower()
         if ext not in VRM_EXTS:
@@ -593,8 +596,13 @@ def register_agent_routes(app) -> None:
         import time as _time
         import re
 
-        stem = re.sub(r"[^\w.\-]+", "_", os.path.splitext(os.path.basename(file.filename or "model"))[0]) or "model"
-        dest = os.path.join(VRM_DIR, f"{stem}_{int(_time.time())}{ext}")
+        raw_name = (name or "").strip() or os.path.splitext(os.path.basename(file.filename or "model"))[0]
+        stem = re.sub(r"[^\w.\-]+", "_", raw_name).strip("._") or "model"
+        dest_name = f"{stem}.vrm"
+        dest = os.path.join(VRM_DIR, dest_name)
+        if os.path.isfile(dest):
+            dest_name = f"{stem}_{int(_time.time())}.vrm"
+            dest = os.path.join(VRM_DIR, dest_name)
         data = await file.read()
         if not data:
             return {"ok": False, "error": "empty file"}

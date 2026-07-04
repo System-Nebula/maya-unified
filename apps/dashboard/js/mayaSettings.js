@@ -18,11 +18,13 @@ document.addEventListener("alpine:init", () => {
     health: null,
     healthTesting: false,
     voiceUploadName: "",
+    vrmUploadName: "",
     voiceUploadBusy: false,
     llmModelsLoading: false,
     llmModelsHint: "",
     _llmFetchTimer: null,
     _saveTimer: null,
+    _voiceUiReady: false,
 
     user: { id: "", username: "", display_name: "", role: "operator", avatar_color: "#0a84ff" },
     colours: AVATAR_COLOURS,
@@ -93,12 +95,12 @@ document.addEventListener("alpine:init", () => {
         expressions: true, auto_express: true, mouth_gain: 6, mouth_smoothing: 0.5, mouth_fps: 60,
       },
       vrm: {
-        enabled: true, model: "1556438947145020822.vrm", lip_sync_mode: "viseme",
+        enabled: true, model: "Yuki.vrm", lip_sync_mode: "viseme",
         mouth_gain: 6, mouth_smoothing: 0.5, look_at_camera: true, camera_distance: 1.8,
         idle_enabled: true, idle_animation: "Idle.fbx",
       },
       discord: {
-        enabled: false, token: "", guild_id: 0, auto_reply: true,
+        enabled: false, token: "", guild_id: "", auto_reply: true, attach_voice: true,
         music_volume: 0.85, imagine_enabled: false, comfyui_url: "http://localhost:3000",
         default_voice_channel: "", voice_channel_aliases: {},
         youtube_cookies_browser: "", youtube_cookies_file: "",
@@ -180,7 +182,10 @@ document.addEventListener("alpine:init", () => {
     },
 
     set voiceSelectValue(v) {
-      if (v) this.selectVoiceFile(v);
+      if (!this._voiceUiReady || !v) return;
+      const current = this.voiceFileName();
+      if (v === current) return;
+      this.selectVoiceFile(v);
     },
 
     setTab(id) {
@@ -391,6 +396,7 @@ document.addEventListener("alpine:init", () => {
           const data = await settingsR.json();
           this.s = this.deepMerge(this.s, data.settings || {});
           this.normalizeWebLLM();
+          this.normalizeDiscordGuildId();
         }
       } catch (e) {
         this.error = String(e.message || e);
@@ -439,6 +445,8 @@ document.addEventListener("alpine:init", () => {
         }
       } catch (e) {
         if (!this.error) this.error = String(e.message || e);
+      } finally {
+        this._voiceUiReady = true;
       }
     },
 
@@ -513,6 +521,17 @@ document.addEventListener("alpine:init", () => {
       }
     },
 
+    normalizeDiscordGuildId() {
+      const disc = this.s?.discord;
+      if (!disc) return;
+      const gid = disc.guild_id;
+      if (gid == null || gid === "" || gid === 0) {
+        disc.guild_id = "";
+        return;
+      }
+      disc.guild_id = String(gid);
+    },
+
     save() {
       if (this._saveTimer) clearTimeout(this._saveTimer);
       this._saveTimer = setTimeout(() => this._saveNow(), 400);
@@ -522,6 +541,7 @@ document.addEventListener("alpine:init", () => {
       this._saveTimer = null;
       this.saved = false;
       this.error = "";
+      this.normalizeDiscordGuildId();
       try {
         const r = await fetch("/api/voice/settings", {
           method: "POST",
@@ -645,8 +665,15 @@ document.addEventListener("alpine:init", () => {
       if (!file) return;
       const fd = new FormData();
       fd.append("file", file);
+      const label = (this.vrmUploadName || "").trim();
+      if (label) fd.append("name", label);
+      this.error = "";
       try {
-        const r = await fetch("/api/voice/agent/upload-vrm", { method: "POST", body: fd });
+        const r = await fetch("/api/voice/agent/upload-vrm", {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+        });
         const data = await r.json();
         if (!data.ok) {
           this.error = data.error || "VRM upload failed";
@@ -657,6 +684,7 @@ document.addEventListener("alpine:init", () => {
           this.s.vrm.model = data.file;
           await this._saveNow();
         }
+        this.vrmUploadName = "";
       } catch (e) {
         this.error = String(e.message || e);
       }
