@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -28,6 +29,7 @@ VRM_DIR = str(vrm_dir())
 ANIM_DIR = str(animations_dir())
 VRM_EXTS = {".vrm"}
 ANIM_EXTS = {".fbx", ".vrma"}
+DEFAULT_VRM = "Yuki.vrm"
 MAX_VOICE_UPLOAD_BYTES = 30 * 1024 * 1024
 MAX_ANIM_UPLOAD_BYTES = 80 * 1024 * 1024
 MANIFEST_NAME = "manifest.json"
@@ -581,7 +583,13 @@ def register_agent_routes(app) -> None:
     def vrm_file(name: str = "") -> FileResponse:
         path = _safe_vrm_path(name)
         if path is None:
-            raise HTTPException(status_code=404, detail="VRM model not found")
+            fallback = _safe_vrm_path(DEFAULT_VRM)
+            if fallback is None:
+                raise HTTPException(status_code=404, detail="VRM model not found")
+            logging.getLogger(__name__).warning(
+                "requested VRM %r missing, serving default %r", name, DEFAULT_VRM
+            )
+            path = fallback
         return FileResponse(path, media_type="application/octet-stream", filename=os.path.basename(path))
 
     @app.post(f"{prefix}/upload-vrm")

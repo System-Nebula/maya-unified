@@ -116,7 +116,14 @@ export class MayaVrmEngine {
   async loadModel(url) {
     const token = ++this._loadToken;
     await this._disposeVrm();
-    const gltf = await this._loader.loadAsync(url);
+    let gltf;
+    try {
+      gltf = await this._loader.loadAsync(url);
+    } catch (err) {
+      const fallback = resolveVrmUrl("");
+      if (url === fallback) throw err;
+      gltf = await this._loader.loadAsync(fallback);
+    }
     if (token !== this._loadToken) return;
     const vrm = gltf.userData.vrm;
     if (!vrm) throw new Error("File loaded but is not a VRM model");
