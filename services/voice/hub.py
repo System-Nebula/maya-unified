@@ -359,6 +359,9 @@ class VoiceHub(Hub):
             self.agent.playback.set_output_sink(CONFIG.audio.output_sink)
         self._active_operator_id = oid
         self._active_room_id = None
+        if self.ready and self.agent is not None:
+            self.agent._vision_operator_id = oid  # noqa: SLF001
+            self.agent._vision_reasoning = dict(settings.get("reasoning") or {})  # noqa: SLF001
         pers = load_operator_personalities_file(operator_id)
         active = str(pers.get("active") or "")
         if active and self.ready and self.agent is not None:
@@ -616,14 +619,15 @@ class VoiceHub(Hub):
                 "latency_ms": None,
                 "models_found": 0,
             }
-            caps = build_agent_capabilities(self.ready, health)
+            caps = build_agent_capabilities(self.ready, health, reasoning)
             # WebLLM chat is routed through the voice agent bridge, not server-side LLM.
             caps["text_chat"] = self.ready and browser_ready
             caps["text_chat_enriched"] = caps["text_chat"]
+            caps["vision"] = False
             return {"health": health, "capabilities": caps, "llm_ready": caps["text_chat"]}
         else:
             health = get_cached_llm_health(reasoning if isinstance(reasoning, dict) else {})
-        caps = build_agent_capabilities(self.ready, health)
+        caps = build_agent_capabilities(self.ready, health, reasoning if isinstance(reasoning, dict) else {})
         return {"health": health, "capabilities": caps, "llm_ready": caps["text_chat"]}
 
     def llm_status(self, operator_id: str | None = None) -> dict:
@@ -801,9 +805,18 @@ class VoiceHub(Hub):
                     operator_id=operator_id,
                 )
                 system = (CONFIG.llm.system_prompt or "You are Maya, a helpful assistant.").strip()
+                from vision import resolve_vision_user_content
+
+                user_content = resolve_vision_user_content(
+                    text,
+                    text,
+                    operator_id,
+                    reasoning,
+                    model=CONFIG.llm.model,
+                )
                 messages = [
                     {"role": "system", "content": system},
-                    {"role": "user", "content": text},
+                    {"role": "user", "content": user_content},
                 ]
                 parts: list[str] = []
                 with _llm_lock:

@@ -46,6 +46,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "top_p": 0.9,
         "reasoning_effort": "",
         "disable_thinking": True,
+        "vision_capable": "auto",
         "reasoning_model": "maya-reason-mini",
         "persona": "maya",
         "litellm": {

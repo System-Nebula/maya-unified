@@ -38,6 +38,7 @@ document.addEventListener("alpine:init", () => {
       text_chat_enriched: false,
       voice_session: false,
       tts_preview: false,
+      vision: false,
       eq_live: false,
       tools: false,
     },

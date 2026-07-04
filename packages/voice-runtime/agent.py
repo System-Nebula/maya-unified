@@ -25,6 +25,7 @@ from llm import LLMClient, sanitize_llm_output
 from observability import get_logger, record_turn, span
 from ref_text import clear_voice_prompt_cache, sync_clone_ref_text
 from services.ids import new_corr_id, new_message_id
+from vision import resolve_vision_user_content
 
 log = get_logger("agent")
 
@@ -733,6 +734,15 @@ class VoiceAgent:
             hint = self._web_tool_hint(user_text)
         if hint:
             user_content = f"{hint}\n\n{user_content}"
+        reasoning = getattr(self, "_vision_reasoning", None) or {}
+        operator_id = getattr(self, "_vision_operator_id", None)
+        user_content = resolve_vision_user_content(
+            user_content,
+            user_text,
+            operator_id,
+            reasoning,
+            model=CONFIG.llm.model,
+        )
         messages.append({"role": "user", "content": user_content})
         return messages
 

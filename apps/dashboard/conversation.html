@@ -237,7 +237,7 @@
         <aside
           class="md-col-side"
           x-data="{
-            groups: { session: true, eq: false, tools: true, tts: false, avatar: true },
+            groups: { session: true, vision: true, eq: false, tools: true, tts: false, avatar: true },
             isOpen(name) { return this.groups[name]; },
             toggle(name) {
               this.groups[name] = !this.groups[name];
@@ -277,6 +277,44 @@
                     <p x-text="webllmFailed"></p>
                     <p class="mv-desc" style="margin-top:8px" x-text="webllmTroubleshoot"></p>
                   </div>
+                </div>
+              </div>
+              <!-- Vision -->
+              <div class="md-group">
+                <button type="button" class="md-group-header" @click="toggle('vision')" :aria-expanded="isOpen('vision')">
+                  <span class="md-group-header-main">
+                    <span class="md-group-title">Vision</span>
+                    <span class="md-group-badges">
+                      <span class="mv-chip live" x-show="$store.mayaConversation.visionActive"><span class="ind"></span>Sharing</span>
+                    </span>
+                  </span>
+                  <span class="md-group-chevron" :class="{ open: isOpen('vision') }" aria-hidden="true">▾</span>
+                </button>
+                <div class="md-group-body" x-show="isOpen('vision')" x-cloak>
+                  <p class="mv-desc" x-show="$store.mayaConversation.useWebLLM" style="margin-bottom:10px">
+                    Screen vision requires a server-side vision model — WebLLM does not support it yet.
+                  </p>
+                  <div class="md-session-actions">
+                    <button
+                      class="mv-btn mv-btn-primary"
+                      x-show="!$store.mayaConversation.visionActive"
+                      @click="$store.mayaConversation.startVisionShare()"
+                      :disabled="!visionReady"
+                      title="Share your screen or a window so Maya can see it"
+                    >Share screen</button>
+                    <button
+                      class="mv-btn mv-btn-danger"
+                      x-show="$store.mayaConversation.visionActive"
+                      @click="$store.mayaConversation.stopVisionShare()"
+                    >Stop sharing</button>
+                  </div>
+                  <p class="mv-desc" x-show="!visionReady && !$store.mayaConversation.useWebLLM" style="margin-top:10px">
+                    Load a vision-capable model in Settings → Reasoning (e.g. Gemma vision).
+                  </p>
+                  <p class="mv-desc" x-show="$store.mayaConversation.visionActive" style="margin-top:10px">
+                    Sharing: <span x-text="$store.mayaConversation.visionLabel || 'screen'"></span>
+                  </p>
+                  <p class="mv-desc md-banner error" x-show="$store.mayaConversation.visionError" style="margin-top:8px" x-text="$store.mayaConversation.visionError"></p>
                 </div>
               </div>
               <!-- Equalizer -->
@@ -555,6 +593,7 @@
     </div>
 
     <script defer src="/dashboard/vendor/eq-ui.js"></script>
+    <script defer src="/dashboard/js/mayaVisionCapture.js"></script>
     <script defer src="/dashboard/js/mayaWebLLM.js"></script>
     <script defer src="/dashboard/js/mayaConversation.js"></script>
     <script defer src="/dashboard/js/mayaShell.js"></script>

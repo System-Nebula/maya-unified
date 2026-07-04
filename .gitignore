@@ -40,3 +40,8 @@ infra/comfyui/cache/
 local/
 *.db
 *.sqlite3
+
+# Quartz documentation site
+docs/node_modules/
+docs/public/
+docs/.quartz-cache/

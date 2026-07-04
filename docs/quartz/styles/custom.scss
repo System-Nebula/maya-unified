@@ -1,0 +1,40 @@
+@use "./variables.scss" as *;
+
+:root {
+  color-scheme: dark;
+}
+
+:root,
+:root[saved-theme="light"],
+:root[saved-theme="dark"] {
+  --light: #1a1625;
+  --lightgray: #252033;
+  --gray: #7e7891;
+  --darkgray: #d4d1dc;
+  --dark: #ebebec;
+  --secondary: #9b51e0;
+  --tertiary: #6cbfb5;
+  --highlight: rgba(155, 81, 224, 0.25);
+  --textHighlight: #6cbfb588;
+}
+
+body {
+  background: var(--light);
+  color: var(--darkgray);
+}
+
+.page-header,
+.sidebar.left,
+.sidebar.right {
+  border-color: var(--lightgray);
+}
+
+a.internal,
+a.external {
+  color: var(--secondary);
+}
+
+a.internal:hover,
+a.external:hover {
+  color: var(--tertiary);
+}

@@ -783,6 +783,9 @@ document.addEventListener("alpine:init", () => {
     ttsError: "",
     turns: [],
     useWebLLM: false,
+    visionActive: false,
+    visionLabel: "",
+    visionError: "",
     sending: false,
     detailed: false,
     sidebarOpen: true,
@@ -798,6 +801,34 @@ document.addEventListener("alpine:init", () => {
     _ttsPreviewOnly: false,
     _pendingTtsModel: null,
     _pendingDeliveryCue: null,
+    _visionUnsub: null,
+
+    _syncVisionState() {
+      const cap = window.mayaVisionCapture;
+      if (!cap) return;
+      this.visionActive = !!cap.active;
+      this.visionLabel = cap.label || "";
+      this.visionError = cap.error || "";
+    },
+
+    async startVisionShare() {
+      const cap = window.mayaVisionCapture;
+      if (!cap) return;
+      const result = await cap.startShare();
+      this._syncVisionState();
+      if (!result.ok && result.error) {
+        this.turns.push({ messageId: _nextMessageId(), role: "system", text: result.error });
+        this.persist();
+        _scrollTranscript();
+      }
+    },
+
+    async stopVisionShare() {
+      const cap = window.mayaVisionCapture;
+      if (!cap) return;
+      await cap.stopShare();
+      this._syncVisionState();
+    },
 
     persist() {
       _persistConversation(this);
@@ -916,6 +947,13 @@ document.addEventListener("alpine:init", () => {
       await this.rehydrateAudio();
       await this.loadSettings();
       await this.syncFromServer();
+      this._syncVisionState();
+      if (!this._visionUnsub && window.mayaVisionCapture?.subscribe) {
+        this._visionUnsub = window.mayaVisionCapture.subscribe(() => this._syncVisionState());
+      }
+      window.addEventListener("maya-session-stop", () => {
+        this.stopVisionShare();
+      });
       this._hydrated = true;
     },
 
@@ -1195,6 +1233,14 @@ document.addEventListener("alpine:init", () => {
     },
     get enrichedChatReady() {
       return Alpine.store("mayaShell")?.capabilities?.text_chat_enriched === true;
+    },
+    get visionReady() {
+      const shell = Alpine.store("mayaShell");
+      const store = Alpine.store("mayaConversation");
+      return shell?.capabilities?.vision === true && !store?.useWebLLM;
+    },
+    get useWebLLM() {
+      return Alpine.store("mayaConversation")?.useWebLLM || false;
     },
     get llmError() {
       return Alpine.store("mayaShell")?.llmError || "";

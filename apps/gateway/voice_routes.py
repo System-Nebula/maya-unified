@@ -186,6 +186,37 @@ def register_agent_routes(app) -> None:
     def agent_chat(request: Request, data: dict = Body(...)) -> dict:
         return hub.chat_text(str((data or {}).get("text", "")), operator_id=_operator_id(request) or None)
 
+    @app.post(f"{prefix}/vision/frame")
+    def agent_vision_frame(request: Request, data: dict = Body(...)) -> dict:
+        from services.voice import vision_frames
+
+        oid = _operator_id(request)
+        if not oid:
+            return {"ok": False, "error": "not authenticated"}
+        payload = data or {}
+        image = str(payload.get("image", "") or payload.get("data", ""))
+        label = str(payload.get("label", "") or "")
+        return vision_frames.put_frame(oid, image, label=label)
+
+    @app.post(f"{prefix}/vision/stop")
+    def agent_vision_stop(request: Request) -> dict:
+        from services.voice import vision_frames
+
+        oid = _operator_id(request)
+        if not oid:
+            return {"ok": False, "error": "not authenticated"}
+        vision_frames.clear_frame(oid)
+        return {"ok": True}
+
+    @app.get(f"{prefix}/vision/status")
+    def agent_vision_status(request: Request) -> dict:
+        from services.voice import vision_frames
+
+        oid = _operator_id(request)
+        if not oid:
+            return {"ok": False, "error": "not authenticated"}
+        return {"ok": True, **vision_frames.status_for(oid)}
+
     @app.post(f"{prefix}/speak")
     def agent_speak(request: Request, data: dict = Body(...)) -> dict:
         payload = data or {}
