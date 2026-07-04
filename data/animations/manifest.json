@@ -1,0 +1,20 @@
+{
+  "macarena.fbx": {
+    "label": "macarena",
+    "description": "do a macarena dance"
+  },
+  "waving.fbx": {
+    "label": "excited wave",
+    "description": "quick waving"
+  },
+  "kiss.fbx": {
+    "label": "Friendly Loving",
+    "description": "Show some love",
+    "tags": [],
+    "loop": false
+  },
+  "flip.fbx": {
+    "label": "do a flip",
+    "description": "do a flip"
+  }
+}

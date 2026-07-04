@@ -4,6 +4,8 @@
 data/*
 !data/vrm/
 !data/vrm/*.vrm
+!data/animations/
+!data/animations/**
 __pycache__/
 *.pyc
 .venv/
