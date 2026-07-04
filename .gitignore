@@ -36,6 +36,12 @@ apps/*/.venv/
 apps/*/__pycache__/
 infra/comfyui/.env
 infra/comfyui/cache/
+# Vendored comfyui-api checkout (clone per infra/comfyui/README.md); keep only the compose template
+infra/comfyui/ComfyUI/*
+!infra/comfyui/ComfyUI/docker-compose.yml
+
+# Editor state
+.cursor/
 local/
 *.db
 *.sqlite3
