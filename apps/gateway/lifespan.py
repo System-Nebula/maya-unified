@@ -51,6 +51,10 @@ async def lifespan(app: FastAPI):
     apply_discord_env(settings)
     apply_to_config(settings)
 
+    from services.discovery.registry import probe_all
+
+    probe_all(settings=settings)
+
     try:
         from services.integrations.google.config import (  # noqa: PLC0415
             GOOGLE_CLIENT_ID,
