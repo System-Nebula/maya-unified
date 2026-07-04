@@ -1,4 +1,10 @@
 /** Conversation state — shared across dashboard pages + sessionStorage (per operator). */
+let _messageIdSeq = 0;
+
+const _IDB_NAME = "maya-tts";
+const _IDB_STORE = "audio";
+const _IDB_VERSION = 1;
+
 function _storageKey() {
   const uid = window._mayaCurrentUser?.id || "anonymous";
   return `maya.conversation.v1.${uid}`;
@@ -8,6 +14,13 @@ function _detailedStorageKey() {
   const uid = window._mayaCurrentUser?.id || "anonymous";
   return `maya.conversation.detailed.v1.${uid}`;
 }
+
+function _sidebarStorageKey() {
+  const uid = window._mayaCurrentUser?.id || "anonymous";
+  return `maya.conversation.sidebar.v1.${uid}`;
+}
+
+const IMMERSIVE_AVATAR_EVENT = "maya:toggle-immersive-avatar";
 
 function _formatDuration(ms) {
   if (ms == null || ms < 0) return "—";
@@ -27,6 +40,41 @@ function _formatSentAt(ts) {
   }
 }
 
+/** Drop leading VOICE: delivery cues from displayed / TTS replay text. */
+function _stripVoiceDeliveryFromText(text) {
+  let remaining = String(text || "").trimStart();
+  const inlineRe = /(?<=[a-z,])\s+(?=[A-Z])/;
+
+  while (remaining) {
+    const probe = remaining.trimStart();
+    const md = probe.match(/^\s*(?:[*_#\s])*/);
+    const rest = probe.slice(md ? md[0].length : 0);
+    if (!/^voice:/i.test(rest)) break;
+    const afterVoice = rest.replace(/^voice:\s*/i, "");
+    const nl = afterVoice.indexOf("\n");
+    const inline = inlineRe.exec(afterVoice);
+    let reply = "";
+    if (nl !== -1 && (inline === null || nl <= inline.index)) {
+      reply = afterVoice.slice(nl + 1).replace(/^\n+/, "");
+    } else if (inline) {
+      reply = afterVoice.slice(inline.index + inline[0].length);
+    }
+    remaining = reply.trimStart();
+  }
+  return remaining;
+}
+
+function _sanitizeMayaTurnText(text) {
+  return _stripVoiceDeliveryFromText(text);
+}
+
+function _sanitizeStoredTurns(turns) {
+  if (!Array.isArray(turns)) return;
+  for (const t of turns) {
+    if (t?.role === "maya" && t.text) t.text = _sanitizeMayaTurnText(t.text);
+  }
+}
+
 function _lastMayaTurnIdx(store) {
   for (let i = store.turns.length - 1; i >= 0; i--) {
     if (store.turns[i]?.role === "maya") return i;
@@ -36,7 +84,12 @@ function _lastMayaTurnIdx(store) {
 
 function _endStreaming(store) {
   const last = store.turns[store.turns.length - 1];
-  if (last?._streaming) last._streaming = false;
+  if (last?._streaming) {
+    last._streaming = false;
+    if (last.role === "maya" && last.text) {
+      last.text = _sanitizeMayaTurnText(last.text);
+    }
+  }
 }
 
 function _finalizeChatMs(store) {
@@ -55,14 +108,13 @@ function _onTtsStart(store) {
   if (idx < 0) return;
   const turn = store.turns[idx];
   if (!turn || turn.role !== "maya") return;
-  store.playingTurnIdx = idx;
   if (turn.ttsMs != null || store._ttsPendingAt != null) return;
   store._ttsPendingAt = Date.now();
   store._ttsPendingIdx = idx;
 }
 
-function _clearPlayingTurn(store) {
-  store.playingTurnIdx = null;
+function _clearPlayingTurn(_store) {
+  /* live session highlight — bubble replay uses per-turn audioPlaying */
 }
 
 function _onFirstAudio(store) {
@@ -75,12 +127,379 @@ function _onFirstAudio(store) {
   store._ttsTargetIdx = null;
 }
 
+function _evCorrId(ev) {
+  return ev?.corr_id || ev?.turn_id || null;
+}
+
+/** True only for server-minted ids (c_… / m_…), not local placeholders. */
+function _isServerId(id) {
+  return /^[cm]_/.test(String(id || ""));
+}
+
+function _normalizeTurnFields(t) {
+  if (!t) return;
+  if (t.turnId && !t.messageId) t.messageId = t.turnId;
+  if (t.turnGroupId && !t.corrId) t.corrId = t.turnGroupId;
+  delete t.turnId;
+  delete t.turnGroupId;
+}
+
+function _nextMessageId() {
+  _messageIdSeq += 1;
+  return `msg-${Date.now()}-${_messageIdSeq}`;
+}
+
+function _ensureMessageIds(turns) {
+  if (!Array.isArray(turns)) return;
+  for (const t of turns) {
+    _normalizeTurnFields(t);
+    if (t && !t.messageId) t.messageId = _nextMessageId();
+  }
+}
+
+function _serializeTurns(turns) {
+  return (turns || []).map((t) => {
+    const copy = { ...t };
+    delete copy.audioUrl;
+    delete copy.audioPlaying;
+    delete copy.audioBusy;
+    delete copy.audioError;
+    return copy;
+  });
+}
+
+function _mergeServerTurns(localTurns, serverTurns) {
+  const local = Array.isArray(localTurns) ? localTurns : [];
+  const used = new Set();
+  return (serverTurns || []).map((s) => {
+    const sid = s.message_id;
+    const corrId = s.corr_id || s.turn_id || null;
+    if (sid) {
+      const idx = local.findIndex((l, i) => !used.has(i) && l.messageId === sid);
+      if (idx >= 0) {
+        used.add(idx);
+        const l = local[idx];
+        return {
+          ...l,
+          role: s.role,
+          text: s.role === "maya" ? _sanitizeMayaTurnText(s.text) : s.text,
+          messageId: sid,
+          corrId: corrId || l.corrId,
+          completionId: s.completion_id || l.completionId,
+        };
+      }
+    }
+    for (let i = 0; i < local.length; i++) {
+      if (used.has(i)) continue;
+      const l = local[i];
+      if (l.role === s.role && (l.text || "") === (s.text || "")) {
+        used.add(i);
+        return {
+          ...l,
+          role: s.role,
+          text: s.role === "maya" ? _sanitizeMayaTurnText(s.text) : s.text,
+          messageId: s.message_id || l.messageId,
+          corrId: corrId || l.corrId,
+          completionId: s.completion_id || l.completionId,
+        };
+      }
+    }
+    return {
+      messageId: s.message_id || _nextMessageId(),
+      corrId,
+      completionId: s.completion_id || null,
+      role: s.role,
+      text: s.role === "maya" ? _sanitizeMayaTurnText(s.text) : s.text,
+    };
+  });
+}
+
+function _attachCompletionMeta(store, ev) {
+  if (!ev?.message_id) return;
+  const turn = store.turns.find((t) => t.messageId === ev.message_id);
+  if (!turn) return;
+  if (ev.completion_id) turn.completionId = ev.completion_id;
+  const corrId = _evCorrId(ev);
+  if (corrId && !turn.corrId) turn.corrId = corrId;
+}
+
+async function _idbOpen() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error("indexedDB unavailable"));
+      return;
+    }
+    const req = indexedDB.open(_IDB_NAME, _IDB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(_IDB_STORE)) {
+        db.createObjectStore(_IDB_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function _idbGetAudio(hash) {
+  if (!hash) return null;
+  try {
+    const db = await _idbOpen();
+    return new Promise((resolve) => {
+      const tx = db.transaction(_IDB_STORE, "readonly");
+      const req = tx.objectStore(_IDB_STORE).get(hash);
+      req.onsuccess = () => {
+        db.close();
+        resolve(req.result || null);
+      };
+      req.onerror = () => {
+        db.close();
+        resolve(null);
+      };
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+async function _idbPutAudio(hash, blob, ms) {
+  if (!hash || !blob) return false;
+  try {
+    const db = await _idbOpen();
+    return new Promise((resolve) => {
+      const tx = db.transaction(_IDB_STORE, "readwrite");
+      tx.objectStore(_IDB_STORE).put({ blob, ms, createdAt: Date.now() }, hash);
+      tx.oncomplete = () => {
+        db.close();
+        resolve(true);
+      };
+      tx.onerror = () => {
+        db.close();
+        resolve(false);
+      };
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
+async function _hydrateTurnAudio(turn) {
+  if (!turn || turn.role !== "maya" || turn.audioUrl || !turn.audioHash) return false;
+  const rec = await _idbGetAudio(turn.audioHash);
+  if (!rec?.blob) return false;
+  turn.audioUrl = URL.createObjectURL(rec.blob);
+  if (rec.ms != null) turn.ttsMs = rec.ms;
+  turn.ttsCached = true;
+  return true;
+}
+
+function _hdrInt(headers, name) {
+  const v = headers.get(name);
+  if (v == null || v === "") return null;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function _ttsTimingFromHeaders(headers) {
+  return {
+    ttfaMs: _hdrInt(headers, "X-TTS-TTFA-Ms"),
+    synthMs: _hdrInt(headers, "X-TTS-Synth-Ms"),
+    encodeMs: _hdrInt(headers, "X-TTS-Encode-Ms"),
+    totalMs: _hdrInt(headers, "X-TTS-Total-Ms"),
+    lockWaitMs: _hdrInt(headers, "X-TTS-Lock-Wait-Ms"),
+  };
+}
+
+function _concatU8(a, b) {
+  if (!a.length) return b;
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
+}
+
+function _encodeWavPcm16(pcm16, sr) {
+  const dataBytes = pcm16.length * 2;
+  const buf = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buf);
+  const writeStr = (off, s) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + dataBytes, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sr, true);
+  view.setUint32(28, sr * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, dataBytes, true);
+  let o = 44;
+  for (let i = 0; i < pcm16.length; i++, o += 2) view.setInt16(o, pcm16[i], true);
+  return buf;
+}
+
+function _pcmChunksToWavBlob(chunks, sr) {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const pcm16 = new Int16Array(total);
+  let off = 0;
+  for (const chunk of chunks) {
+    for (let i = 0; i < chunk.length; i++) {
+      const s = Math.max(-1, Math.min(1, chunk[i]));
+      pcm16[off++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+  }
+  return new Blob([_encodeWavPcm16(pcm16, sr)], { type: "audio/wav" });
+}
+
+async function _consumeTtsStream(response, { streamPlay = false } = {}) {
+  const t0 = performance.now();
+  const ct = response.headers.get("Content-Type") || "";
+  if (ct.includes("audio/wav")) {
+    const blob = await response.blob();
+    const hash = response.headers.get("X-TTS-Hash") || "";
+    const serverCache = response.headers.get("X-TTS-Cache") || "";
+    const serverTiming = _ttsTimingFromHeaders(response.headers);
+    return {
+      ok: true,
+      url: URL.createObjectURL(blob),
+      ms: Math.round(performance.now() - t0),
+      ttfaMs: serverTiming.ttfaMs,
+      serverTiming,
+      hash,
+      serverCache,
+      blob,
+      streamed: false,
+    };
+  }
+
+  if (!response.body) {
+    return { ok: false, ms: Math.round(performance.now() - t0), error: "Empty TTS stream" };
+  }
+
+  const reader = response.body.getReader();
+  let buf = new Uint8Array(0);
+  let meta = null;
+  let ttfaMs = null;
+  let doneTiming = null;
+  const pcmParts = [];
+  let sr = 24000;
+  const schedule = streamPlay ? window.mayaBrowserAudioOutput?.scheduleChunk : null;
+  if (schedule) {
+    window.mayaBrowserAudioOutput?.resumeOutput?.();
+    await window.mayaBrowserAudioOutput?.resume?.();
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf = _concatU8(buf, value);
+    while (buf.length >= 4) {
+      const len = new DataView(buf.buffer, buf.byteOffset, 4).getUint32(0, true);
+      if (buf.length < 4 + len) break;
+      const frame = buf.slice(4, 4 + len);
+      buf = buf.slice(4 + len);
+      if (!meta) {
+        meta = JSON.parse(new TextDecoder().decode(frame));
+        sr = meta.sr || 24000;
+        continue;
+      }
+      let ctrl = null;
+      try {
+        ctrl = JSON.parse(new TextDecoder().decode(frame));
+      } catch (_) {
+        ctrl = null;
+      }
+      if (ctrl?.type === "done") {
+        doneTiming = ctrl;
+        continue;
+      }
+      if (ctrl?.type === "error") {
+        return {
+          ok: false,
+          ms: Math.round(performance.now() - t0),
+          error: ctrl.error || "TTS stream failed",
+        };
+      }
+      const pcm = new Float32Array(frame.buffer, frame.byteOffset, frame.byteLength / 4);
+      if (ttfaMs == null) ttfaMs = Math.round(performance.now() - t0);
+      pcmParts.push(pcm);
+      if (schedule) await schedule(pcm, sr);
+    }
+  }
+
+  if (!pcmParts.length) {
+    return { ok: false, ms: Math.round(performance.now() - t0), error: "TTS produced no audio" };
+  }
+
+  const blob = _pcmChunksToWavBlob(pcmParts, sr);
+  const serverTiming = {
+    ttfaMs: doneTiming?.ttfa_ms != null ? Math.round(doneTiming.ttfa_ms) : ttfaMs,
+    synthMs: doneTiming?.synth_ms != null ? Math.round(doneTiming.synth_ms) : null,
+    encodeMs: doneTiming?.encode_ms != null ? Math.round(doneTiming.encode_ms) : null,
+    totalMs: doneTiming?.total_ms != null ? Math.round(doneTiming.total_ms) : null,
+    lockWaitMs: doneTiming?.lock_wait_ms != null ? Math.round(doneTiming.lock_wait_ms) : null,
+  };
+  return {
+    ok: true,
+    url: URL.createObjectURL(blob),
+    ms: Math.round(performance.now() - t0),
+    ttfaMs: serverTiming.ttfaMs ?? ttfaMs,
+    serverTiming,
+    hash: meta?.hash || "",
+    serverCache: "miss",
+    blob,
+    streamed: true,
+  };
+}
+
+async function _fetchTtsBlob(text, instruct, { streamPlay = false } = {}) {
+  const body = { text };
+  if (instruct) body.instruct = instruct;
+  const t0 = performance.now();
+  let r;
+  try {
+    r = await fetch("/api/voice/agent/tts/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    return { ok: false, ms: Math.round(performance.now() - t0), error: String(e.message || e) };
+  }
+  if (!r.ok) {
+    let data = {};
+    try {
+      data = await r.json();
+    } catch (_) {
+      data = {};
+    }
+    return {
+      ok: false,
+      ms: Math.round(performance.now() - t0),
+      error:
+        data.error ||
+        data.detail ||
+        (r.status === 404
+          ? "TTS stream API not found — restart launch.py to load the new route."
+          : `Speak failed (HTTP ${r.status})`),
+    };
+  }
+  const result = await _consumeTtsStream(r, { streamPlay });
+  if (!result.ok) return result;
+  return result;
+}
+
 function _persistConversation(store) {
   try {
     sessionStorage.setItem(
       _storageKey(),
       JSON.stringify({
-        turns: store.turns,
+        turns: _serializeTurns(store.turns),
         statusLabel: store.statusLabel,
         step: store.step,
       }),
@@ -93,7 +512,12 @@ function _restoreConversation(store) {
     const raw = sessionStorage.getItem(_storageKey());
     if (!raw) return;
     const data = JSON.parse(raw);
-    if (Array.isArray(data.turns)) store.turns = data.turns;
+    if (Array.isArray(data.turns)) {
+      store.turns = data.turns;
+      _ensureMessageIds(store.turns);
+      _sanitizeStoredTurns(store.turns);
+      _persistConversation(store);
+    }
     if (data.statusLabel) store.statusLabel = data.statusLabel;
     if (data.step) store.step = data.step;
   } catch (_) {}
@@ -116,32 +540,47 @@ function _applyAgentEvent(store, ev) {
       store.step = "listen";
       _endStreaming(store);
       _finalizeChatMs(store);
-      if (!store._ttsPreviewOnly) _clearPlayingTurn(store);
+      if (!store._ttsPreviewOnly) {
+        _clearPlayingTurn(store);
+        store.stopTurnAudio?.();
+      }
       if (store.ttsBusy) {
         store.ttsBusy = false;
         store._ttsPreviewOnly = false;
       }
+      _attachCompletionMeta(store, ev);
     } else if (v === "transcribing") store.step = "detect";
-    else if (v === "thinking") store.step = "reason";
-    else if (v === "speaking") {
+    else if (v === "thinking") {
+      store.step = "reason";
+      store._expectingReply = true;
+    } else if (v === "speaking") {
       store.step = "maya";
       _endStreaming(store);
       _finalizeChatMs(store);
       _onTtsStart(store);
+      store._expectingReply = true;
     } else if (v === "idle") {
       _endStreaming(store);
       _finalizeChatMs(store);
-      if (!store._ttsPreviewOnly) _clearPlayingTurn(store);
+      store._expectingReply = false;
+      if (!store._ttsPreviewOnly) {
+        _clearPlayingTurn(store);
+        store.stopTurnAudio?.();
+      }
       if (store.ttsBusy) {
         store.ttsBusy = false;
         store._ttsPreviewOnly = false;
       }
+      _attachCompletionMeta(store, ev);
     }
     _persistConversation(store);
     return;
   }
   if (ev.type === "audio_stop") {
-    if (!store._ttsPreviewOnly) _clearPlayingTurn(store);
+    if (!store._ttsPreviewOnly) {
+      _clearPlayingTurn(store);
+      store.stopTurnAudio?.();
+    }
     return;
   }
   if (ev.type === "audio" && ev.data) {
@@ -164,7 +603,13 @@ function _applyAgentEvent(store, ev) {
   if (ev.type === "user" && ev.text) {
     const last = store.turns[store.turns.length - 1];
     if (last && last.role === "operator" && last.text === ev.text) return;
-    store.turns.push({ role: "operator", text: ev.text, sentAt: Date.now() });
+    store.turns.push({
+      messageId: ev.message_id || _nextMessageId(),
+      corrId: _evCorrId(ev),
+      role: "operator",
+      text: ev.text,
+      sentAt: Date.now(),
+    });
     store._chatPendingAt = Date.now();
     store._ttsPendingAt = null;
     store._ttsPendingIdx = null;
@@ -176,7 +621,15 @@ function _applyAgentEvent(store, ev) {
   if (ev.type === "ai" && ev.text) {
     const last = store.turns[store.turns.length - 1];
     const chunk = String(ev.text);
-    if (last && last.role === "maya" && last._streaming) {
+    const streamingMaya = last && last.role === "maya" && last._streaming;
+    if (last && last.role === "maya" && !last._streaming && chunk.trim() === (last.text || "").trim()) {
+      return;
+    }
+    if (!streamingMaya && !store._expectingReply) return;
+    if (streamingMaya) {
+      if (ev.message_id) last.messageId = ev.message_id;
+      const corrId = _evCorrId(ev);
+      if (corrId) last.corrId = corrId;
       const cur = last.text || "";
       if (!chunk || cur.endsWith(chunk)) return;
       if (cur && chunk.startsWith(cur)) {
@@ -187,7 +640,13 @@ function _applyAgentEvent(store, ev) {
       }
       last.text = cur + chunk;
     } else {
-      store.turns.push({ role: "maya", text: chunk, _streaming: true });
+      store.turns.push({
+        messageId: ev.message_id || _nextMessageId(),
+        corrId: _evCorrId(ev),
+        role: "maya",
+        text: chunk,
+        _streaming: true,
+      });
     }
     _persistConversation(store);
     _scrollTranscript();
@@ -208,7 +667,10 @@ document.addEventListener("alpine:init", () => {
     useWebLLM: false,
     sending: false,
     detailed: false,
-    playingTurnIdx: null,
+    sidebarOpen: true,
+    _expectingReply: false,
+    _activeTurnAudio: null,
+    _activeTurnMessageId: null,
     _hydrated: false,
     _basicChatNoted: false,
     _chatPendingAt: null,
@@ -227,10 +689,34 @@ document.addEventListener("alpine:init", () => {
       } catch (_) {}
     },
 
+    persistSidebar() {
+      try {
+        sessionStorage.setItem(_sidebarStorageKey(), this.sidebarOpen ? "1" : "0");
+      } catch (_) {}
+    },
+
+    toggleSidebar() {
+      this.sidebarOpen = !this.sidebarOpen;
+      this.persistSidebar();
+      if (this.sidebarOpen) {
+        setTimeout(() => window.dispatchEvent(new Event("resize")), 60);
+      }
+    },
+
+    toggleImmersiveAvatar() {
+      try {
+        window.dispatchEvent(new CustomEvent(IMMERSIVE_AVATAR_EVENT));
+      } catch (_) {}
+    },
+
     restore() {
       _restoreConversation(this);
       try {
         this.detailed = sessionStorage.getItem(_detailedStorageKey()) === "1";
+      } catch (_) {}
+      try {
+        const stored = sessionStorage.getItem(_sidebarStorageKey());
+        if (stored !== null) this.sidebarOpen = stored === "1";
       } catch (_) {}
     },
 
@@ -238,14 +724,40 @@ document.addEventListener("alpine:init", () => {
       return _formatSentAt(ts);
     },
 
-    formatMayaMeta(turn) {
+    operatorMetaParts(turn) {
       const parts = [];
-      if (turn.chatMs != null) parts.push(`chat ${_formatDuration(turn.chatMs)}`);
+      if (turn.sentAt) parts.push({ text: `sent ${_formatSentAt(turn.sentAt)}` });
+      if (turn.corrId) parts.push({ text: turn.corrId, dim: !_isServerId(turn.corrId) });
+      if (turn.messageId) parts.push({ text: turn.messageId, dim: !_isServerId(turn.messageId) });
+      return parts;
+    },
+
+    mayaMetaParts(turn) {
+      const parts = [];
+      if (turn.corrId) parts.push({ text: turn.corrId, dim: !_isServerId(turn.corrId) });
+      if (turn.chatMs != null) parts.push({ text: `chat ${_formatDuration(turn.chatMs)}` });
       const tts = turn.ttsMs != null ? _formatDuration(turn.ttsMs) : "—";
       let ttsPart = `TTS ${tts}`;
-      if (turn.ttsReplay && turn.ttsMs != null) ttsPart += " (cached)";
-      parts.push(ttsPart);
-      return parts.join(" · ");
+      if (turn.ttsTtfaMs != null) ttsPart += ` (ttfa ${_formatDuration(turn.ttsTtfaMs)})`;
+      if (turn.ttsCached && turn.ttsMs != null) ttsPart += " (cached)";
+      parts.push({ text: ttsPart });
+      if (turn.messageId) parts.push({ text: turn.messageId, dim: !_isServerId(turn.messageId) });
+      if (turn.completionId) parts.push({ text: `cmpl ${turn.completionId}` });
+      return parts;
+    },
+
+    formatOperatorMeta(turn) {
+      return this.operatorMetaParts(turn).map((p) => p.text).join(" · ");
+    },
+
+    formatMayaMeta(turn) {
+      return this.mayaMetaParts(turn).map((p) => p.text).join(" · ");
+    },
+
+    stacksWithPrev(turn, index) {
+      if (!this.detailed || !turn?.corrId || index <= 0) return false;
+      const prev = this.turns[index - 1];
+      return prev?.corrId === turn.corrId;
     },
 
     handleAgentEvent(ev) {
@@ -268,7 +780,7 @@ document.addEventListener("alpine:init", () => {
           if (d.session_running !== undefined) this.sessionOn = !!d.session_running;
           if (d.status) this.statusLabel = d.status;
           if (Array.isArray(d.turns) && d.turns.length > this.turns.length) {
-            this.turns = d.turns;
+            this.turns = _mergeServerTurns(this.turns, d.turns);
             _scrollTranscript();
           }
         }
@@ -279,9 +791,16 @@ document.addEventListener("alpine:init", () => {
     async ensureHydrated() {
       if (this._hydrated) return;
       this.restore();
+      await this.rehydrateAudio();
       await this.loadSettings();
       await this.syncFromServer();
       this._hydrated = true;
+    },
+
+    async rehydrateAudio() {
+      for (const t of this.turns) {
+        await _hydrateTurnAudio(t);
+      }
     },
 
     async loadSettings() {
@@ -302,11 +821,11 @@ document.addEventListener("alpine:init", () => {
         window.dispatchEvent(new CustomEvent("maya-session-start"));
       } else if (data.error === "voice_in_use") {
         const who = data.owner?.speaker_name || data.owner?.context_id || "another user";
-        this.turns.push({ role: "system", text: `Voice is in use by ${who}. Try again when they finish.` });
+        this.turns.push({ messageId: _nextMessageId(), role: "system", text: `Voice is in use by ${who}. Try again when they finish.` });
         this.persist();
         _scrollTranscript();
       } else {
-        this.turns.push({ role: "system", text: data.error || "Could not start session" });
+        this.turns.push({ messageId: _nextMessageId(), role: "system", text: data.error || "Could not start session" });
         this.persist();
         _scrollTranscript();
       }
@@ -319,98 +838,125 @@ document.addEventListener("alpine:init", () => {
       this.persist();
     },
 
-    async toggleTurnPlay(idx) {
-      if (this.playingTurnIdx === idx) {
-        this.pauseTurn();
+    stopTurnAudio() {
+      if (this._activeTurnAudio) {
+        this._activeTurnAudio.pause();
+        this._activeTurnAudio = null;
+        this._activeTurnMessageId = null;
+      }
+      for (const t of this.turns) {
+        if (t.audioPlaying) t.audioPlaying = false;
+      }
+    },
+
+    async playTurnAudio(turn) {
+      if (!turn || turn.role !== "maya" || turn._streaming || turn.audioBusy) return;
+      const text = (turn.text || "").trim();
+      if (!text) return;
+      if (!Alpine.store("mayaShell")?.ready) {
+        turn.audioError = "Agent not ready";
         return;
       }
-      if (this.playingTurnIdx != null) this.pauseTurn();
-      await this.playTurn(idx);
-    },
 
-    pauseTurn() {
-      window.mayaBrowserAudioOutput?.stop?.();
-      this.playingTurnIdx = null;
-      this._ttsTargetIdx = null;
-      this._ttsPendingAt = null;
-      this._ttsPendingIdx = null;
-    },
+      if (turn.audioPlaying && this._activeTurnMessageId === turn.messageId && this._activeTurnAudio) {
+        this._activeTurnAudio.pause();
+        turn.audioPlaying = false;
+        this._activeTurnAudio = null;
+        this._activeTurnMessageId = null;
+        return;
+      }
 
-    async playTurn(idx) {
-      const turn = this.turns[idx];
-      if (!turn || turn.role !== "maya" || !turn.text?.trim()) return;
-      if (turn.ttsMs != null) turn.ttsReplay = true;
-      this._ttsTargetIdx = idx;
-      this._ttsPendingAt = null;
-      this._ttsPendingIdx = null;
-      window.mayaBrowserAudioOutput?.resumeOutput?.();
-      window.mayaBrowserAudioOutput?.resume?.();
+      this.stopTurnAudio();
+      turn.audioError = "";
+
       try {
-        const r = await fetch("/api/voice/agent/speak", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: turn.text.trim() }),
-        });
-        let data = {};
-        try {
-          data = await r.json();
-        } catch (_) {
-          data = {};
+        if (!turn.audioUrl) {
+          await _hydrateTurnAudio(turn);
         }
-        if (!r.ok || !data.ok) {
-          this.turns.push({
-            role: "system",
-            text: data.detail || data.error || `Speak failed (HTTP ${r.status})`,
-          });
+        if (!turn.audioUrl) {
+          turn.audioBusy = true;
+          const result = await _fetchTtsBlob(text, undefined, { streamPlay: true });
+          turn.audioBusy = false;
+          if (!result.ok) {
+            turn.audioError = result.error;
+            return;
+          }
+          turn.audioUrl = result.url;
+          turn.ttsMs = result.ms;
+          turn.ttsTtfaMs = result.ttfaMs ?? null;
+          turn.audioHash = result.hash || turn.audioHash;
+          turn.ttsCached = result.serverCache === "hit";
+          if (result.hash && result.blob) {
+            await _idbPutAudio(result.hash, result.blob, result.ms);
+          }
           this.persist();
-          _scrollTranscript();
-          this._ttsTargetIdx = null;
+          if (result.streamed) {
+            turn.audioPlaying = true;
+            const waitMs = Math.max(500, (result.ms || 0) + 200);
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+            turn.audioPlaying = false;
+            return;
+          }
+        } else {
+          turn.ttsCached = true;
         }
+
+        window.mayaBrowserAudioOutput?.resumeOutput?.();
+        window.mayaBrowserAudioOutput?.resume?.();
+        const audio = new Audio(turn.audioUrl);
+        this._activeTurnAudio = audio;
+        this._activeTurnMessageId = turn.messageId;
+        turn.audioPlaying = true;
+
+        audio.onended = () => {
+          turn.audioPlaying = false;
+          if (this._activeTurnMessageId === turn.messageId) {
+            this._activeTurnAudio = null;
+            this._activeTurnMessageId = null;
+          }
+        };
+        audio.onerror = () => {
+          turn.audioPlaying = false;
+          turn.audioError = "Could not play audio in browser";
+          if (this._activeTurnMessageId === turn.messageId) {
+            this._activeTurnAudio = null;
+            this._activeTurnMessageId = null;
+          }
+        };
+        await audio.play();
       } catch (e) {
-        this.turns.push({ role: "system", text: String(e.message || e) });
-        this.persist();
-        _scrollTranscript();
-        this._ttsTargetIdx = null;
+        turn.audioBusy = false;
+        turn.audioPlaying = false;
+        turn.audioError = String(e.message || e);
       }
     },
 
     async speakPreview() {
       const text = this.ttsDraft.trim();
       if (!text || this.ttsBusy || !Alpine.store("mayaShell")?.ready) return;
+      this.stopTurnAudio();
       window.mayaBrowserAudioOutput?.resume?.();
       this.ttsBusy = true;
       this.ttsError = "";
       this._ttsPreviewOnly = true;
       this.step = "maya";
       try {
-        const body = { text };
-        const instruct = this.ttsInstruct.trim();
-        if (instruct) body.instruct = instruct;
-        const r = await fetch("/api/voice/agent/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!r.ok) {
-          let data = {};
-          try {
-            data = await r.json();
-          } catch (_) {
-            data = {};
-          }
-          this.ttsError =
-            data.error ||
-            data.detail ||
-            (r.status === 404
-              ? "TTS API not found — restart launch.py to load the new route."
-              : `Speak failed (HTTP ${r.status})`);
+        const instruct = this.ttsInstruct.trim() || undefined;
+        const result = await _fetchTtsBlob(text, instruct, { streamPlay: true });
+        if (!result.ok) {
+          this.ttsError = result.error;
           this.ttsBusy = false;
           this._ttsPreviewOnly = false;
           this.step = "listen";
           return;
         }
-        const blob = await r.blob();
-        const url = URL.createObjectURL(blob);
+        if (result.streamed) {
+          this.ttsBusy = false;
+          this._ttsPreviewOnly = false;
+          this.step = "listen";
+          return;
+        }
+        const url = result.url;
         const audio = new Audio(url);
         audio.onended = () => {
           URL.revokeObjectURL(url);
@@ -449,14 +995,15 @@ document.addEventListener("alpine:init", () => {
       this.sending = true;
       this.draft = "";
       this.step = "reason";
+      this._chatPendingAt = Date.now();
       try {
         if (!textChat) {
-          this.turns.push({ role: "operator", text });
+          this.turns.push({ messageId: _nextMessageId(), role: "operator", text, sentAt: Date.now() });
           const detail =
             shell?.llmHealth?.detail ||
             shell?.llmError ||
             "LLM unavailable — check Settings → Reasoning.";
-          this.turns.push({ role: "system", text: detail });
+          this.turns.push({ messageId: _nextMessageId(), role: "system", text: detail });
           this.persist();
           _scrollTranscript();
           return;
@@ -464,6 +1011,7 @@ document.addEventListener("alpine:init", () => {
         if (!caps.text_chat_enriched && !this._basicChatNoted) {
           this._basicChatNoted = true;
           this.turns.push({
+            messageId: _nextMessageId(),
             role: "system",
             text: "Basic LLM replies — full agent (personality, memory, voice) still loading.",
           });
@@ -475,7 +1023,7 @@ document.addEventListener("alpine:init", () => {
         });
         const data = await r.json();
         if (!data.ok) {
-          this.turns.push({ role: "system", text: data.error || "Chat failed" });
+          this.turns.push({ messageId: _nextMessageId(), role: "system", text: data.error || "Chat failed" });
           this.persist();
           _scrollTranscript();
         }
@@ -493,12 +1041,16 @@ document.addEventListener("alpine:init", () => {
     },
 
     reset() {
+      this.stopTurnAudio();
+      for (const t of this.turns) {
+        if (t.audioUrl) URL.revokeObjectURL(t.audioUrl);
+      }
       this.turns = [];
       this._chatPendingAt = null;
       this._ttsPendingAt = null;
       this._ttsPendingIdx = null;
       this._ttsTargetIdx = null;
-      this.playingTurnIdx = null;
+      this._expectingReply = false;
       this.persist();
       _scrollTranscript(false);
     },

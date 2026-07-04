@@ -38,6 +38,27 @@
         <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
         <span class="mu-hint" x-show="s.hint()" x-text="s.hint()"></span>
       </div>
+      <button
+        class="mu-panel-toggle"
+        @click="$store.mayaConversation.toggleSidebar()"
+        :class="{ active: $store.mayaConversation.sidebarOpen }"
+        :aria-pressed="$store.mayaConversation.sidebarOpen"
+        aria-label="Toggle controls panel"
+        title="Controls panel"
+      >
+        <svg
+          class="mu-panel-toggle-icon"
+          :class="{ open: $store.mayaConversation.sidebarOpen }"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke-width="1.5"
+          stroke="currentColor"
+          aria-hidden="true"
+        >
+          <path stroke-linecap="round" stroke-linejoin="round" d="m18.75 4.5-7.5 7.5 7.5 7.5m-6-15L5.25 12l7.5 7.5" />
+        </svg>
+      </button>
       <div class="mu-user" x-show="currentUser" x-data="{ open: false }" @click.away="open = false">
         <button class="mu-user-btn" @click="open = !open" id="user-menu-btn">
           <span class="mu-avatar-dot" :style="`background:${currentUser?.avatar_color}`"></span>
@@ -54,341 +75,453 @@
     </header>
 
 
-    <div class="md-page mv-root" data-mv-theme="dark" x-data="mayaConversation()" x-init="init()">
+    <div class="md-page mv-root" data-mv-theme="dark" x-data="mayaConversation()" x-init="init()" :class="{ 'tray-open': $store.mayaConversation.sidebarOpen }">
       <div class="md-hero">
         <h1>Conversation</h1>
-        <p>Live voice session, output EQ, and typed chat. Tools run in the sidebar during turns.</p>
+        <p>Live voice session and typed chat. Session controls and EQ are in the sidebar.</p>
       </div>
 
-      <div class="md-banner error" x-show="agentError" x-text="agentError"></div>
-      <div class="md-banner error" x-show="agentReady && !llmOk && $store.mayaConversation.useWebLLM" x-text="llmError || 'WebLLM loading — keep this tab open in Chrome/Edge with WebGPU.'"></div>
-      <div class="md-banner error" x-show="agentReady && !llmOk && !$store.mayaConversation.useWebLLM" x-text="llmError || 'LLM offline — configure model in Settings.'"></div>
-      <div class="md-banner" x-show="textChatReady && !agentReady && !agentError">
-        Text chat is live. Voice, TTS, and EQ unlock when models finish loading.
-      </div>
-      <div class="md-banner error" x-show="!textChatReady && !agentReady && !agentError">
-        <span x-text="($store.mayaShell?.llmHealth?.detail || llmError || 'LLM unavailable')"></span>
-        — <a href="/settings?tab=reasoning" style="color:var(--mv-accent)">Settings → Reasoning</a>
-      </div>
-      <div class="md-banner" x-show="agentReady && $store.mayaShell?.browserAudioHint" style="margin-bottom:10px" x-text="$store.mayaShell.browserAudioHint"></div>
-
-      <div class="md-pipeline">
-        <span class="md-step" :class="{ on: $store.mayaConversation.step === 'listen' }">01 Listen</span>
-        <span class="md-step" :class="{ on: $store.mayaConversation.step === 'detect' }">02 Detect</span>
-        <span class="md-step" :class="{ on: $store.mayaConversation.step === 'reason' }">03 Reason</span>
-        <span class="md-step" :class="{ on: $store.mayaConversation.step === 'maya' }">04 Maya turn</span>
-      </div>
-
-      <div class="md-grid">
-        <div class="md-col-main">
-          <!-- Output EQ above chat -->
-          <div
-            class="md-eq-card"
-            x-data="mayaEqViz()"
-            x-init="init()"
-            :class="{ 'md-eq-bypassed': !eqEnabled, 'md-eq-wait': !agentReady }"
-          >
-            <div class="md-eq-head">
-              <div>
-                <p class="mv-eyebrow">Output audio</p>
-                <h2 class="mv-title md-eq-title">Equalizer</h2>
-              </div>
-              <div class="md-eq-badges">
-                <span class="mv-chip live" x-show="speaking"><span class="ind"></span>Live spectrum</span>
-                <span class="mv-chip md-eq-chip-muted" x-show="!eqEnabled && agentReady">Bypassed</span>
-                <span class="mv-chip md-eq-chip-muted" x-show="!agentReady">Loading</span>
-              </div>
+      <div class="md-grid" :class="{ 'sidebar-collapsed': !$store.mayaConversation.sidebarOpen }">
+        <div class="md-col-main" x-data="mayaVrmViewer()" x-init="init()">
+          <div class="md-main-banners">
+            <div class="md-banner error" x-show="agentError" x-text="agentError"></div>
+            <div class="md-banner error" x-show="agentReady && !llmOk && $store.mayaConversation.useWebLLM" x-text="llmError || 'WebLLM loading — keep this tab open in Chrome/Edge with WebGPU.'"></div>
+            <div class="md-banner error" x-show="agentReady && !llmOk && !$store.mayaConversation.useWebLLM" x-text="llmError || 'LLM offline — configure model in Settings.'"></div>
+            <div class="md-banner" x-show="textChatReady && !agentReady && !agentError">
+              Text chat is live. Voice, TTS, and EQ unlock when models finish loading.
             </div>
-
-            <div class="md-eq-controls">
-              <div class="md-eq-field md-eq-field-grow">
-                <label class="md-eq-label" for="eq-preset-select">Preset</label>
-                <select
-                  id="eq-preset-select"
-                  class="mv-select"
-                  x-model="eqPreset"
-                  @change="onPresetChange()"
-                  :disabled="!agentReady"
-                >
-                  <template x-for="p in eqPresets" :key="p.id">
-                    <option :value="p.id" x-text="p.label"></option>
-                  </template>
-                  <option x-show="!eqPresets.length" value="off">Off (bypass)</option>
-                </select>
-              </div>
-              <div class="md-eq-field md-eq-field-toggle">
-                <span class="md-eq-label">Enabled</span>
-                <label class="mv-switch" title="Toggle output EQ">
-                  <input type="checkbox" x-model="eqEnabled" @change="onEqToggle()" :disabled="!agentReady" />
-                  <span class="slider"></span>
-                </label>
-              </div>
+            <div class="md-banner error" x-show="!textChatReady && !agentReady && !agentError">
+              <span x-text="($store.mayaShell?.llmHealth?.detail || llmError || 'LLM unavailable')"></span>
+              — <a href="/settings?tab=reasoning" style="color:var(--mv-accent)">Settings → Reasoning</a>
             </div>
-
-            <div class="md-eq-stage-wrap">
-              <div class="md-eq-stage" :class="{ 'md-eq-speaking': speaking }">
-                <canvas x-ref="eqCanvas" width="960" height="200"></canvas>
-                <div class="md-eq-stage-overlay" x-show="!agentReady">
-                  <span>Waiting for voice agent…</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="md-eq-band-editor" x-show="selectedBand" x-cloak>
-              <div class="md-eq-band-head">
-                <span class="mv-eyebrow" x-text="'Band ' + selectedBand"></span>
-                <button type="button" class="mv-btn md-eq-done" @click="deselectBand()">Done</button>
-              </div>
-              <div class="md-eq-band-grid">
-                <label class="md-eq-field">
-                  <span class="md-eq-label">Filter type</span>
-                  <select class="mv-select" x-model="bandType" @change="onBandTypeChange()">
-                    <option value="peak">Bell (peak)</option>
-                    <option value="low_shelf">Low shelf</option>
-                    <option value="high_shelf">High shelf</option>
-                    <option value="highpass">High pass</option>
-                    <option value="lowpass">Low pass</option>
-                  </select>
-                </label>
-                <label class="md-eq-field">
-                  <span class="md-eq-label">Frequency <span class="md-eq-value" x-text="formatFreq(bandFreq)"></span></span>
-                  <input
-                    class="md-eq-range"
-                    type="range"
-                    min="20"
-                    max="20000"
-                    step="1"
-                    x-model.number="bandFreq"
-                    @input="onBandFreqChange()"
-                  />
-                </label>
-                <label class="md-eq-field">
-                  <span class="md-eq-label">Gain <span class="md-eq-value" x-text="(bandGain >= 0 ? '+' : '') + bandGain.toFixed(1) + ' dB'"></span></span>
-                  <input
-                    class="md-eq-range"
-                    type="range"
-                    min="-12"
-                    max="12"
-                    step="0.1"
-                    x-model.number="bandGain"
-                    @input="onBandGainChange()"
-                  />
-                </label>
-                <label class="md-eq-field">
-                  <span class="md-eq-label">Q <span class="md-eq-value" x-text="bandQ.toFixed(2)"></span></span>
-                  <input
-                    class="md-eq-range"
-                    type="range"
-                    min="0.1"
-                    max="18"
-                    step="0.01"
-                    x-model.number="bandQ"
-                    @input="onBandQChange()"
-                  />
-                </label>
-              </div>
-            </div>
-
-            <p class="mv-desc md-eq-hint">Drag nodes on the curve to tune · click a node for precise controls · spectrum overlay while Maya speaks</p>
+            <div class="md-banner" x-show="agentReady && $store.mayaShell?.browserAudioHint" x-text="$store.mayaShell.browserAudioHint"></div>
           </div>
 
-          <div class="md-session">
-            <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
-              <span class="mv-chip" :class="{ live: $store.mayaConversation.sessionOn }"><span class="ind"></span><span x-text="$store.mayaConversation.statusLabel"></span></span>
-              <button class="mv-btn mv-btn-primary" x-show="!$store.mayaConversation.sessionOn" @click="$store.mayaConversation.startSession()" :disabled="!agentReady">Start voice session</button>
-              <button class="mv-btn mv-btn-danger" x-show="$store.mayaConversation.sessionOn" @click="$store.mayaConversation.stopSession()">Stop</button>
-              <a class="mv-btn" href="/settings" style="margin-left:auto;text-decoration:none">Settings</a>
-            </div>
-
-            <p class="mv-desc md-webllm-banner" x-show="$store.mayaConversation.useWebLLM" style="color:var(--mv-accent);margin-bottom:10px">
-              Experimental WebLLM — voice + typed chat run through this browser tab
-              (<span x-text="$store.mayaShell.webllmBridgeStatus || 'loading…'"></span>).
-            </p>
-            <div class="md-banner error" x-show="$store.mayaConversation.useWebLLM && webllmFailed" style="margin-bottom:10px">
-              <p x-text="webllmFailed"></p>
-              <p class="mv-desc" style="margin-top:8px" x-text="webllmTroubleshoot"></p>
-            </div>
-
-            <textarea class="md-textarea mv-input" x-model="$store.mayaConversation.draft" :placeholder="textChatReady ? 'Message Maya…' : ($store.mayaConversation.useWebLLM ? 'Waiting for WebLLM…' : 'Waiting for LLM…')" @keydown="$store.mayaConversation.onKeydown($event)"></textarea>
-            <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <button class="mv-btn mv-btn-primary" @click="$store.mayaConversation.sendServer()" :disabled="$store.mayaConversation.sending || !textChatReady">Send</button>
-              <button class="mv-btn" @click="$store.mayaConversation.reset()">Clear transcript</button>
-              <label class="md-detailed-toggle">
-                <input type="checkbox" x-model="$store.mayaConversation.detailed" @change="$store.mayaConversation.persistDetailed()" />
-                Detailed
-              </label>
-            </div>
-
+          <div class="md-session" :class="{ 'md-session-immersive': immersive && enabled && !poppedOut }">
             <div class="md-log md-scroll">
-              <template x-for="(t, i) in $store.mayaConversation.turns" :key="i">
-                <div class="md-turn" :class="t.role">
-                  <div class="role" x-text="t.role"></div>
-                  <div class="md-turn-body" x-text="t.text"></div>
-                  <div
-                    class="md-turn-meta"
-                    x-show="$store.mayaConversation.detailed && t.role === 'operator' && t.sentAt"
-                    x-text="'sent ' + $store.mayaConversation.formatSentAt(t.sentAt)"
-                  ></div>
-                  <div class="md-turn-meta md-turn-meta-maya" x-show="$store.mayaConversation.detailed && t.role === 'maya'">
+              <template x-for="(t, i) in $store.mayaConversation.turns" :key="t.messageId">
+                <div
+                  class="md-turn"
+                  :class="[
+                    t.role,
+                    t.audioPlaying ? 'md-turn-playing' : '',
+                    $store.mayaConversation.detailed && t.corrId ? 'md-turn-grouped' : '',
+                    $store.mayaConversation.stacksWithPrev(t, i) ? 'md-turn-stacked' : '',
+                  ]"
+                >
+                  <div class="md-turn-head">
                     <button
                       type="button"
-                      class="md-turn-play"
-                      :class="{ 'is-playing': $store.mayaConversation.playingTurnIdx === i }"
-                      @click="$store.mayaConversation.toggleTurnPlay(i)"
-                      :aria-label="$store.mayaConversation.playingTurnIdx === i ? 'Pause Maya reply' : 'Play Maya reply'"
-                      :title="$store.mayaConversation.playingTurnIdx === i ? 'Pause' : 'Play TTS'"
+                      class="md-turn-avatar-btn"
+                      x-show="t.role === 'maya'"
+                      @click="$store.mayaConversation.toggleImmersiveAvatar()"
+                      aria-label="Open live avatar"
+                      title="Live avatar"
                     >
-                      <span class="md-turn-play-icon" aria-hidden="true"></span>
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
+                      </svg>
                     </button>
-                    <span x-text="$store.mayaConversation.formatMayaMeta(t)"></span>
+                    <div class="role" x-text="t.role"></div>
+                  </div>
+                  <div class="md-turn-body" x-text="t.text"></div>
+                  <p class="md-turn-audio-error" x-show="t.audioError" x-text="t.audioError"></p>
+                  <div
+                    class="md-turn-footer"
+                    x-show="$store.mayaConversation.detailed && t.role === 'operator' && t.sentAt"
+                  >
+                    <span class="md-turn-meta mv-mono">
+                      <template x-for="(p, pi) in $store.mayaConversation.operatorMetaParts(t)" :key="pi">
+                        <span class="md-turn-meta-part"><span x-show="pi > 0" class="md-turn-meta-sep"> · </span><span :class="p.dim ? 'md-turn-meta-part--dim' : ''" x-text="p.text"></span></span>
+                      </template>
+                    </span>
+                  </div>
+                  <div class="md-turn-footer" x-show="t.role === 'maya' && !t._streaming">
+                    <button
+                      type="button"
+                      class="md-turn-audio-btn"
+                      :disabled="t.audioBusy || !agentReady"
+                      :aria-busy="t.audioBusy"
+                      @click="$store.mayaConversation.playTurnAudio(t)"
+                      :aria-label="t.audioPlaying ? 'Pause' : 'Listen'"
+                      :title="t.audioPlaying ? 'Pause' : 'Listen'"
+                    >
+                      <svg x-show="!t.audioBusy && !t.audioPlaying" class="md-turn-audio-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15.91 11.672a.375.375 0 0 1 0 .656l-5.603 3.113a.375.375 0 0 1-.557-.328V8.887c0-.286.307-.466.557-.327l5.603 3.112Z" />
+                      </svg>
+                      <svg x-show="t.audioPlaying" class="md-turn-audio-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M14.25 9v6m-4.5 0V9M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                      </svg>
+                      <svg x-show="t.audioBusy" class="md-turn-audio-icon md-turn-audio-spinner" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
+                      </svg>
+                    </button>
+                    <span class="md-turn-meta mv-mono" x-show="$store.mayaConversation.detailed">
+                      <template x-for="(p, pi) in $store.mayaConversation.mayaMetaParts(t)" :key="pi">
+                        <span class="md-turn-meta-part"><span x-show="pi > 0" class="md-turn-meta-sep"> · </span><span :class="p.dim ? 'md-turn-meta-part--dim' : ''" x-text="p.text"></span></span>
+                      </template>
+                    </span>
                   </div>
                 </div>
               </template>
               <p class="mv-desc" x-show="!$store.mayaConversation.turns.length" style="padding:12px 0">Transcript appears here during voice or chat turns.</p>
             </div>
-          </div>
-        </div>
 
-        <aside class="md-col-side md-scroll">
-          <div
-            class="md-vrm-card"
-            x-data="mayaVrmViewer()"
-            x-init="init()"
-            x-show="enabled"
-            x-cloak
-          >
-            <div class="md-vrm-head">
-              <div>
-                <p class="mv-eyebrow">Avatar</p>
-                <h2 class="mv-title md-vrm-title">VRM</h2>
-              </div>
-              <div class="md-vrm-badges">
-                <span class="mv-chip live" x-show="speaking && !poppedOut"><span class="ind"></span>Lip-sync</span>
-                <span class="mv-chip md-vrm-chip-muted" x-show="poppedOut">Popped out</span>
-                <span class="mv-chip md-vrm-chip-muted" x-show="loading && !poppedOut">Loading…</span>
-                <span class="mv-chip md-vrm-chip-muted" x-show="!loading && !agentReady && !poppedOut">Waiting</span>
-                <button type="button" class="mv-btn md-vrm-pop-btn" @click="openPopout()" x-show="!poppedOut" title="Open floating avatar window">Pop out</button>
+            <div class="md-composer">
+              <textarea class="md-textarea mv-input" x-model="$store.mayaConversation.draft" :placeholder="textChatReady ? 'Message Maya…' : ($store.mayaConversation.useWebLLM ? 'Waiting for WebLLM…' : 'Waiting for LLM…')" @keydown="$store.mayaConversation.onKeydown($event)"></textarea>
+              <div class="md-composer-actions">
+                <button class="mv-btn mv-btn-primary" @click="$store.mayaConversation.sendServer()" :disabled="$store.mayaConversation.sending || !textChatReady">Send</button>
+                <button class="mv-btn" @click="$store.mayaConversation.reset()">Clear transcript</button>
+                <label class="md-detailed-toggle">
+                  <input type="checkbox" x-model="$store.mayaConversation.detailed" @change="$store.mayaConversation.persistDetailed()" />
+                  Detailed
+                </label>
+                <button
+                  type="button"
+                  class="mv-btn md-immersive-toggle"
+                  x-show="enabled && !poppedOut"
+                  @click="toggleImmersive()"
+                  :class="{ active: immersive }"
+                  :aria-pressed="immersive"
+                  title="Toggle live avatar view"
+                >
+                  Live avatar
+                </button>
               </div>
             </div>
-            <div class="md-vrm-stage-wrap" x-show="!poppedOut">
-              <div class="md-vrm-stage" :class="{ 'md-vrm-speaking': speaking }">
-                <canvas x-ref="vrmCanvas"></canvas>
+
+            <!-- Immersive VRM overlay (fixed; engine relocates here when active) -->
+            <div
+              class="md-vrm-immersive"
+              x-show="immersive && enabled && !poppedOut"
+              x-cloak
+              :class="{ 'md-vrm-speaking': speaking }"
+            >
+              <div class="md-vrm-immersive-head">
+                <span class="md-vrm-immersive-title">Live avatar</span>
+                <span class="mv-chip live md-vrm-immersive-chip" x-show="speaking"><span class="ind"></span>Lip-sync</span>
+                <button
+                  type="button"
+                  class="md-vrm-immersive-close"
+                  @click="setImmersive(false)"
+                  aria-label="Close live avatar"
+                  title="Close"
+                >&#10005;</button>
+              </div>
+              <div class="md-vrm-immersive-stage">
+                <canvas x-ref="vrmImmersiveCanvas" data-maya-vrm-canvas="immersive"></canvas>
                 <div class="md-vrm-stage-overlay" x-show="loading">
                   <span>Loading VRM…</span>
                 </div>
               </div>
+              <p class="md-banner error md-vrm-error" x-show="loadError" x-text="loadError"></p>
             </div>
-            <p class="mv-desc md-vrm-meta" x-show="poppedOut">
-              Avatar is in a separate window — drag it by the title bar. Close that window to embed again.
-            </p>
-            <p class="mv-desc md-vrm-meta" x-show="!loadError && !poppedOut">
-              <span x-text="modelLabel"></span>
-              <span class="md-vrm-dot">·</span>
-              <span x-text="lipSyncMode === 'viseme' ? 'Viseme sync' : 'Jaw sync'"></span>
-              <span class="md-vrm-dot">·</span>
-              <a href="/settings?tab=expressions">Configure</a>
-            </p>
-            <p class="mv-desc md-vrm-visemes" x-show="lipSyncLabel && !loadError" x-text="lipSyncLabel"></p>
-            <p class="md-banner error md-vrm-error" x-show="loadError" x-text="loadError"></p>
-            <p class="mv-desc md-vrm-hint">Powered by <a href="https://github.com/pixiv/three-vrm" target="_blank" rel="noopener">three-vrm</a> — drag to orbit</p>
           </div>
+        </div>
 
-          <div class="md-tools-card" x-data="mayaToolsPanel()" x-init="init()">
-            <div class="md-tools-head">
-              <div>
-                <p class="mv-eyebrow">Agent</p>
-                <h2 class="mv-title" style="font-size:14px;margin:0">Tools</h2>
+        <aside
+          class="md-col-side"
+          x-data="{
+            groups: { session: true, eq: false, tools: true, tts: false, avatar: true },
+            isOpen(name) { return this.groups[name]; },
+            toggle(name) {
+              this.groups[name] = !this.groups[name];
+              if (this.groups[name]) {
+                this.$nextTick(() => window.dispatchEvent(new Event('resize')));
+              }
+            },
+          }"
+        >
+          <div class="md-panel">
+            <div class="md-panel-header">
+              <h2 class="md-panel-title">Controls</h2>
+              <div class="md-panel-header-actions">
+                <span class="mv-chip" :class="{ live: $store.mayaConversation.sessionOn }"><span class="ind"></span><span x-text="$store.mayaConversation.statusLabel"></span></span>
+                <button type="button" class="md-panel-close" @click="$store.mayaConversation.toggleSidebar()" aria-label="Hide controls panel" title="Hide">&#10005;</button>
               </div>
-              <button type="button" class="mv-btn" style="padding:6px 10px;font-size:12px" @click="refresh()">Refresh</button>
             </div>
-            <div class="md-tools-body">
-              <div class="ms-btn-row">
-                <span class="mv-chip" x-show="!loading && enabled">
-                  <span x-text="mode + ' · max ' + maxRounds"></span>
-                </span>
-                <span class="mv-desc" x-show="loading">Loading…</span>
-              </div>
-              <p class="md-banner error" style="margin:8px 0" x-show="error" x-text="error"></p>
-              <span class="mv-desc" x-show="!loading && !enabled && agentReady">Tools disabled — enable in Settings → Tools</span>
 
-              <template x-for="[group, items] in toolGroups" :key="group">
-                <p class="mv-eyebrow" style="margin:14px 0 6px" x-text="group"></p>
-                <ul class="md-tool-list">
-                  <template x-for="t in items" :key="t.name">
-                    <li>
-                      <span class="md-tool-badge" x-text="t.group || 'tool'"></span>
-                      <strong x-text="t.name"></strong>
-                      <span class="md-tool-desc" x-text="t.description || ''"></span>
-                    </li>
+            <div class="md-panel-scroll md-scroll">
+              <!-- Session -->
+              <div class="md-group">
+                <button type="button" class="md-group-header" @click="toggle('session')" :aria-expanded="isOpen('session')">
+                  <span class="md-group-title">Session</span>
+                  <span class="md-group-chevron" :class="{ open: isOpen('session') }" aria-hidden="true">▾</span>
+                </button>
+                <div class="md-group-body" x-show="isOpen('session')" x-cloak>
+                  <div class="md-session-actions">
+                    <button class="mv-btn mv-btn-primary" x-show="!$store.mayaConversation.sessionOn" @click="$store.mayaConversation.startSession()" :disabled="!agentReady">Start voice session</button>
+                    <button class="mv-btn mv-btn-danger" x-show="$store.mayaConversation.sessionOn" @click="$store.mayaConversation.stopSession()">Stop</button>
+                    <a class="mv-btn" href="/settings">Settings</a>
+                  </div>
+                  <p class="mv-desc md-webllm-banner" x-show="$store.mayaConversation.useWebLLM" style="color:var(--mv-accent);margin-top:10px">
+                    Experimental WebLLM — voice + typed chat run through this browser tab
+                    (<span x-text="$store.mayaShell.webllmBridgeStatus || 'loading…'"></span>).
+                  </p>
+                  <div class="md-banner error" x-show="$store.mayaConversation.useWebLLM && webllmFailed" style="margin-top:10px">
+                    <p x-text="webllmFailed"></p>
+                    <p class="mv-desc" style="margin-top:8px" x-text="webllmTroubleshoot"></p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Equalizer -->
+              <div
+                class="md-group"
+                x-data="mayaEqViz()"
+                x-init="init()"
+                :class="{ 'md-eq-bypassed': !eqEnabled, 'md-eq-wait': !agentReady }"
+              >
+                <button type="button" class="md-group-header" @click="toggle('eq')" :aria-expanded="isOpen('eq')">
+                  <span class="md-group-header-main">
+                    <span class="md-group-title">Equalizer</span>
+                    <span class="md-group-badges">
+                      <span class="mv-chip live" x-show="speaking"><span class="ind"></span>Live</span>
+                      <span class="mv-chip md-eq-chip-muted" x-show="!eqEnabled && agentReady" x-text="presetLabel"></span>
+                      <span class="mv-chip md-eq-chip-muted" x-show="!agentReady">Loading</span>
+                    </span>
+                  </span>
+                  <span class="md-group-chevron" :class="{ open: isOpen('eq') }" aria-hidden="true">▾</span>
+                </button>
+                <div class="md-group-body" x-show="isOpen('eq')" x-cloak>
+                  <div class="md-eq-controls">
+                    <div class="md-row">
+                      <div class="md-row-about">
+                        <h3 class="md-row-title">Preset</h3>
+                      </div>
+                      <div class="md-row-input md-row-input-grow">
+                        <select
+                          id="eq-preset-select"
+                          class="mv-select"
+                          x-model="eqPreset"
+                          @change="onPresetChange()"
+                          :disabled="!agentReady"
+                        >
+                          <template x-for="p in eqPresets" :key="p.id">
+                            <option :value="p.id" x-text="p.label"></option>
+                          </template>
+                          <option x-show="!eqPresets.length" value="off">Off (bypass)</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="md-row">
+                      <div class="md-row-about">
+                        <h3 class="md-row-title">Enabled</h3>
+                        <p class="md-row-sub">Output EQ bypass</p>
+                      </div>
+                      <div class="md-row-input">
+                        <label class="mv-switch" title="Toggle output EQ">
+                          <input type="checkbox" x-model="eqEnabled" @change="onEqToggle()" :disabled="!agentReady" />
+                          <span class="slider"></span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="md-eq-stage-wrap">
+                    <div class="md-eq-stage" :class="{ 'md-eq-speaking': speaking }">
+                      <canvas x-ref="eqCanvas" width="960" height="150"></canvas>
+                      <div class="md-eq-stage-overlay" x-show="!agentReady">
+                        <span>Waiting for voice agent…</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="md-eq-band-editor" x-show="selectedBand" x-cloak>
+                    <div class="md-eq-band-head">
+                      <span class="mv-eyebrow" x-text="'Band ' + selectedBand"></span>
+                      <button type="button" class="mv-btn md-eq-done" @click="deselectBand()">Done</button>
+                    </div>
+                    <div class="md-eq-band-grid">
+                      <label class="md-eq-field">
+                        <span class="md-eq-label">Filter type</span>
+                        <select class="mv-select" x-model="bandType" @change="onBandTypeChange()">
+                          <option value="peak">Bell (peak)</option>
+                          <option value="low_shelf">Low shelf</option>
+                          <option value="high_shelf">High shelf</option>
+                          <option value="highpass">High pass</option>
+                          <option value="lowpass">Low pass</option>
+                        </select>
+                      </label>
+                      <label class="md-eq-field">
+                        <span class="md-eq-label">Frequency <span class="md-eq-value" x-text="formatFreq(bandFreq)"></span></span>
+                        <input class="md-eq-range" type="range" min="20" max="20000" step="1" x-model.number="bandFreq" @input="onBandFreqChange()" />
+                      </label>
+                      <label class="md-eq-field">
+                        <span class="md-eq-label">Gain <span class="md-eq-value" x-text="(bandGain >= 0 ? '+' : '') + bandGain.toFixed(1) + ' dB'"></span></span>
+                        <input class="md-eq-range" type="range" min="-12" max="12" step="0.1" x-model.number="bandGain" @input="onBandGainChange()" />
+                      </label>
+                      <label class="md-eq-field">
+                        <span class="md-eq-label">Q <span class="md-eq-value" x-text="bandQ.toFixed(2)"></span></span>
+                        <input class="md-eq-range" type="range" min="0.1" max="18" step="0.01" x-model.number="bandQ" @input="onBandQChange()" />
+                      </label>
+                    </div>
+                  </div>
+
+                  <p class="mv-desc md-eq-hint">Drag nodes on the curve to tune · click a node for precise controls · spectrum overlay while Maya speaks</p>
+                </div>
+              </div>
+
+              <!-- Tools -->
+              <div class="md-group" x-data="mayaToolsPanel()" x-init="init()">
+                <button type="button" class="md-group-header" @click="toggle('tools')" :aria-expanded="isOpen('tools')">
+                  <span class="md-group-header-main">
+                    <span class="md-group-title">Tools</span>
+                    <span class="md-group-badges">
+                      <span class="mv-chip" x-show="!loading && enabled" x-text="mode + ' · max ' + maxRounds"></span>
+                    </span>
+                  </span>
+                  <span class="md-group-chevron" :class="{ open: isOpen('tools') }" aria-hidden="true">▾</span>
+                </button>
+                <div class="md-group-body" x-show="isOpen('tools')" x-cloak>
+                  <span class="mv-desc" x-show="loading">Loading…</span>
+                  <p class="md-banner error" style="margin:8px 0" x-show="error" x-text="error"></p>
+                  <span class="mv-desc" x-show="!loading && !enabled && agentReady">Tools disabled — enable in Settings → Tools</span>
+                  <div class="md-row md-row-end md-row-end-compact" x-show="!loading">
+                    <button type="button" class="mv-btn" style="padding:6px 10px;font-size:12px" @click="refresh()">Refresh</button>
+                  </div>
+
+                  <template x-for="[group, items] in toolGroups" :key="group">
+                    <p class="mv-eyebrow" style="margin:14px 0 6px" x-text="group"></p>
+                    <ul class="md-tool-list">
+                      <template x-for="t in items" :key="t.name">
+                        <li>
+                          <span class="md-tool-badge" x-text="t.group || 'tool'"></span>
+                          <strong x-text="t.name"></strong>
+                          <span class="md-tool-desc" x-text="t.description || ''"></span>
+                        </li>
+                      </template>
+                    </ul>
                   </template>
-                </ul>
-              </template>
 
-              <p class="mv-desc" x-show="!loading && !tools.length && agentReady">No tools registered — enable in Settings → Tools.</p>
+                  <p class="mv-desc" x-show="!loading && !tools.length && agentReady">No tools registered — enable in Settings → Tools.</p>
 
-              <p class="mv-eyebrow" style="margin:16px 0 6px">MCP servers</p>
-              <ul class="md-tool-list">
-                <template x-for="s in mcpServers" :key="s.name">
-                  <li>
-                    <span class="md-tool-dot" :class="s.connected ? 'on' : 'off'"></span>
-                    <strong x-text="s.name"></strong>
-                    <span class="md-tool-desc" x-text="s.connected ? (s.tools + ' tools') : (s.error || 'not connected')"></span>
-                  </li>
-                </template>
-                <li class="md-empty" x-show="!mcpServers.length">No MCP servers</li>
-              </ul>
+                  <p class="mv-eyebrow" style="margin:16px 0 6px">MCP servers</p>
+                  <ul class="md-tool-list">
+                    <template x-for="s in mcpServers" :key="s.name">
+                      <li>
+                        <span class="md-tool-dot" :class="s.connected ? 'on' : 'off'"></span>
+                        <strong x-text="s.name"></strong>
+                        <span class="md-tool-desc" x-text="s.connected ? (s.tools + ' tools') : (s.error || 'not connected')"></span>
+                      </li>
+                    </template>
+                    <li class="md-empty" x-show="!mcpServers.length">No MCP servers</li>
+                  </ul>
 
-              <p class="mv-eyebrow" style="margin:16px 0 6px">Live tool log</p>
-              <ul class="md-tool-log md-scroll">
-                <template x-for="(line, i) in toolLog" :key="i">
-                  <li x-text="line"></li>
-                </template>
-                <li class="md-empty" x-show="!toolLog.length">Tool calls appear during voice turns</li>
-              </ul>
-            </div>
-          </div>
-
-          <div class="md-tts-preview">
-            <div class="md-tts-head">
-              <div>
-                <p class="mv-eyebrow">Voice output</p>
-                <h2 class="mv-title md-tts-title">TTS preview</h2>
+                  <p class="mv-eyebrow" style="margin:16px 0 6px">Live tool log</p>
+                  <ul class="md-tool-log md-scroll">
+                    <template x-for="(line, i) in toolLog" :key="i">
+                      <li x-text="line"></li>
+                    </template>
+                    <li class="md-empty" x-show="!toolLog.length">Tool calls appear during voice turns</li>
+                  </ul>
+                </div>
               </div>
-              <span class="mv-chip md-tts-chip-muted" x-show="!agentReady">Waiting</span>
-            </div>
-            <div class="md-tts-body">
-              <p class="mv-desc md-tts-hint">
-                Speak text directly — no LLM. Qwen3 does <em>not</em> parse ElevenLabs-style
-                <code>[laughter]</code> tags — use natural phrasing (“haha”) or
-                <strong>Voice instruct</strong> (“amused, laughing”).
-              </p>
-              <textarea
-                class="md-textarea mv-input md-tts-input"
-                x-model="$store.mayaConversation.ttsDraft"
-                placeholder="Haha! That was ridiculous."
-                :disabled="!agentReady || $store.mayaConversation.ttsBusy"
-                @keydown="$store.mayaConversation.onTtsKeydown($event)"
-              ></textarea>
-              <label class="md-tts-instruct">
-                <span class="md-eq-label">Voice instruct</span>
-                <input
-                  class="mv-input"
-                  type="text"
-                  x-model="$store.mayaConversation.ttsInstruct"
-                  placeholder="warm, amused"
-                  :disabled="!agentReady || $store.mayaConversation.ttsBusy"
-                />
-              </label>
-              <div class="md-tts-actions">
-                <button
-                  class="mv-btn mv-btn-primary"
-                  @click="$store.mayaConversation.speakPreview()"
-                  :disabled="!agentReady || $store.mayaConversation.ttsBusy || !$store.mayaConversation.ttsDraft.trim()"
-                  x-text="$store.mayaConversation.ttsBusy ? 'Speaking…' : 'Speak'"
-                ></button>
-                <button class="mv-btn" @click="$store.mayaConversation.ttsDraft = ''" :disabled="$store.mayaConversation.ttsBusy">Clear</button>
+
+              <!-- TTS preview -->
+              <div class="md-group">
+                <button type="button" class="md-group-header" @click="toggle('tts')" :aria-expanded="isOpen('tts')">
+                  <span class="md-group-header-main">
+                    <span class="md-group-title">TTS preview</span>
+                    <span class="md-group-badges">
+                      <span class="mv-chip md-tts-chip-muted" x-show="!agentReady">Waiting</span>
+                    </span>
+                  </span>
+                  <span class="md-group-chevron" :class="{ open: isOpen('tts') }" aria-hidden="true">▾</span>
+                </button>
+                <div class="md-group-body" x-show="isOpen('tts')" x-cloak>
+                  <p class="mv-desc md-tts-hint">
+                    Speak text directly — no LLM. Qwen3 does <em>not</em> parse ElevenLabs-style
+                    <code>[laughter]</code> tags — use natural phrasing (“haha”) or
+                    <strong>Voice instruct</strong> (“amused, laughing”).
+                  </p>
+                  <textarea
+                    class="md-textarea mv-input md-tts-input"
+                    x-model="$store.mayaConversation.ttsDraft"
+                    placeholder="Haha! That was ridiculous."
+                    :disabled="!agentReady || $store.mayaConversation.ttsBusy"
+                    @keydown="$store.mayaConversation.onTtsKeydown($event)"
+                  ></textarea>
+                  <label class="md-tts-instruct">
+                    <span class="md-eq-label">Voice instruct</span>
+                    <input
+                      class="mv-input"
+                      type="text"
+                      x-model="$store.mayaConversation.ttsInstruct"
+                      placeholder="warm, amused"
+                      :disabled="!agentReady || $store.mayaConversation.ttsBusy"
+                    />
+                  </label>
+                  <div class="md-tts-actions">
+                    <button
+                      class="mv-btn mv-btn-primary"
+                      @click="$store.mayaConversation.speakPreview()"
+                      :disabled="!agentReady || $store.mayaConversation.ttsBusy || !$store.mayaConversation.ttsDraft.trim()"
+                      x-text="$store.mayaConversation.ttsBusy ? 'Speaking…' : 'Speak'"
+                    ></button>
+                    <button class="mv-btn" @click="$store.mayaConversation.ttsDraft = ''" :disabled="$store.mayaConversation.ttsBusy">Clear</button>
+                  </div>
+                  <p class="md-banner error md-tts-error" x-show="$store.mayaConversation.ttsError" x-text="$store.mayaConversation.ttsError"></p>
+                </div>
               </div>
-              <p class="md-banner error md-tts-error" x-show="$store.mayaConversation.ttsError" x-text="$store.mayaConversation.ttsError"></p>
+
+              <!-- Avatar -->
+              <div
+                class="md-group md-group-last"
+                x-show="$store.mayaVrm.enabled"
+                x-cloak
+              >
+                <button type="button" class="md-group-header" @click="toggle('avatar')" :aria-expanded="isOpen('avatar')">
+                  <span class="md-group-header-main">
+                    <span class="md-group-title">Avatar</span>
+                    <span class="md-group-badges">
+                      <span class="mv-chip live" x-show="$store.mayaVrm.speaking && !$store.mayaVrm.poppedOut"><span class="ind"></span>Lip-sync</span>
+                      <span class="mv-chip md-vrm-chip-muted" x-show="$store.mayaVrm.immersive && !$store.mayaVrm.poppedOut">Immersive</span>
+                      <span class="mv-chip md-vrm-chip-muted" x-show="$store.mayaVrm.poppedOut">Popped out</span>
+                      <span class="mv-chip md-vrm-chip-muted" x-show="$store.mayaVrm.loading && !$store.mayaVrm.poppedOut">Loading…</span>
+                    </span>
+                  </span>
+                  <span class="md-group-chevron" :class="{ open: isOpen('avatar') }" aria-hidden="true">▾</span>
+                </button>
+                <div class="md-group-body" x-show="isOpen('avatar')" x-cloak>
+                  <div class="md-row md-row-end md-vrm-actions" x-show="!$store.mayaVrm.poppedOut">
+                    <label class="md-immersive-setting">
+                      <input
+                        type="checkbox"
+                        :checked="$store.mayaVrm.immersive"
+                        @change="$store.mayaVrm.toggleImmersive($event.target.checked)"
+                      />
+                      <span>Immersive view</span>
+                    </label>
+                    <button type="button" class="mv-btn md-vrm-pop-btn" @click="$store.mayaVrm.openPopout()" title="Open floating avatar window">Pop out</button>
+                  </div>
+                  <div class="md-vrm-stage-wrap" x-show="!$store.mayaVrm.poppedOut && !$store.mayaVrm.immersive">
+                    <div class="md-vrm-stage" :class="{ 'md-vrm-speaking': $store.mayaVrm.speaking }">
+                      <canvas data-maya-vrm-canvas="sidebar"></canvas>
+                      <div class="md-vrm-stage-overlay" x-show="$store.mayaVrm.loading">
+                        <span>Loading VRM…</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p class="mv-desc md-vrm-meta" x-show="$store.mayaVrm.immersive && !$store.mayaVrm.poppedOut">
+                    Avatar is in immersive view — click a message avatar or use Live avatar to toggle.
+                  </p>
+                  <p class="mv-desc md-vrm-meta" x-show="$store.mayaVrm.poppedOut">
+                    Avatar is in a separate window — drag it by the title bar. Close that window to embed again.
+                  </p>
+                  <p class="mv-desc md-vrm-meta" x-show="!$store.mayaVrm.loadError && !$store.mayaVrm.poppedOut && !$store.mayaVrm.immersive">
+                    <span x-text="$store.mayaVrm.modelLabel"></span>
+                    <span class="md-vrm-dot">·</span>
+                    <span x-text="$store.mayaVrm.lipSyncMode === 'viseme' ? 'Viseme sync' : 'Jaw sync'"></span>
+                    <span class="md-vrm-dot">·</span>
+                    <a href="/settings?tab=expressions">Configure</a>
+                  </p>
+                  <p class="mv-desc md-vrm-visemes" x-show="$store.mayaVrm.lipSyncLabel && !$store.mayaVrm.loadError" x-text="$store.mayaVrm.lipSyncLabel"></p>
+                  <p class="md-banner error md-vrm-error" x-show="$store.mayaVrm.loadError" x-text="$store.mayaVrm.loadError"></p>
+                  <p class="mv-desc md-vrm-hint">Powered by <a href="https://github.com/pixiv/three-vrm" target="_blank" rel="noopener">three-vrm</a> — drag to orbit</p>
+                </div>
+              </div>
             </div>
           </div>
         </aside>
