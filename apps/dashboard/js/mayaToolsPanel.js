@@ -18,10 +18,17 @@ document.addEventListener("alpine:init", () => {
       return Alpine.store("mayaShell")?.ready || false;
     },
 
-    async init() {
-      await this.refresh();
+    init() {
+      if (this._unsub) {
+        this._unsub();
+        this._unsub = null;
+      }
       this._unsub = window.mayaAgentEvents?.subscribe((ev) => this.onEvent(ev));
-      this.loading = false;
+      this.loading = true;
+      this.refresh().finally(() => {
+        this.loading = false;
+      });
+      return () => this.destroy();
     },
 
     destroy() {
@@ -42,7 +49,9 @@ document.addEventListener("alpine:init", () => {
 
     pushLog(line) {
       const ts = new Date().toLocaleTimeString();
-      this.toolLog.unshift(`${ts}  ${line}`);
+      const entry = `${ts}  ${line}`;
+      if (this.toolLog[0] === entry) return;
+      this.toolLog.unshift(entry);
       if (this.toolLog.length > 40) this.toolLog.pop();
     },
 

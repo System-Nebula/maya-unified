@@ -16,6 +16,12 @@ WEBLLM_MODELS = [
     {"id": "Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC", "label": "Hermes 2 Pro Llama 3 8B"},
 ]
 
+REMARK_VISION_MODELS = [
+    {"id": "openrouter/minimax/minimax-m3", "label": "MiniMax M3 (default, vision)"},
+    {"id": "openrouter/google/gemini-2.0-flash-001", "label": "Gemini 2.0 Flash (vision)"},
+    {"id": "openrouter/openai/gpt-4o-mini", "label": "GPT-4o mini (vision)"},
+]
+
 LITELLM_MODELS = [
     "openrouter/deepseek/deepseek-v4-flash",
     "openrouter/deepseek/deepseek-v4-pro",

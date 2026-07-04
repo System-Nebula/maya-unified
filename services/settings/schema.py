@@ -76,6 +76,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "imagine": {
         "enabled": False,
         "comfyui_url": "http://127.0.0.1:3030",
+        "default_model": "zit",
+        "remark_enabled": True,
+        "remark_vision_model": "openrouter/minimax/minimax-m3",
     },
     "discord": {
         "enabled": False,

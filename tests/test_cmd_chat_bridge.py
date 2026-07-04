@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from types import ModuleType
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -29,7 +29,7 @@ def _patch_voice_hub(mock_hub):
 def test_broadcast_cmd_turn_includes_artifacts_in_ai_event() -> None:
     reply = CmdResult(
         ok=True,
-        text="Image ready.\nJob: job-1",
+        text="Image ready.",
         artifacts=[{"type": "image", "url": "https://example.com/out.png", "job_id": "job-1"}],
     )
     broadcasts: list[dict] = []
@@ -46,6 +46,83 @@ def test_broadcast_cmd_turn_includes_artifacts_in_ai_event() -> None:
     assert len(ai_events) == 1
     assert ai_events[0]["mode"] == "cmd"
     assert ai_events[0]["artifacts"][0]["job_id"] == "job-1"
+
+
+def test_broadcast_cmd_turn_includes_imagine_meta_in_ai_event() -> None:
+    reply = CmdResult(
+        ok=True,
+        text="Image ready.",
+        job_id="job-1",
+        trace_id="trace-1",
+        artifacts=[
+            {
+                "type": "image",
+                "url": "https://example.com/out.png",
+                "job_id": "job-1",
+                "model": "Krea 2 Turbo",
+                "model_key": "krea2-turbo",
+                "workflow_id": "a0000001-0000-4000-8000-000000000007",
+                "workflow_name": "krea2-turbo-t2i",
+                "gen_ms": 28100,
+                "user_id": "op-1",
+            }
+        ],
+    )
+    broadcasts: list[dict] = []
+
+    mock_hub = MagicMock()
+    mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
+
+    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._schedule_persist_cmd_turns"):
+        _broadcast_cmd_turn(text="/imagine sunset model=krea2", reply=reply, operator_id="op-1")
+
+    ai_events = [b for b in broadcasts if b.get("type") == "ai"]
+    assert len(ai_events) == 1
+    ev = ai_events[0]
+    assert ev["model"] == "Krea 2 Turbo"
+    assert ev["gen_ms"] == 28100
+    assert ev["workflow_name"] == "krea2-turbo-t2i"
+    assert ev["job_id"] == "job-1"
+
+
+@pytest.mark.asyncio
+async def test_run_long_cmd_imagine_schedules_remark() -> None:
+    from services.cmd.chat_bridge import _run_long_cmd_async
+    from services.cmd.models import CmdContext, CmdResult, CmdSurface, ParsedCmd
+
+    parsed = ParsedCmd(
+        cmd_id="imagine",
+        name="imagine",
+        raw_args="sunset model=krea2",
+        args={"prompt": "sunset", "model": "krea2"},
+    )
+    ctx = CmdContext(operator_id="op-1", surface=CmdSurface.DASHBOARD, raw_text="/imagine sunset model=krea2")
+    result = CmdResult(
+        ok=True,
+        text="Image ready.",
+        artifacts=[{"type": "image", "url": "/imagine-outputs/x.png", "prompt": "sunset"}],
+        job_id="job-1",
+    )
+    mock_remark = AsyncMock(return_value="that sunset you'll never see")
+    settings = {"imagine": {"enabled": True, "remark_enabled": True}}
+
+    with (
+        patch("services.cmd.chat_bridge.dispatch_cmd_async", AsyncMock(return_value=result)),
+        patch("services.cmd.chat_bridge._broadcast_cmd_turn", return_value={"reply_message_id": "m_done"}) as mock_broadcast,
+        patch("services.settings.store.load_effective_settings", return_value=settings),
+        patch("services.voice.hub.hub.stream_imagine_remark", mock_remark),
+    ):
+        await _run_long_cmd_async(
+            parsed=parsed,
+            ctx=ctx,
+            text="/imagine sunset model=krea2",
+            corr_id="c_remark",
+            operator_id="op-1",
+        )
+
+    mock_remark.assert_awaited_once()
+    mock_broadcast.assert_called_once()
+    assert mock_broadcast.call_args.kwargs.get("defer_assistant_persist") is True
 
 
 def test_broadcast_cmd_turn_marks_cmd_errors() -> None:
@@ -91,7 +168,7 @@ def test_broadcast_cmd_turn_error_includes_trace_and_job_ids() -> None:
 def test_persist_cmd_turns_appends_assistant_on_success() -> None:
     from services.cmd.chat_bridge import _persist_cmd_turns
 
-    reply = CmdResult(ok=True, text="Image ready.\nJob: job-1")
+    reply = CmdResult(ok=True, text="Image ready.")
     mock_append = MagicMock()
     op_id = "00000000-0000-0000-0000-000000000001"
 
@@ -108,7 +185,7 @@ def test_persist_cmd_turns_appends_assistant_on_success() -> None:
     mock_append.assert_called_once_with(
         op_id,
         "assistant",
-        "Image ready.\nJob: job-1",
+        "Image ready.",
         message_id="m_test123",
         corr_id="c_test123",
     )
@@ -158,6 +235,41 @@ def test_try_dispatch_imagine_returns_pending_immediately() -> None:
     assert thinking_events[0]["corr_id"] == out["corr_id"]
     assert len(scheduled) == 1
     scheduled[0].close()
+
+
+@pytest.mark.asyncio
+async def test_try_dispatch_imagine_passes_corr_id_in_ctx() -> None:
+    broadcasts: list[dict] = []
+    mock_hub = MagicMock()
+    mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
+    captured_ctx: list[CmdContext] = []
+
+    async def _capture_dispatch(_parsed, ctx):
+        captured_ctx.append(ctx)
+        return CmdResult(ok=True, text="Image ready.", trace_id="t1", job_id="job-1")
+
+    scheduled: list = []
+
+    def _capture_schedule(coro) -> None:
+        scheduled.append(coro)
+
+    with _patch_voice_hub(mock_hub):
+        with patch("services.async_bridge.schedule_coro", side_effect=_capture_schedule):
+            with patch("services.cmd.chat_bridge.dispatch_cmd_async", side_effect=_capture_dispatch):
+                with patch("services.cmd.chat_bridge.parse_cmd_input") as mock_parse:
+                    mock_parse.return_value = ParsedCmd(
+                        cmd_id="imagine",
+                        name="imagine",
+                        raw_args="a dog",
+                        args={"prompt": "a dog"},
+                    )
+                    out = try_dispatch_chat_cmd("/imagine a dog", operator_id="op-1")
+                    assert out["corr_id"].startswith("c_")
+                    assert len(scheduled) == 1
+                    await scheduled[0]
+
+    assert len(captured_ctx) == 1
+    assert captured_ctx[0].metadata.get("corr_id") == out["corr_id"]
 
 
 def test_format_cmd_exception_timeout_is_not_empty() -> None:

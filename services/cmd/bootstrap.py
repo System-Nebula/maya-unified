@@ -76,7 +76,7 @@ def ensure_cmds_registered() -> None:
                 CmdParameter(
                     name="model",
                     type="string",
-                    description="Optional model/provider choice",
+                    description="Optional model/provider choice (zit, krea2, ideogram-local)",
                 ),
                 CmdParameter(
                     name="size",
@@ -91,7 +91,7 @@ def ensure_cmds_registered() -> None:
             ],
             examples=[
                 "/imagine cyberpunk city",
-                "/imagine castle sunset",
+                "/imagine castle sunset model=krea2",
                 "/img cat sitting on a windowsill",
             ],
             executor=exec_imagine,

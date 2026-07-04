@@ -212,6 +212,10 @@ _MODEL_MOUNT_MISMATCH_MSG = (
     "container mount likely targets the wrong path (/app/ComfyUI vs /opt/ComfyUI). "
     "See infra/comfyui/README.md."
 )
+_KREA2_VERSION_MSG = (
+    "Krea 2 is not supported by this ComfyUI build (needs 0.26+). "
+    "Rebuild comfyui-api per infra/comfyui/README.md."
+)
 
 
 def _extract_node_errors(body: str, data: dict[str, Any]) -> dict[str, Any] | None:
@@ -256,6 +260,23 @@ def _is_model_mount_mismatch(node_errors: dict[str, Any] | None) -> bool:
     return False
 
 
+def _is_krea2_type_unsupported(node_errors: dict[str, Any] | None) -> bool:
+    if not node_errors:
+        return False
+    for node_err in node_errors.values():
+        if not isinstance(node_err, dict):
+            continue
+        if node_err.get("class_type") != "CLIPLoader":
+            continue
+        for err in node_err.get("errors") or []:
+            if not isinstance(err, dict) or err.get("type") != "value_not_in_list":
+                continue
+            details = str(err.get("details") or "")
+            if "krea2" in details and "type:" in details:
+                return True
+    return False
+
+
 def _summarize_comfy_error(
     body: str,
     *,
@@ -285,6 +306,8 @@ def _summarize_comfy_error(
     except Exception:
         return _truncate_summary(body)
     node_errors = _extract_node_errors(body, data)
+    if node_errors and _is_krea2_type_unsupported(node_errors):
+        return _truncate_summary(_KREA2_VERSION_MSG)
     if node_errors and _is_model_mount_mismatch(node_errors):
         return _truncate_summary(_MODEL_MOUNT_MISMATCH_MSG)
     if not node_errors:
@@ -691,6 +714,10 @@ class ComfyUIGraphProvider:
         with _tracer.start_as_current_span("comfyui.graph.submit") as span:
             span.set_attribute("image.workflow_id", workflow.id)
             span.set_attribute("image.workflow_name", workflow.name)
+            if request.metadata.get("corr_id"):
+                span.set_attribute("chat.corr_id", str(request.metadata["corr_id"]))
+            if request.metadata.get("model_key"):
+                span.set_attribute("image.model_key", str(request.metadata["model_key"]))
             await self._emit_stage(
                 "submit",
                 "Checking GPU and workflow...",
@@ -770,12 +797,14 @@ class ComfyUIGraphProvider:
                 )
                 job_id = f"comfyui-graph-{uuid.uuid4().hex}"
                 self._results[job_id] = self._store_images(images, workflow)
+                span.set_attribute("comfyui.prompt_id", job_id)
                 return job_id, ImageJobStatus.COMPLETED
             provider_job_id = data.get("prompt_id") or data.get("id")
             if not provider_job_id:
                 raise RuntimeError(
                     f"comfyui-api returned no images and no prompt_id for {workflow.name}"
                 )
+            span.set_attribute("comfyui.prompt_id", str(provider_job_id))
             self._workflows_by_prompt[str(provider_job_id)] = workflow
             return str(provider_job_id), ImageJobStatus.PROCESSING
 

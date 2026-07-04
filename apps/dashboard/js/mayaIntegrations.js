@@ -130,6 +130,27 @@ document.addEventListener("alpine:init", () => {
       return "";
     },
 
+    imagineWeightsSummary() {
+      const weights = this.imagineHealth?.weights;
+      if (!weights) return "";
+      const parts = [];
+      for (const key of ["zit", "krea2"]) {
+        const probe = weights[key];
+        if (!probe || typeof probe !== "object") continue;
+        const label = key === "krea2" ? "Krea2" : "Z-Image";
+        if (probe.ok) {
+          parts.push(`${label}: ok`);
+        } else if (key === "krea2" && probe.capability && probe.capability.ok === false) {
+          const ver = probe.capability.comfyui_version || "unknown";
+          parts.push(`${label}: needs ComfyUI 0.26+ (have ${ver})`);
+        } else {
+          const missing = Array.isArray(probe.missing) ? probe.missing.join(", ") : "missing";
+          parts.push(`${label}: ${missing || "missing"}`);
+        }
+      }
+      return parts.join(" · ");
+    },
+
     connectUrl(permissions) {
       const perms =
         permissions && permissions.length

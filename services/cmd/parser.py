@@ -57,7 +57,12 @@ def _derive_args(cmd: CmdDefinition, tokens: list[str], raw_args: str) -> dict[s
     optional = [p for p in cmd.parameters if not p.required]
 
     if len(required) == 1 and required[0].type == "string" and raw_args:
-        out: dict[str, Any] = {required[0].name: raw_args}
+        prompt_text, kv = _split_prompt_and_kv(raw_args, cmd)
+        out: dict[str, Any] = dict(kv)
+        if prompt_text:
+            out[required[0].name] = prompt_text
+        elif required[0].name not in out:
+            out[required[0].name] = raw_args
     else:
         out = {}
         ordered = required + optional
@@ -73,6 +78,26 @@ def _derive_args(cmd: CmdDefinition, tokens: list[str], raw_args: str) -> dict[s
             out[param.name] = param.default
 
     return out
+
+
+def _split_prompt_and_kv(raw_args: str, cmd: CmdDefinition) -> tuple[str, dict[str, Any]]:
+    """Split `sunset model=krea2` into prompt text and named cmd parameters."""
+    param_by_name = {p.name: p for p in cmd.parameters}
+    try:
+        tokens = shlex.split(raw_args)
+    except ValueError:
+        tokens = raw_args.split()
+
+    kv: dict[str, Any] = {}
+    prompt_parts: list[str] = []
+    for token in tokens:
+        key, sep, value = token.partition("=")
+        if sep and key in param_by_name:
+            kv[key] = _coerce(value, param_by_name[key].type)
+        else:
+            prompt_parts.append(token)
+
+    return " ".join(prompt_parts).strip(), kv
 
 
 def _coerce(value: str, typ: str) -> Any:

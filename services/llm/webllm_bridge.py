@@ -109,7 +109,13 @@ class WebLLMBridgeClient:
     def stream_reply(self, user_text: str, history: list[dict] | None = None) -> Iterator[str]:
         yield from webllm_broker.request_stream(self._messages(user_text, history))
 
-    def stream_messages(self, messages: list[dict]) -> Iterator[str]:
+    def stream_messages(
+        self,
+        messages: list[dict],
+        *,
+        model: str | None = None,
+    ) -> Iterator[str]:
+        del model  # WebLLM uses a single in-browser model; vision remarks are disabled.
         normalized = _normalize_messages_for_webllm(
             messages,
             fallback_system=self.base_system_prompt(),

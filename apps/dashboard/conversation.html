@@ -129,7 +129,7 @@
                     </button>
                     <div class="role" x-text="t.role"></div>
                   </div>
-                  <div class="md-turn-body" x-text="t.text"></div>
+                  <div class="md-turn-body" x-show="!$store.mayaConversation.imagineBodyHidden(t)" x-text="t.text"></div>
                   <p
                     class="md-turn-cmd-detail"
                     x-show="$store.mayaConversation.detailed && t.cmdError && t.detail && t.detail !== t.text"

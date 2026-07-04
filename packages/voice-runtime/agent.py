@@ -372,7 +372,10 @@ TOOL_GUIDE = (
     "For facial expressions on the VRM avatar use set_avatar_expression with mood: "
     "idle, happy, excited, surprised, angry, or frustrated — cute subtle faces, not "
     "extreme. Call when your tone clearly matches; do not announce the mood in speech. "
-    "Use list_avatar_expressions to see options."
+    "Use list_avatar_expressions to see options. "
+    "For image generation use imagine_generate when the user asks to draw, generate, or "
+    "create a picture — pick model zit (fast) or krea2 (heavy) when they specify. After "
+    "the tool returns, react in one witty spoken line about the result; do not read URLs aloud."
 )
 
 _ANIMATION_REPLY_HINT = (
@@ -593,6 +596,14 @@ class VoiceAgent:
             log.info("avatar expression tools enabled")
         except Exception as exc:  # noqa: BLE001
             log.warning("avatar expression tools disabled: %s", exc)
+
+        try:
+            from tools.imagine import build_imagine_tools
+
+            registry.register_many(build_imagine_tools())
+            log.info("imagine_generate tool enabled")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("imagine tool disabled: %s", exc)
 
         self.registry = registry
         if CONFIG.tools.enabled and len(registry) > 0:

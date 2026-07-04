@@ -46,12 +46,13 @@ class ToolExecutor:
             except Exception as exc:  # noqa: BLE001 - surface tool errors to the model
                 result_box["error"] = str(exc)
 
+        timeout = spec.execution_timeout if spec.execution_timeout is not None else self.timeout
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
-        thread.join(timeout=self.timeout)
+        thread.join(timeout=timeout)
 
         if thread.is_alive():
-            return self._err(f"tool '{spec.name}' timed out after {self.timeout:.0f}s")
+            return self._err(f"tool '{spec.name}' timed out after {timeout:.0f}s")
         if "error" in result_box:
             return self._err(result_box["error"])
         return self._stringify(result_box.get("value"))

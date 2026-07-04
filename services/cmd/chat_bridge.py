@@ -17,12 +17,30 @@ log = structlog.get_logger("maya-unified.cmd")
 
 _LONG_RUNNING_CMDS = frozenset({"imagine", "blend"})
 _LONG_CMD_TIMEOUT_SEC = 300.0
+_IMAGINE_MODEL_LABELS = {
+    "zit": "Z-Image Turbo",
+    "z-image": "Z-Image Turbo",
+    "krea2": "Krea 2 Turbo",
+    "krea-2": "Krea 2 Turbo",
+    "ideogram-local": "Ideogram 4 Local",
+    "comfyui": "Ideogram 4 Local",
+}
 _CMD_ACK_TEXT = {
-    "imagine": (
-        "Generating image… Z-Image Turbo may take up to a minute while models load."
-    ),
+    "imagine": "Generating image… selected model may take up to a minute while models load.",
     "blend": "Running Blender…",
 }
+
+
+def _imagine_ack_text(*, model: str | None = None) -> str:
+    key = str(model or "").strip().lower()
+    label = _IMAGINE_MODEL_LABELS.get(key, "selected model")
+    return f"Generating image… {label} may take up to a minute while models load."
+
+
+def _cmd_ack_text(cmd_id: str, parsed: ParsedCmd | None = None) -> str:
+    if cmd_id == "imagine" and parsed is not None:
+        return _imagine_ack_text(model=parsed.args.get("model"))
+    return _CMD_ACK_TEXT.get(cmd_id, "Working on it…")
 
 
 def _format_cmd_exception(exc: BaseException, *, cmd_id: str, timeout_sec: float) -> str:
@@ -76,6 +94,7 @@ def _persist_cmd_turns(
     corr_id: str,
     reply_message_id: str,
     skip_user: bool,
+    skip_assistant: bool = False,
 ) -> None:
     if not operator_id:
         return
@@ -84,7 +103,7 @@ def _persist_cmd_turns(
     try:
         if not skip_user and text.strip():
             op_ctx.append_turn(operator_id, "user", text, corr_id=corr_id)
-        if reply.ok:
+        if reply.ok and not skip_assistant:
             body = (reply.text or "").strip()
             if body:
                 op_ctx.append_turn(
@@ -94,7 +113,7 @@ def _persist_cmd_turns(
                     message_id=reply_message_id,
                     corr_id=corr_id,
                 )
-        else:
+        elif not reply.ok:
             err = _resolve_cmd_error_text(reply)
             op_ctx.append_turn(operator_id, "system", err, corr_id=corr_id)
     except Exception:
@@ -109,6 +128,7 @@ def _schedule_persist_cmd_turns(
     corr_id: str,
     reply_message_id: str,
     skip_user: bool,
+    skip_assistant: bool = False,
 ) -> None:
     """Fire-and-forget conversation persist — must not block SSE delivery."""
     if not operator_id:
@@ -124,6 +144,7 @@ def _schedule_persist_cmd_turns(
             corr_id=corr_id,
             reply_message_id=reply_message_id,
             skip_user=skip_user,
+            skip_assistant=skip_assistant,
         )
 
     schedule_coro(_persist_async())
@@ -137,6 +158,7 @@ def _broadcast_cmd_turn(
     corr_id: str | None = None,
     skip_user: bool = False,
     cmd_id: str | None = None,
+    defer_assistant_persist: bool = False,
 ) -> dict:
     from services.voice.hub import hub
 
@@ -158,6 +180,23 @@ def _broadcast_cmd_turn(
         }
         if reply.artifacts:
             ai_payload["artifacts"] = reply.artifacts
+        if reply.trace_id:
+            ai_payload["trace_id"] = reply.trace_id
+        if reply.job_id:
+            ai_payload["job_id"] = reply.job_id
+        if reply.artifacts:
+            img = next((a for a in reply.artifacts if a.get("type") == "image"), None)
+            if img:
+                for key in (
+                    "model",
+                    "model_key",
+                    "workflow_id",
+                    "workflow_name",
+                    "gen_ms",
+                    "user_id",
+                ):
+                    if img.get(key) is not None:
+                        ai_payload[key] = img[key]
         hub.broadcast(
             _chat_event(
                 ai_payload,
@@ -196,11 +235,13 @@ def _broadcast_cmd_turn(
         corr_id=corr_id,
         reply_message_id=reply_message_id,
         skip_user=skip_user,
+        skip_assistant=defer_assistant_persist,
     )
     out = reply.to_chat_response()
     if not reply.ok:
         out["error"] = _resolve_cmd_error_text(reply, cmd_id=cmd_id)
     out["corr_id"] = corr_id
+    out["reply_message_id"] = reply_message_id
     if reply.trace_id:
         out["trace_id"] = reply.trace_id
     if reply.job_id:
@@ -208,8 +249,8 @@ def _broadcast_cmd_turn(
     return out
 
 
-def _immediate_pending_response(*, corr_id: str, cmd_id: str) -> dict:
-    ack = _CMD_ACK_TEXT.get(cmd_id, "Working on it…")
+def _immediate_pending_response(*, corr_id: str, cmd_id: str, parsed: ParsedCmd | None = None) -> dict:
+    ack = _cmd_ack_text(cmd_id, parsed)
     return {
         "ok": True,
         "mode": "cmd",
@@ -227,55 +268,121 @@ async def _run_long_cmd_async(
     text: str,
     corr_id: str,
     operator_id: str | None,
+    otel_context=None,
 ) -> None:
-    result: CmdResult | None = None
-    broadcasted = False
+    from opentelemetry import context as otel_context_mod
+
+    token = None
+    if otel_context is not None:
+        token = otel_context_mod.attach(otel_context)
     try:
-        result = await dispatch_cmd_async(parsed, ctx)
-    except asyncio.CancelledError:
-        result = CmdResult(
-            ok=False,
-            error=_format_cmd_exception(
-                asyncio.CancelledError(),
-                cmd_id=parsed.cmd_id,
-                timeout_sec=_LONG_CMD_TIMEOUT_SEC,
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.exception("long_cmd_background_failed", cmd_id=parsed.cmd_id, corr_id=corr_id)
-        result = CmdResult(
-            ok=False,
-            error=_format_cmd_exception(
-                exc,
-                cmd_id=parsed.cmd_id,
-                timeout_sec=_LONG_CMD_TIMEOUT_SEC,
-            ),
-        )
-    result = _ensure_cmd_result(result, cmd_id=parsed.cmd_id)
-    try:
-        _broadcast_cmd_turn(
-            text=text,
-            reply=result,
-            operator_id=operator_id,
-            corr_id=corr_id,
-            skip_user=True,
-            cmd_id=parsed.cmd_id,
-        )
-        broadcasted = True
-    except Exception:
-        log.exception("long_cmd_broadcast_failed", corr_id=corr_id, cmd_id=parsed.cmd_id)
-    if not broadcasted:
+        result: CmdResult | None = None
+        broadcasted = False
         try:
-            _broadcast_cmd_turn(
+            result = await dispatch_cmd_async(parsed, ctx)
+        except asyncio.CancelledError:
+            result = CmdResult(
+                ok=False,
+                error=_format_cmd_exception(
+                    asyncio.CancelledError(),
+                    cmd_id=parsed.cmd_id,
+                    timeout_sec=_LONG_CMD_TIMEOUT_SEC,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.exception("long_cmd_background_failed", cmd_id=parsed.cmd_id, corr_id=corr_id)
+            result = CmdResult(
+                ok=False,
+                error=_format_cmd_exception(
+                    exc,
+                    cmd_id=parsed.cmd_id,
+                    timeout_sec=_LONG_CMD_TIMEOUT_SEC,
+                ),
+            )
+        result = _ensure_cmd_result(result, cmd_id=parsed.cmd_id)
+        defer_remark_persist = False
+        try:
+            from services.imagine.remark import remark_enabled
+            from services.settings.store import load_effective_settings
+
+            settings = await asyncio.to_thread(load_effective_settings, operator_id)
+            defer_remark_persist = (
+                parsed.cmd_id == "imagine"
+                and result.ok
+                and bool(result.artifacts)
+                and remark_enabled(settings)
+            )
+        except Exception:
+            defer_remark_persist = False
+        broadcast_out: dict = {}
+        try:
+            broadcast_out = _broadcast_cmd_turn(
                 text=text,
                 reply=result,
                 operator_id=operator_id,
                 corr_id=corr_id,
                 skip_user=True,
                 cmd_id=parsed.cmd_id,
+                defer_assistant_persist=defer_remark_persist,
             )
+            broadcasted = True
         except Exception:
-            log.exception("long_cmd_broadcast_retry_failed", corr_id=corr_id, cmd_id=parsed.cmd_id)
+            log.exception("long_cmd_broadcast_failed", corr_id=corr_id, cmd_id=parsed.cmd_id)
+        if not broadcasted:
+            try:
+                broadcast_out = _broadcast_cmd_turn(
+                    text=text,
+                    reply=result,
+                    operator_id=operator_id,
+                    corr_id=corr_id,
+                    skip_user=True,
+                    cmd_id=parsed.cmd_id,
+                    defer_assistant_persist=defer_remark_persist,
+                )
+            except Exception:
+                log.exception("long_cmd_broadcast_retry_failed", corr_id=corr_id, cmd_id=parsed.cmd_id)
+        if (
+            defer_remark_persist
+            and result.ok
+            and result.artifacts
+            and broadcast_out.get("reply_message_id")
+        ):
+            from services.cmd.parser import parse_cmd_input as _parse_cmd
+            from services.voice.hub import hub
+
+            parsed_imagine = _parse_cmd(text) or parsed
+            prompt = str(parsed_imagine.args.get("prompt") or "").strip()
+            artifact = next(
+                (a for a in result.artifacts if a.get("type") == "image"),
+                result.artifacts[0],
+            )
+            if not prompt:
+                prompt = str(artifact.get("prompt") or "")
+            try:
+                remark = await hub.stream_imagine_remark(
+                    operator_id=operator_id,
+                    corr_id=corr_id,
+                    reply_message_id=str(broadcast_out["reply_message_id"]),
+                    prompt=prompt,
+                    artifact=artifact,
+                    artifacts=result.artifacts,
+                )
+            except Exception:
+                log.exception("imagine_remark_failed", corr_id=corr_id)
+                remark = ""
+            if not remark:
+                _schedule_persist_cmd_turns(
+                    operator_id=operator_id,
+                    text=text,
+                    reply=result,
+                    corr_id=corr_id,
+                    reply_message_id=str(broadcast_out["reply_message_id"]),
+                    skip_user=True,
+                    skip_assistant=False,
+                )
+    finally:
+        if token is not None:
+            otel_context_mod.detach(token)
 
 
 def try_dispatch_chat_cmd(text: str, *, operator_id: str | None = None) -> dict | None:
@@ -286,10 +393,16 @@ def try_dispatch_chat_cmd(text: str, *, operator_id: str | None = None) -> dict 
     parsed = parse_cmd_input(text)
     if parsed is None:
         return None
-    ctx = CmdContext(operator_id=operator_id, surface=CmdSurface.DASHBOARD, raw_text=text)
     corr_id = new_corr_id()
+    ctx = CmdContext(
+        operator_id=operator_id,
+        surface=CmdSurface.DASHBOARD,
+        raw_text=text,
+        metadata={"corr_id": corr_id},
+    )
     long_running = parsed.cmd_id in _LONG_RUNNING_CMDS
     if long_running:
+        from opentelemetry import context as otel_context_mod
         from services.async_bridge import schedule_coro
         from services.voice.hub import hub
 
@@ -304,9 +417,10 @@ def try_dispatch_chat_cmd(text: str, *, operator_id: str | None = None) -> dict 
                 text=text,
                 corr_id=corr_id,
                 operator_id=operator_id,
+                otel_context=otel_context_mod.get_current(),
             )
         )
-        return _immediate_pending_response(corr_id=corr_id, cmd_id=parsed.cmd_id)
+        return _immediate_pending_response(corr_id=corr_id, cmd_id=parsed.cmd_id, parsed=parsed)
     from services.async_bridge import run_sync
 
     result = run_sync(dispatch_cmd_async(parsed, ctx))
@@ -315,6 +429,7 @@ def try_dispatch_chat_cmd(text: str, *, operator_id: str | None = None) -> dict 
         text=text,
         reply=result,
         operator_id=operator_id,
+        corr_id=corr_id,
         cmd_id=parsed.cmd_id,
     )
 

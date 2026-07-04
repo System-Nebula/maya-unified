@@ -36,7 +36,11 @@ def imagine_preflight_ok():
             return_value={
                 "status": "ok",
                 "url": "http://127.0.0.1:3030",
-                "weights": {"ok": True},
+                "weights": {
+                    "ok": True,
+                    "zit": {"ok": True, "missing": [], "detail": "ok"},
+                    "krea2": {"ok": True, "missing": [], "detail": "ok", "capability": {"ok": True}},
+                },
             },
         ),
         patch(
@@ -106,10 +110,10 @@ async def test_dispatch_imagine_async(imagine_preflight_ok):
         )
     assert mock_run.call_args.kwargs["model"] == "zit"
     assert result.ok is True
-    assert result.artifacts == [
-        {"type": "image", "url": "https://example.com/out.png", "job_id": "job-123"}
-    ]
-    assert "job-123" in result.text
+    assert result.artifacts[0]["url"] == "https://example.com/out.png"
+    assert result.artifacts[0]["job_id"] == "job-123"
+    assert result.text == "Image ready."
+    assert "job-123" not in result.text
 
 
 @pytest.mark.asyncio
@@ -132,6 +136,59 @@ async def test_dispatch_imagine_defaults_zit_on_dashboard(imagine_preflight_ok):
         )
     assert mock_run.call_args.kwargs["model"] == "zit"
     assert mock_run.call_args.kwargs["prompt"] == "a doge shiba inu anime style"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_imagine_uses_settings_default_model(imagine_preflight_ok):
+    parsed = parse_cmd_input("/imagine a cat")
+    assert parsed is not None
+    settings = {
+        "imagine": {
+            "enabled": True,
+            "comfyui_url": "http://127.0.0.1:3030",
+            "default_model": "krea2",
+        }
+    }
+    mock_run = AsyncMock(
+        return_value={
+            "job_id": "job-cat",
+            "status": "completed",
+            "output_url": "https://example.com/cat.png",
+            "workflow_id": "a0000001-0000-4000-8000-000000000005",
+            "provider_key": "comfyui:graph",
+        }
+    )
+    with (
+        patch("services.settings.store.load_effective_settings", return_value=settings),
+        patch("services.cmd.executors.imagine.run_imagine_job", mock_run),
+    ):
+        await dispatch_cmd_async(
+            parsed,
+            CmdContext(surface=CmdSurface.DASHBOARD, operator_id="op-1"),
+        )
+    assert mock_run.call_args.kwargs["model"] == "krea2"
+
+
+def test_parse_imagine_splits_inline_model_arg() -> None:
+    parsed = parse_cmd_input("/imagine sunset model=krea2")
+    assert parsed is not None
+    assert parsed.args["prompt"] == "sunset"
+    assert parsed.args["model"] == "krea2"
+
+
+def test_parse_imagine_splits_multiple_inline_args() -> None:
+    parsed = parse_cmd_input('/imagine sunset over mountains model=krea2 size=512x512')
+    assert parsed is not None
+    assert parsed.args["prompt"] == "sunset over mountains"
+    assert parsed.args["model"] == "krea2"
+    assert parsed.args["size"] == "512x512"
+
+
+def test_parse_imagine_explicit_prompt_kwarg() -> None:
+    parsed = parse_cmd_input("/imagine prompt=sunset model=krea2")
+    assert parsed is not None
+    assert parsed.args["prompt"] == "sunset"
+    assert parsed.args["model"] == "krea2"
 
 
 def test_cmd_result_to_chat_response_includes_correlation_fields() -> None:

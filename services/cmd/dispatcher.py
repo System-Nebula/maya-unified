@@ -44,12 +44,19 @@ async def dispatch_cmd_async(parsed: ParsedCmd, ctx: CmdContext) -> CmdResult:
     with _tracer.start_as_current_span("cmd.dispatch") as span:
         span.set_attribute("cmd.id", parsed.cmd_id)
         span.set_attribute("cmd.surface", ctx.surface.value)
+        corr_id = (ctx.metadata or {}).get("corr_id")
+        if corr_id:
+            span.set_attribute("chat.corr_id", str(corr_id))
         try:
             result = cmd.executor(ctx, parsed.args)
             if inspect.isawaitable(result):
                 result = await result
             if isinstance(result, CmdResult):
+                if result.job_id:
+                    span.set_attribute("image.job_id", result.job_id)
                 if not result.ok and not result.trace_id:
+                    result = result.model_copy(update={"trace_id": _cmd_trace_id()})
+                elif result.ok and not result.trace_id:
                     result = result.model_copy(update={"trace_id": _cmd_trace_id()})
                 return result
             return CmdResult(ok=True, text=str(result))

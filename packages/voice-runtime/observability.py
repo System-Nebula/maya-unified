@@ -351,3 +351,25 @@ def record_tts(timing: dict[str, float | int]) -> None:
         _tts_synth_latency.record(float(timing["synth_ms"]))
     if _tts_encode_latency is not None and timing.get("encode_ms") is not None:
         _tts_encode_latency.record(float(timing["encode_ms"]))
+
+
+def current_trace_id() -> str | None:
+    """Return the active OTEL trace id as a 32-char hex string, or None."""
+    from opentelemetry import trace
+
+    span = trace.get_current_span()
+    ctx = span.get_span_context()
+    if not ctx.is_valid:
+        return None
+    return format(ctx.trace_id, "032x")
+
+
+def current_span_id() -> str | None:
+    """Return the active OTEL span id as a 16-char hex string, or None."""
+    from opentelemetry import trace
+
+    span = trace.get_current_span()
+    ctx = span.get_span_context()
+    if not ctx.is_valid:
+        return None
+    return format(ctx.span_id, "016x")

@@ -77,15 +77,29 @@ def _voice_cue_filtered_stream(stream):
     return stream
 
 
-def _publish_ai_reply(hub: "VoiceHub", raw: str, *, operator_id: str | None = None, room_id: str | None = None) -> str:
+def _publish_ai_reply(
+    hub: "VoiceHub",
+    raw: str,
+    *,
+    operator_id: str | None = None,
+    room_id: str | None = None,
+    corr_id: str | None = None,
+    message_id: str | None = None,
+) -> str:
     """Strip VOICE: cues and broadcast one clean assistant turn."""
     from agent import finalize_reply_text
 
     reply, cue = finalize_reply_text(raw)
     if reply:
-        hub.broadcast({"type": "ai", "text": reply}, operator_id=operator_id, room_id=room_id)
+        payload: dict = {"type": "ai", "text": reply}
+        if corr_id:
+            payload = _chat_event(payload, corr_id=corr_id, message_id=message_id)
+        hub.broadcast(payload, operator_id=operator_id, room_id=room_id)
     if cue:
-        hub.broadcast({"type": "delivery", "cue": cue}, operator_id=operator_id, room_id=room_id)
+        cue_payload: dict = {"type": "delivery", "cue": cue}
+        if corr_id:
+            cue_payload = _chat_event(cue_payload, corr_id=corr_id)
+        hub.broadcast(cue_payload, operator_id=operator_id, room_id=room_id)
     return reply
 
 
@@ -783,6 +797,9 @@ class VoiceHub(Hub):
             corr_id = new_corr_id()
             user_message_id = new_message_id()
             reply_message_id = new_message_id()
+            reply = ""
+            streamed = False
+            imagine_artifact_emitted = False
             with span(
                 "chat.corr",
                 corr_id=corr_id,
@@ -805,9 +822,35 @@ class VoiceHub(Hub):
                 )
                 messages = self.agent._build_messages(text, history_override=history_override)  # noqa: SLF001
 
+                plan = None
+                if self.agent._should_orchestrate():  # noqa: SLF001
+                    plan = self.agent._llm_orchestrate(text, text)  # noqa: SLF001
+
+                from services.imagine.tool_context import set_imagine_tool_context
+
+                set_imagine_tool_context(operator_id=operator_id, corr_id=corr_id)
+
+                from services.imagine.chat_fallback import trace_has_imagine_success
+                from services.imagine.intent import looks_like_imagine_request
+                from services.imagine.settings import get_imagine_settings
+
+                effective_settings = load_effective_settings(operator_id)
+                imagine_settings = get_imagine_settings(effective_settings)
+                imagine_nl = (
+                    looks_like_imagine_request(text)
+                    and bool(imagine_settings.get("enabled"))
+                )
+
+                tool_trace: list[dict] = []
+
                 def _emit_chat(**ev: object) -> None:
+                    nonlocal streamed, imagine_artifact_emitted
                     payload = dict(ev)
                     if payload.get("type") == "ai":
+                        if payload.get("text") or payload.get("artifacts"):
+                            streamed = True
+                        if payload.get("artifacts"):
+                            imagine_artifact_emitted = True
                         payload = _chat_event(
                             payload,
                             corr_id=corr_id,
@@ -817,18 +860,14 @@ class VoiceHub(Hub):
                         payload = _chat_event(payload, corr_id=corr_id)
                     self.broadcast(payload, operator_id=operator_id)
 
-                plan = None
-                if self.agent._should_orchestrate():  # noqa: SLF001
-                    plan = self.agent._llm_orchestrate(text, text)  # noqa: SLF001
-
-                reply = ""
-                streamed = False
                 with _inference_lock:
                     self.agent._avatar_mood_set_this_turn = False  # noqa: SLF001
                     if self.agent._tools_active():  # noqa: SLF001
-                        anim_label = self.agent._maybe_play_avatar_animation(  # noqa: SLF001
-                            text, plan=plan, raw_text=text,
-                        )
+                        anim_label = None
+                        if not imagine_nl:
+                            anim_label = self.agent._maybe_play_avatar_animation(  # noqa: SLF001
+                                text, plan=plan, raw_text=text,
+                            )
                         if anim_label:
                             messages = self.agent._messages_with_animation_hint(  # noqa: SLF001
                                 text, anim_label, history_override=history_override,
@@ -851,6 +890,21 @@ class VoiceHub(Hub):
                         else:
                             result = self.agent.tool_loop.run(messages, emit=_emit_chat)  # noqa: SLF001
                             reply = (result.final_text or "").strip()
+                            tool_trace = list(result.trace or [])
+                            if imagine_nl and not trace_has_imagine_success(tool_trace):
+                                from services.imagine.chat_fallback import run_imagine_nl_fallback
+
+                                fallback_reply, fallback_streamed = run_imagine_nl_fallback(
+                                    user_text=text,
+                                    operator_id=operator_id,
+                                    corr_id=corr_id,
+                                    messages=messages,
+                                    llm=self.agent.llm,  # noqa: SLF001
+                                    emit=_emit_chat,
+                                    settings=effective_settings,
+                                )
+                                reply = fallback_reply
+                                streamed = streamed or fallback_streamed
                     else:
                         parts = []
                         with _llm_lock:
@@ -869,7 +923,13 @@ class VoiceHub(Hub):
                         streamed = True
 
                 if reply and not streamed:
-                    reply = _publish_ai_reply(self, reply, operator_id=operator_id)
+                    reply = _publish_ai_reply(
+                        self,
+                        reply,
+                        operator_id=operator_id,
+                        corr_id=corr_id,
+                        message_id=reply_message_id,
+                    )
                 elif reply:
                     from agent import finalize_reply_text
 
@@ -939,8 +999,111 @@ class VoiceHub(Hub):
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
             self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
+            if imagine_artifact_emitted:
+                log.warning("chat turn failed after imagine artifact corr_id=%s: %s", corr_id, msg)
+                return {"ok": True, "text": reply or "", "corr_id": corr_id}
             self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
             return {"ok": False, "error": msg}
+
+    async def stream_imagine_remark(
+        self,
+        *,
+        operator_id: str | None,
+        corr_id: str,
+        reply_message_id: str,
+        prompt: str,
+        artifact: dict,
+        artifacts: list | None = None,
+    ) -> str:
+        import asyncio
+
+        from services.imagine.remark import (
+            build_remark_messages,
+            remark_enabled,
+            remark_vision_model,
+            stream_remark_text,
+        )
+        from services.settings.store import load_effective_settings
+
+        settings = await asyncio.to_thread(load_effective_settings, operator_id)
+        if not remark_enabled(settings):
+            return ""
+        if not self.ready or self.agent is None:
+            return ""
+
+        system = self.agent.llm.base_system_prompt()
+        messages, vision_used = build_remark_messages(
+            prompt=prompt,
+            artifact=artifact,
+            system_prompt=system,
+            settings=settings,
+        )
+        artifact_list = artifacts if artifacts else [artifact]
+
+        self.broadcast(
+            _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
+            operator_id=operator_id,
+        )
+
+        def _emit(**ev: object) -> None:
+            kind = ev.get("type") if isinstance(ev, dict) else None
+            if kind == "ai":
+                chunk = str(ev.get("text") or "")
+                if not chunk:
+                    return
+                payload = {
+                    "type": "ai",
+                    "text": chunk,
+                    "mode": "cmd",
+                    "cmd_phase": "remark",
+                    "artifacts": artifact_list,
+                }
+                self.broadcast(
+                    _chat_event(payload, corr_id=corr_id, message_id=reply_message_id),
+                    operator_id=operator_id,
+                )
+            elif kind == "delivery" and ev.get("cue"):
+                self.broadcast(
+                    _chat_event({"type": "delivery", "cue": ev["cue"]}, corr_id=corr_id),
+                    operator_id=operator_id,
+                )
+
+        with span(
+            "imagine.remark",
+            vision_enabled=vision_used,
+            image_job_id=str(artifact.get("job_id") or ""),
+            chat_corr_id=corr_id,
+        ):
+            with _inference_lock:
+                with _llm_lock:
+                    remark = await asyncio.to_thread(
+                        stream_remark_text,
+                        self.agent.llm,
+                        messages,
+                        emit=_emit,
+                        vision_model=remark_vision_model(settings) if vision_used else "",
+                    )
+
+        if remark and operator_id:
+            from services.operator_voice import context as op_ctx
+
+            op_ctx.append_turn(
+                operator_id,
+                "assistant",
+                remark,
+                message_id=reply_message_id,
+                corr_id=corr_id,
+            )
+
+        self.broadcast(
+            _chat_event(
+                {"type": "status", "value": "idle"},
+                corr_id=corr_id,
+                message_id=reply_message_id,
+            ),
+            operator_id=operator_id,
+        )
+        return remark
 
     def chat_in_room(
         self,

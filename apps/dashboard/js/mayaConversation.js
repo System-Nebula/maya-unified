@@ -107,6 +107,51 @@ function _finalizeChatMs(store) {
   store._chatPendingAt = null;
 }
 
+function _applyImagineTurnMeta(turn, { traceId, jobId, artifacts, ev } = {}) {
+  if (!turn || turn.role !== "maya") return;
+  if (traceId) turn.traceId = traceId;
+  if (jobId) turn.jobId = jobId;
+  const img = (artifacts || []).find((a) => a?.type === "image");
+  if (img) {
+    if (img.job_id) turn.jobId = img.job_id;
+    if (img.model) turn.imagineModel = img.model;
+    if (img.model_key) turn.imagineModelKey = img.model_key;
+    if (img.workflow_id) turn.workflowId = img.workflow_id;
+    if (img.workflow_name) turn.workflowName = img.workflow_name;
+    if (img.gen_ms != null) turn.genMs = img.gen_ms;
+    if (img.user_id) turn.imagineUserId = img.user_id;
+  }
+  if (ev) {
+    if (ev.model && !turn.imagineModel) turn.imagineModel = ev.model;
+    if (ev.model_key && !turn.imagineModelKey) turn.imagineModelKey = ev.model_key;
+    if (ev.workflow_id && !turn.workflowId) turn.workflowId = ev.workflow_id;
+    if (ev.workflow_name && !turn.workflowName) turn.workflowName = ev.workflow_name;
+    if (ev.gen_ms != null && turn.genMs == null) turn.genMs = ev.gen_ms;
+    if (ev.user_id && !turn.imagineUserId) turn.imagineUserId = ev.user_id;
+    if (ev.trace_id && !turn.traceId) turn.traceId = ev.trace_id;
+    if (ev.job_id && !turn.jobId) turn.jobId = ev.job_id;
+  }
+}
+
+function _imagineTurnBodyHidden(turn) {
+  if (!turn?.artifacts?.length) return false;
+  if (turn._remarkStreaming) return false;
+  const body = String(turn.text || "").trim();
+  if (!body) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body)) return true;
+  return /^image ready\.?$/i.test(body);
+}
+
+function _imagineRemarkHint(turn) {
+  if (!turn?.artifacts?.length) return null;
+  if (turn._remarkStreaming) return null;
+  const body = String(turn.text || "").trim();
+  if (!body || /^image ready\.?$/i.test(body)) {
+    return { text: "remark skipped — check Settings → Imagine → Remark vision model", dim: true };
+  }
+  return null;
+}
+
 function _applyPendingTurnMeta(store, turn) {
   if (!turn || turn.role !== "maya") return;
   if (!turn.deliveryCue && store._pendingDeliveryCue) {
@@ -583,6 +628,14 @@ function _findMayaTurnByCorr(store, corrId) {
   return -1;
 }
 
+function _findOperatorTurnByText(store, text) {
+  for (let i = store.turns.length - 1; i >= 0; i--) {
+    const t = store.turns[i];
+    if (t?.role === "operator" && t.text === text) return i;
+  }
+  return -1;
+}
+
 function _hasCmdReply(store, corrId, text) {
   if (_findMayaTurnByCorr(store, corrId) >= 0) return true;
   const last = store.turns[store.turns.length - 1];
@@ -626,9 +679,23 @@ function _clearStalePendingCmdAck(store, operatorText) {
   store.turns.splice(ackIdx, 1);
 }
 
+const _IMAGINE_MODEL_LABELS = {
+  zit: "Z-Image Turbo",
+  "z-image": "Z-Image Turbo",
+  krea2: "Krea 2 Turbo",
+  "krea-2": "Krea 2 Turbo",
+  "ideogram-local": "Ideogram 4 Local",
+  comfyui: "Ideogram 4 Local",
+};
+
+function _imagineAckLabel(text) {
+  const trimmed = String(text || "").trim();
+  const modelMatch = trimmed.match(/\bmodel=([^\s]+)/i);
+  const model = modelMatch?.[1]?.toLowerCase();
+  return _IMAGINE_MODEL_LABELS[model] || "selected model";
+}
+
 const _LONG_RUNNING_CMD_ACK = {
-  imagine: "Generating image… Z-Image Turbo may take up to a minute while models load.",
-  img: "Generating image… Z-Image Turbo may take up to a minute while models load.",
   blend: "Running Blender…",
 };
 
@@ -636,6 +703,9 @@ function _longRunningCmdAckText(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed.startsWith("/")) return null;
   const name = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase();
+  if (name === "imagine" || name === "img") {
+    return `Generating image… ${_imagineAckLabel(text)} may take up to a minute while models load.`;
+  }
   return _LONG_RUNNING_CMD_ACK[name] || null;
 }
 
@@ -702,6 +772,20 @@ function _scheduleCmdStallHint(store, corrId) {
   }, stallMs);
 }
 
+function _findCmdDoneTurn(store, corrId, messageId) {
+  if (messageId) {
+    const byId = store.turns.findIndex(
+      (t) => t.messageId === messageId && t.role === "maya" && (t.cmdPhase === "done" || t.cmdPhase === "remark"),
+    );
+    if (byId >= 0) return byId;
+  }
+  for (let i = store.turns.length - 1; i >= 0; i -= 1) {
+    const t = store.turns[i];
+    if (t.role === "maya" && t.corrId === corrId && (t.cmdPhase === "done" || t._remarkStreaming)) return i;
+  }
+  return -1;
+}
+
 function _upsertCmdMayaTurn(store, {
   corrId,
   text,
@@ -709,7 +793,30 @@ function _upsertCmdMayaTurn(store, {
   cmdPhase,
   messageId,
   operatorText,
+  traceId,
+  jobId,
+  ev,
 }) {
+  if (cmdPhase === "remark") {
+    const doneIdx = _findCmdDoneTurn(store, corrId, messageId);
+    if (doneIdx >= 0) {
+      const turn = store.turns[doneIdx];
+      const chunk = String(text || "");
+      if (!turn._remarkStreaming) {
+        turn.text = "";
+        turn._remarkStreaming = true;
+      }
+      if (chunk) turn.text = (turn.text || "") + chunk;
+      turn.cmdPhase = "done";
+      turn._cmdPending = false;
+      if (messageId) turn.messageId = messageId;
+      if (artifacts?.length) turn.artifacts = artifacts;
+      _applyImagineTurnMeta(turn, { traceId, jobId, artifacts, ev });
+      _persistConversation(store);
+      _scrollTranscript();
+      return true;
+    }
+  }
   const ackIdx = _findCmdAckTurn(store, corrId);
   if (ackIdx >= 0 && cmdPhase !== "ack") {
     const turn = store.turns[ackIdx];
@@ -719,6 +826,7 @@ function _upsertCmdMayaTurn(store, {
     _clearCmdStallTimer(turn);
     if (messageId) turn.messageId = messageId;
     if (artifacts?.length) turn.artifacts = artifacts;
+    _applyImagineTurnMeta(turn, { traceId, jobId, artifacts, ev });
     _applyPendingTurnMeta(store, turn);
     _finalizeChatMs(store);
     store._chatPendingAt = null;
@@ -772,6 +880,7 @@ function _upsertCmdMayaTurn(store, {
     _streaming: false,
     artifacts: artifacts?.length ? artifacts : undefined,
   });
+  _applyImagineTurnMeta(store.turns[store.turns.length - 1], { traceId, jobId, artifacts, ev });
   _applyPendingTurnMeta(store, store.turns[store.turns.length - 1]);
   _finalizeChatMs(store);
   store._chatPendingAt = null;
@@ -797,6 +906,9 @@ function _formatCmdError(raw) {
   } else if (/cancelled.*gateway may have reloaded/i.test(detail)) {
     title = "Image generation cancelled";
     hint = "The gateway may have reloaded during generation. Retry /imagine.";
+  } else if (/requires ComfyUI 0\.26|CLIPLoader type `krea2`|not supported by this ComfyUI build/i.test(detail)) {
+    title = "Image generation failed";
+    hint = detail;
   } else if (/COMFYUI_API_URL|comfyui-api|ComfyUI is not reachable/i.test(detail)) {
     title = "Image generation failed";
     hint = "ComfyUI is unavailable. Start comfyui-api or check Settings → Imagine → ComfyUI URL.";
@@ -816,14 +928,35 @@ function _formatCmdError(raw) {
 
 const _SERVER_CLEAR_WINDOW_MS = 30000;
 
-function _ensureOperatorTurn(store, text, corrId) {
-  const last = store.turns[store.turns.length - 1];
-  if (last?.role === "operator" && last.text === text) {
-    if (corrId && !last.corrId) last.corrId = corrId;
+function _markSseHandledCorr(store, corrId) {
+  if (!corrId) return;
+  if (!store._sseHandledCorrIds) store._sseHandledCorrIds = {};
+  store._sseHandledCorrIds[corrId] = true;
+}
+
+function _sseAlreadyHandledForHttp(store, corrId, operatorText) {
+  if (corrId && store._sseHandledCorrIds?.[corrId]) return true;
+  if (corrId && _findMayaTurnByCorr(store, corrId) >= 0) return true;
+  const opIdx = _findOperatorTurnByText(store, operatorText);
+  if (opIdx < 0) return false;
+  for (let i = opIdx + 1; i < store.turns.length; i += 1) {
+    const t = store.turns[i];
+    if (t?.role === "maya" && (t.text || t.artifacts?.length)) return true;
+    if (t?.role === "operator") break;
+  }
+  return false;
+}
+
+function _ensureOperatorTurn(store, text, corrId, messageId) {
+  const opIdx = _findOperatorTurnByText(store, text);
+  if (opIdx >= 0) {
+    const op = store.turns[opIdx];
+    if (corrId && !op.corrId) op.corrId = corrId;
+    if (messageId && _isServerId(messageId)) op.messageId = messageId;
     return;
   }
   store.turns.push({
-    messageId: _nextMessageId(),
+    messageId: messageId && _isServerId(messageId) ? messageId : _nextMessageId(),
     corrId: corrId || null,
     role: "operator",
     text,
@@ -836,6 +969,16 @@ function _ensureOperatorTurn(store, text, corrId) {
 function _applyChatHttpResponse(store, data, operatorText) {
   if (!data || !data.ok || data.mode === "cmd") return;
   const corrId = data.corr_id || null;
+  if (_sseAlreadyHandledForHttp(store, corrId, operatorText)) {
+    if (corrId) {
+      const opIdx = _findOperatorTurnByText(store, operatorText);
+      if (opIdx >= 0 && !store.turns[opIdx].corrId) store.turns[opIdx].corrId = corrId;
+    }
+    store._chatPendingAt = null;
+    store._expectingReply = false;
+    _persistConversation(store);
+    return;
+  }
   const replyText = String(data.text || "").trim();
   _ensureOperatorTurn(store, operatorText, corrId);
   if (!replyText) {
@@ -884,8 +1027,8 @@ function _applyCmdResponse(store, data, operatorText) {
     return;
   }
   if (data.ok) {
-    const lastOp = store.turns[store.turns.length - 1];
-    if (!(lastOp?.role === "operator" && lastOp.text === operatorText)) {
+    const opIdx = _findOperatorTurnByText(store, operatorText);
+    if (opIdx < 0) {
       store.turns.push({
         messageId: _nextMessageId(),
         corrId,
@@ -893,14 +1036,16 @@ function _applyCmdResponse(store, data, operatorText) {
         text: operatorText,
         sentAt: Date.now(),
       });
-    } else if (corrId && !lastOp.corrId) {
-      lastOp.corrId = corrId;
+    } else if (corrId && !store.turns[opIdx].corrId) {
+      store.turns[opIdx].corrId = corrId;
     }
     _upsertCmdMayaTurn(store, {
       corrId,
       text: data.text || "",
       artifacts: data.artifacts,
       cmdPhase: "done",
+      traceId: data.trace_id || null,
+      jobId: data.job_id || null,
     });
     return;
   }
@@ -967,6 +1112,9 @@ function _applyAgentEvent(store, ev) {
       _onTtsStart(store);
       store._expectingReply = true;
     } else if (v === "idle") {
+      for (const t of store.turns) {
+        if (t._remarkStreaming) t._remarkStreaming = false;
+      }
       _endStreaming(store);
       _finalizeChatMs(store);
       store._expectingReply = false;
@@ -1054,11 +1202,23 @@ function _applyAgentEvent(store, ev) {
     return;
   }
   if (ev.type === "user" && ev.text) {
-    const last = store.turns[store.turns.length - 1];
-    if (last && last.role === "operator" && last.text === ev.text) return;
+    const corrId = _evCorrId(ev);
+    const opIdx = _findOperatorTurnByText(store, ev.text);
+    if (opIdx >= 0) {
+      const op = store.turns[opIdx];
+      if (corrId && !op.corrId) op.corrId = corrId;
+      if (ev.message_id && _isServerId(ev.message_id)) op.messageId = ev.message_id;
+      store._chatPendingAt = Date.now();
+      store._ttsPendingAt = null;
+      store._ttsPendingIdx = null;
+      store._ttsTargetIdx = null;
+      _persistConversation(store);
+      _scrollTranscript();
+      return;
+    }
     store.turns.push({
       messageId: ev.message_id || _nextMessageId(),
-      corrId: _evCorrId(ev),
+      corrId,
       role: "operator",
       text: ev.text,
       sentAt: Date.now(),
@@ -1071,14 +1231,24 @@ function _applyAgentEvent(store, ev) {
     _scrollTranscript();
     return;
   }
-  if (ev.type === "ai" && ev.text) {
+  if (ev.type === "ai" && (ev.text || ev.artifacts?.length)) {
+    const corrId = _evCorrId(ev);
+    if (corrId && (ev.artifacts?.length || ev.text)) {
+      _markSseHandledCorr(store, corrId);
+    }
     const last = store.turns[store.turns.length - 1];
-    const chunk = String(ev.text);
+    const chunk = String(ev.text || "");
     const isCmd = ev.mode === "cmd";
     const streamingMaya = last && last.role === "maya" && last._streaming;
     if (last && last.role === "maya" && !last._streaming && chunk.trim() === (last.text || "").trim()) {
       if (ev.artifacts?.length && !last.artifacts?.length) {
         last.artifacts = ev.artifacts;
+        _applyImagineTurnMeta(last, {
+          traceId: ev.trace_id || null,
+          jobId: ev.job_id || null,
+          artifacts: ev.artifacts,
+          ev,
+        });
         _persistConversation(store);
         _scrollTranscript();
       }
@@ -1100,6 +1270,9 @@ function _applyAgentEvent(store, ev) {
         artifacts: ev.artifacts,
         cmdPhase: ev.cmd_phase || "done",
         messageId: ev.message_id,
+        traceId: ev.trace_id || null,
+        jobId: ev.job_id || null,
+        ev,
       });
       return;
     }
@@ -1108,8 +1281,24 @@ function _applyAgentEvent(store, ev) {
       if (ev.message_id) last.messageId = ev.message_id;
       const corrId = _evCorrId(ev);
       if (corrId) last.corrId = corrId;
+      if (ev.artifacts?.length) {
+        last.artifacts = ev.artifacts;
+        _applyImagineTurnMeta(last, {
+          traceId: ev.trace_id || null,
+          jobId: ev.job_id || null,
+          artifacts: ev.artifacts,
+          ev,
+        });
+      }
       const cur = last.text || "";
-      if (!chunk || cur.endsWith(chunk)) return;
+      if (chunk && last.artifacts?.length) last._remarkStreaming = true;
+      if (!chunk || cur.endsWith(chunk)) {
+        if (ev.artifacts?.length) {
+          _persistConversation(store);
+          _scrollTranscript();
+        }
+        return;
+      }
       if (cur && chunk.startsWith(cur)) {
         last.text = chunk;
         _applyPendingTurnMeta(store, last);
@@ -1120,14 +1309,28 @@ function _applyAgentEvent(store, ev) {
       last.text = cur + chunk;
       _applyPendingTurnMeta(store, last);
     } else {
-      store.turns.push({
+      const mayaTurn = {
         messageId: ev.message_id || _nextMessageId(),
         corrId: _evCorrId(ev),
         role: "maya",
         text: chunk,
         _streaming: true,
-      });
-      _applyPendingTurnMeta(store, store.turns[store.turns.length - 1]);
+      };
+      if (ev.artifacts?.length) {
+        mayaTurn.artifacts = ev.artifacts;
+      }
+      store.turns.push(mayaTurn);
+      const added = store.turns[store.turns.length - 1];
+      if (chunk && added.artifacts?.length) added._remarkStreaming = true;
+      _applyPendingTurnMeta(store, added);
+      if (ev.artifacts?.length) {
+        _applyImagineTurnMeta(added, {
+          traceId: ev.trace_id || null,
+          jobId: ev.job_id || null,
+          artifacts: ev.artifacts,
+          ev,
+        });
+      }
     }
     _persistConversation(store);
     _scrollTranscript();
@@ -1163,6 +1366,7 @@ document.addEventListener("alpine:init", () => {
     _pendingTtsModel: null,
     _pendingDeliveryCue: null,
     _cmdFailedCorrIds: {},
+    _sseHandledCorrIds: {},
 
     persist() {
       _persistConversation(this);
@@ -1210,6 +1414,10 @@ document.addEventListener("alpine:init", () => {
       return _formatSentAt(ts);
     },
 
+    imagineBodyHidden(turn) {
+      return _imagineTurnBodyHidden(turn);
+    },
+
     operatorMetaParts(turn) {
       const parts = [];
       if (turn.sentAt) parts.push({ text: `sent ${_formatSentAt(turn.sentAt)}` });
@@ -1221,14 +1429,24 @@ document.addEventListener("alpine:init", () => {
     mayaMetaParts(turn) {
       const parts = [];
       if (turn.deliveryCue) parts.push({ text: `Maya · ${turn.deliveryCue}` });
+      if (turn.imagineModel) parts.push({ text: turn.imagineModel });
+      if (turn.genMs != null) parts.push({ text: `gen ${_formatDuration(turn.genMs)}` });
       if (turn.corrId) parts.push({ text: turn.corrId, dim: !_isServerId(turn.corrId) });
-      if (turn.chatMs != null) parts.push({ text: `chat ${_formatDuration(turn.chatMs)}` });
+      if (turn.chatMs != null) {
+        const tripLabel = turn.imagineModel || turn.genMs != null ? "trip" : "chat";
+        parts.push({ text: `${tripLabel} ${_formatDuration(turn.chatMs)}` });
+      }
       const tts = turn.ttsMs != null ? _formatDuration(turn.ttsMs) : "—";
       let ttsPart = `TTS ${tts}`;
       if (turn.ttsTtfaMs != null) ttsPart += ` (ttfa ${_formatDuration(turn.ttsTtfaMs)})`;
       if ((turn.ttsCached || turn.ttsReplay) && turn.ttsMs != null) ttsPart += " (cached)";
       if (turn.ttsModel) parts.push({ text: ttsPart + ` · ${turn.ttsModel}` });
       else parts.push({ text: ttsPart });
+      if (turn.workflowName) parts.push({ text: turn.workflowName, dim: true });
+      if (turn.traceId) parts.push({ text: `trace ${turn.traceId}`, dim: true });
+      if (turn.jobId) parts.push({ text: `job ${turn.jobId}`, dim: true });
+      const remarkHint = _imagineRemarkHint(turn);
+      if (remarkHint) parts.push(remarkHint);
       if (turn.messageId) parts.push({ text: turn.messageId, dim: !_isServerId(turn.messageId) });
       if (turn.completionId) parts.push({ text: `cmpl ${turn.completionId}` });
       return parts;
@@ -1570,6 +1788,17 @@ document.addEventListener("alpine:init", () => {
           this.turns.push({ messageId: _nextMessageId(), role: "system", text: data.error || "Chat failed" });
           this.persist();
           _scrollTranscript();
+        } else if (this.enrichedChatReady || _sseAlreadyHandledForHttp(this, data.corr_id, text)) {
+          const corrId = data.corr_id || null;
+          if (corrId) {
+            const opIdx = _findOperatorTurnByText(this, text);
+            if (opIdx >= 0 && !this.turns[opIdx].corrId) {
+              this.turns[opIdx].corrId = corrId;
+            }
+          }
+          this._chatPendingAt = null;
+          this._expectingReply = false;
+          this.persist();
         } else {
           _applyChatHttpResponse(this, data, text);
         }
@@ -1614,6 +1843,7 @@ document.addEventListener("alpine:init", () => {
       this._ttsPendingIdx = null;
       this._ttsTargetIdx = null;
       this._expectingReply = false;
+      this._sseHandledCorrIds = {};
       this.persist();
       _scrollTranscript(false);
     },

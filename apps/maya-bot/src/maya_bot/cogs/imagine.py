@@ -1355,7 +1355,7 @@ class ImagineCog(commands.Cog):
             if image_mode == ImageMode.GENERATE and not attachments:
                 from services.cmd.executors.imagine import build_imagine_request
 
-                provider_key, request = build_imagine_request(
+                provider_key, request, _wf = build_imagine_request(
                     prompt=prompt,
                     operator_id=portal_user_id,
                     mode=image_mode.value,

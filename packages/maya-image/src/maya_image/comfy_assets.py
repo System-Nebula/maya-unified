@@ -79,8 +79,8 @@ _MANIFEST: dict[str, Asset] = {
         "text_encoders",
     ),
     "qwen_image_vae.safetensors": Asset(
-        "Comfy-Org/Qwen-Image_ComfyUI",
-        "split_files/vae/qwen_image_vae.safetensors",
+        "Comfy-Org/Krea-2",
+        "qwen_image_vae.safetensors",
         "vae",
     ),
     # Flux2 — Comfy-Org/flux2-dev (FP8 weights fit a 24GB 3090 Ti)

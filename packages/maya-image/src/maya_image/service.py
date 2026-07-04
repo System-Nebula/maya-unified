@@ -8,7 +8,7 @@ import random
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -124,6 +124,18 @@ class ImageJobService:
 
     def get_memory_job(self, job_id: str) -> ImageJob | None:
         return self._memory_jobs.get(job_id)
+
+    def get_job(self, job_id: str) -> ImageJob | None:
+        cached = self.get_memory_job(job_id)
+        if cached is not None:
+            return cached
+        try:
+            row = self._load_job_record_sync(job_id)
+        except SQLAlchemyError:
+            return None
+        if row is None:
+            return None
+        return self._record_to_model(row)
 
     def _session(self):
         return self._db.get_session()
@@ -301,6 +313,12 @@ class ImageJobService:
         )
 
     def _build_job_record(self, job: ImageJob) -> ImageJobTable:
+        if job.started_at is not None:
+            created_at = job.started_at
+        elif job.created_at is not None:
+            created_at = job.created_at
+        else:
+            created_at = datetime.now(timezone.utc)
         return ImageJobTable(
             id=job.id,
             user_id=job.input.user_id,
@@ -314,6 +332,7 @@ class ImageJobService:
             mask_url=job.input.mask_url,
             references=[ref.model_dump() for ref in job.input.references],
             extra_data=job.input.metadata,
+            created_at=created_at,
             started_at=job.started_at,
         )
 
@@ -444,6 +463,12 @@ class ImageJobService:
         with _tracer.start_as_current_span("image.submit") as span:
             span.set_attribute("image.provider_key", provider_key)
             span.set_attribute("image.mode", request.mode.value)
+            if request.metadata.get("corr_id"):
+                span.set_attribute("chat.corr_id", str(request.metadata["corr_id"]))
+            if request.metadata.get("workflow_id"):
+                span.set_attribute("image.workflow_id", str(request.metadata["workflow_id"]))
+            if request.metadata.get("model_key"):
+                span.set_attribute("image.model_key", str(request.metadata["model_key"]))
             if request.user_id:
                 span.set_attribute("portal.user_id", request.user_id)
                 span.set_attribute("discord.user_id", request.metadata.get("discord_user_id", request.user_id))
@@ -479,12 +504,19 @@ class ImageJobService:
                 await self._hydrate_sync_output(job_model, provider)
 
             trace_id = _current_trace_id()
+            meta = request.metadata
             correlation = {
                 "trace_id": trace_id,
                 "fal_request_id": provider_job_id,
-                "discord_interaction_id": request.metadata.get("discord_interaction_id"),
-                "discord_message_id": request.metadata.get("discord_message_id"),
-                "discord_user_id": request.metadata.get("discord_user_id"),
+                "corr_id": meta.get("corr_id"),
+                "surface": meta.get("surface"),
+                "workflow_id": meta.get("workflow_id"),
+                "model_key": meta.get("model_key"),
+                "workflow_name": meta.get("workflow_name"),
+                "comfyui_url": os.environ.get("COMFYUI_API_URL"),
+                "discord_interaction_id": meta.get("discord_interaction_id"),
+                "discord_message_id": meta.get("discord_message_id"),
+                "discord_user_id": meta.get("discord_user_id"),
                 "portal_user_id": request.user_id,
                 "discord_channel_id": request.channel_id,
                 "discord_guild_id": request.guild_id,
@@ -501,6 +533,7 @@ class ImageJobService:
                 mode=request.mode.value,
                 user_id=request.user_id,
                 trace_id=trace_id,
+                corr_id=meta.get("corr_id"),
             )
             try:
                 from observability.boundary import emit_visibility
@@ -688,6 +721,15 @@ class ImageJobService:
         with _tracer.start_as_current_span("image.wait_for_job") as wait_span:
             wait_span.set_attribute("image.job_id", job_id)
             wait_span.set_attribute("image.wait_timeout_sec", timeout_sec or 0)
+            mem = self._memory_jobs.get(job_id)
+            if mem is not None:
+                meta = mem.input.metadata or {}
+                if meta.get("corr_id"):
+                    wait_span.set_attribute("chat.corr_id", str(meta["corr_id"]))
+                if meta.get("workflow_id"):
+                    wait_span.set_attribute("image.workflow_id", str(meta["workflow_id"]))
+                if meta.get("model_key"):
+                    wait_span.set_attribute("image.model_key", str(meta["model_key"]))
             try:
                 from observability.boundary import emit_visibility, sync_stack_window
 

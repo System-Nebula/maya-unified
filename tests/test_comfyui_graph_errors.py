@@ -78,3 +78,24 @@ def test_non_zimage_submit_timeout_defaults_to_90s() -> None:
         params={"model_key": "sd15"},
     )
     assert _submit_timeout_sec(workflow) == 90.0
+
+
+def test_summarize_comfy_error_krea2_type_unsupported() -> None:
+    body = json.dumps(
+        {
+            "node_errors": {
+                "2": {
+                    "class_type": "CLIPLoader",
+                    "errors": [
+                        {
+                            "type": "value_not_in_list",
+                            "details": "type: 'krea2' not in ['stable_diffusion', 'qwen_image']",
+                        }
+                    ],
+                }
+            }
+        }
+    )
+    summary = _summarize_comfy_error(body, workflow_name="krea2-turbo-t2i")
+    assert "0.26" in summary
+    assert "infra/comfyui/README.md" in summary

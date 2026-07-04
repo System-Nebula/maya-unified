@@ -105,8 +105,12 @@ class ToolLoop:
                     if resp.tool_calls:
                         messages.append(self._assistant_tool_msg(resp))
                         for tc in resp.tool_calls:
+                            dup = self._duplicate_imagine_result(tc.name, trace)
                             _emit(type="tool_start", tool=tc.name, args=tc.arguments)
-                            result = self.executor.execute(tc.name, tc.arguments)
+                            if dup is not None:
+                                result = dup
+                            else:
+                                result = self.executor.execute(tc.name, tc.arguments)
                             trace.append({"tool": tc.name, "args": tc.arguments, "result": result})
                             _emit(type="tool_end", tool=tc.name, result=result)
                             messages.append({
@@ -114,6 +118,9 @@ class ToolLoop:
                                 "tool_call_id": tc.id,
                                 "content": result,
                             })
+                        remark = self._maybe_finish_imagine_remark(messages, trace, emit)
+                        if remark is not None:
+                            return ToolLoopResult(remark, trace, rnd)
                         continue
                     # Some models (e.g. Gemma) emit tool JSON as plain text instead of
                     # structured tool_calls — parse and run it rather than speaking it.
@@ -133,6 +140,9 @@ class ToolLoop:
                                 "Use this to answer now. Reply in plain text with no JSON."
                             ),
                         })
+                        remark = self._maybe_finish_imagine_remark(messages, trace, emit)
+                        if remark is not None:
+                            return ToolLoopResult(remark, trace, rnd)
                         continue
                     return ToolLoopResult(self._strip_json(resp.content or ""), trace, rnd)
 
@@ -159,6 +169,9 @@ class ToolLoop:
                     "with no JSON."
                 ),
             })
+            remark = self._maybe_finish_imagine_remark(messages, trace, emit)
+            if remark is not None:
+                return ToolLoopResult(remark, trace, rnd)
 
         # Rounds exhausted: force a final spoken answer with no further tools.
         resp = self.llm.complete(messages)
@@ -168,6 +181,55 @@ class ToolLoop:
 
     def _want_native(self) -> bool:
         return self._use_native is None or self._use_native is True
+
+    @staticmethod
+    def _duplicate_imagine_result(tool_name: str, trace: list[dict]) -> str | None:
+        """Reuse the first imagine_generate result when the model emits duplicates in one round."""
+        if tool_name != "imagine_generate":
+            return None
+        for entry in trace:
+            if entry.get("tool") == "imagine_generate":
+                return str(entry.get("result") or "")
+        return None
+
+    def _maybe_finish_imagine_remark(
+        self,
+        messages: list[dict],
+        trace: list[dict],
+        emit: Optional[Callable[..., None]],
+    ) -> str | None:
+        if not trace:
+            return None
+        last = trace[-1]
+        if last.get("tool") != "imagine_generate":
+            return None
+        result = str(last.get("result") or "")
+        try:
+            from services.imagine.remark import (
+                finish_imagine_remark_with_fallback,
+                parse_imagine_tool_result,
+            )
+            from services.settings.store import load_effective_settings
+            from services.imagine.tool_context import get_imagine_tool_context
+
+            if not parse_imagine_tool_result(result):
+                return None
+            ctx = get_imagine_tool_context()
+            settings = load_effective_settings(ctx.get("operator_id"))
+            system = self.llm.base_system_prompt()
+            return finish_imagine_remark_with_fallback(
+                self.llm,
+                messages,
+                result,
+                system_prompt=system,
+                settings=settings,
+                emit=emit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("imagine_remark_finish_failed: %s", exc)
+            from services.imagine.remark import _IMAGINE_REMARK_FALLBACK
+
+            return _IMAGINE_REMARK_FALLBACK
 
     @staticmethod
     def _assistant_tool_msg(resp) -> dict:

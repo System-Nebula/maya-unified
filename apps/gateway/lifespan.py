@@ -48,6 +48,15 @@ async def lifespan(app: FastAPI):
     seed_examples_if_needed()
     await _seed_operator_account()
     settings = seed_env_defaults()
+    platform = settings.get("platform", {}) or {}
+    if platform.get("otel_enabled"):
+        os.environ["VA_OTEL_ENABLED"] = "1"
+        try:
+            from observability import setup_observability
+
+            setup_observability()
+        except ImportError:
+            log.debug("otel setup skipped (observability module unavailable)")
     apply_discord_env(settings)
     apply_to_config(settings)
 

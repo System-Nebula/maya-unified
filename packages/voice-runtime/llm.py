@@ -170,10 +170,15 @@ class LLMClient:
             else:
                 break
 
-    def _stream_with_fallback(self, messages: list[dict]) -> Iterator[str]:
+    def _stream_with_fallback(
+        self,
+        messages: list[dict],
+        *,
+        model: str | None = None,
+    ) -> Iterator[str]:
         self.last_completion_id = None
         kwargs: dict = dict(
-            model=self.cfg.model,
+            model=model or self.cfg.model,
             stream=True,
             temperature=self.cfg.temperature,
             top_p=self.cfg.top_p,
@@ -188,7 +193,7 @@ class LLMClient:
         if yielded:
             return
         log.warning("LLM stream returned no tokens; falling back to complete()")
-        text = self.complete(messages).content
+        text = self.complete(messages, model=model).content
         if text:
             yield text
 
@@ -199,9 +204,14 @@ class LLMClient:
         messages = self._messages(user_text, history)
         yield from self._stream_with_fallback(messages)
 
-    def stream_messages(self, messages: list[dict]) -> Iterator[str]:
+    def stream_messages(
+        self,
+        messages: list[dict],
+        *,
+        model: str | None = None,
+    ) -> Iterator[str]:
         """Stream a reply for a pre-built message list (used after the tool loop)."""
-        yield from self._stream_with_fallback(messages)
+        yield from self._stream_with_fallback(messages, model=model)
 
     # ----- one-shot completion (tool loop) ----------------------------------
 

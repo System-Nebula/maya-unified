@@ -97,10 +97,15 @@ class LiteLLMAdapter:
           if delta:
               yield delta
 
-  def stream_messages(self, messages: list[dict]) -> Iterator[str]:
+  def stream_messages(
+      self,
+      messages: list[dict],
+      *,
+      model: str | None = None,
+  ) -> Iterator[str]:
       import litellm
 
-      resp = litellm.completion(**self._completion_kwargs(messages, stream=True, max_tokens=None, model=None))
+      resp = litellm.completion(**self._completion_kwargs(messages, stream=True, max_tokens=None, model=model))
       self.last_completion_id = None
       for chunk in resp:
           chunk_id = getattr(chunk, "id", None)

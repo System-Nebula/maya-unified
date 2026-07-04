@@ -21,6 +21,8 @@ class ToolSpec:
     handler: Callable[[dict], Any]
     # Optional grouping label for the UI (e.g. "memory", "mcp:filesystem").
     group: str = "builtin"
+    # Per-tool execution timeout; None uses ToolExecutor default.
+    execution_timeout: float | None = None
 
 
 @dataclass

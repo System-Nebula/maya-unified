@@ -1043,8 +1043,52 @@
               </div>
               <div class="mv-list-row" x-show="s.imagine.enabled">
                 <div class="lhs">
+                  <div class="mv-row-label">Default image model</div>
+                  <div class="mv-row-hint">ComfyUI backend used when <span class="mv-mono">/imagine</span> omits <span class="mv-mono">model=</span>. Slash args override this.</div>
+                </div>
+                <div class="rhs">
+                  <select class="mv-input" style="width:280px" x-model="s.imagine.default_model" @change="save()">
+                    <option value="zit">Z-Image Turbo (light)</option>
+                    <option value="krea2">Krea 2 Turbo (heavy, ~18 GB VRAM)</option>
+                    <option value="ideogram-local">Ideogram 4 Local</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.imagine.enabled">
+                <div class="lhs">
+                  <div class="mv-row-label">Witty image remark</div>
+                  <div class="mv-row-hint">After <span class="mv-mono">/imagine</span>, Maya streams a short in-character line about the result (uses vision when configured).</div>
+                </div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.imagine.remark_enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row" x-show="s.imagine.enabled && s.imagine.remark_enabled">
+                <div class="lhs">
+                  <div class="mv-row-label">Remark vision model</div>
+                  <div class="mv-row-hint">Cloud LLM that reads the finished PNG for witty commentary — separate from the image model above. Choose text-only for prompt-only remarks.</div>
+                </div>
+                <div class="rhs" style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
+                  <select class="mv-input" style="width:280px" :value="remarkVisionSelect" @change="onRemarkVisionSelectChange($event.target.value)">
+                    <option value="">Text-only (no vision)</option>
+                    <template x-for="m in catalog.remark_vision_models" :key="m.id">
+                      <option :value="m.id" x-text="m.label"></option>
+                    </template>
+                    <option value="__custom__">Custom…</option>
+                  </select>
+                  <input
+                    class="mv-input"
+                    style="width:280px"
+                    x-show="remarkVisionCustom"
+                    x-model="s.imagine.remark_vision_model"
+                    placeholder="openrouter/provider/model-id"
+                    @change="save()"
+                  />
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.imagine.enabled">
+                <div class="lhs">
                   <div class="mv-row-label">ComfyUI connection</div>
                   <div class="mv-row-sub" x-show="imagineHealth?.detail" x-text="imagineHealth.detail"></div>
+                  <div class="mv-row-sub" x-show="imagineWeightsSummary()" x-text="imagineWeightsSummary()"></div>
                   <div class="mv-row-sub" x-show="imagineHealth?.adopted_url" x-text="`Discovered comfyui-api at ${imagineHealth.adopted_url} — update ComfyUI URL above to persist.`"></div>
                 </div>
                 <div class="rhs" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -1098,6 +1142,7 @@
                   <div class="mv-row-label">Endpoint</div>
                   <div class="mv-row-hint" x-text="imagineHealth?.url || 'Not probed yet'"></div>
                   <div class="mv-row-sub" x-show="imagineHealth?.detail" x-text="imagineHealth.detail"></div>
+                  <div class="mv-row-sub" x-show="imagineWeightsSummary()" x-text="imagineWeightsSummary()"></div>
                 </div>
                 <div class="rhs" style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
                   <span class="mv-row-sub" x-show="imagineHealth?.latency_ms != null" x-text="`${imagineHealth.latency_ms} ms`"></span>

@@ -64,6 +64,7 @@ document.addEventListener("alpine:init", () => {
       languages: [],
       llm_models: [],
       litellm_models: [],
+      remark_vision_models: [],
       webllm_models: [],
       clone_models: [],
       custom_tts_models: [],
@@ -108,7 +109,7 @@ document.addEventListener("alpine:init", () => {
         mouth_gain: 6, mouth_smoothing: 0.5, look_at_camera: true, camera_distance: 1.8,
         idle_enabled: true, idle_animation: "Idle.fbx",
       },
-      imagine: { enabled: false, comfyui_url: "http://127.0.0.1:3030" },
+      imagine: { enabled: false, comfyui_url: "http://127.0.0.1:3030", default_model: "zit", remark_enabled: true, remark_vision_model: "openrouter/minimax/minimax-m3" },
       discord: {
         enabled: false, token: "", guild_id: "", auto_reply: true, attach_voice: true,
         music_volume: 0.85,
@@ -563,6 +564,44 @@ document.addEventListener("alpine:init", () => {
       } finally {
         this.imagineHealthTesting = false;
       }
+    },
+
+    imagineWeightsSummary() {
+      const weights = this.imagineHealth?.weights;
+      if (!weights) return "";
+      const parts = [];
+      for (const key of ["zit", "krea2"]) {
+        const probe = weights[key];
+        if (!probe || typeof probe !== "object") continue;
+        const label = key === "krea2" ? "Krea2" : "Z-Image";
+        if (probe.ok) {
+          parts.push(`${label}: ok`);
+        } else if (key === "krea2" && probe.capability && probe.capability.ok === false) {
+          const ver = probe.capability.comfyui_version || "unknown";
+          parts.push(`${label}: needs ComfyUI 0.26+ (have ${ver})`);
+        } else {
+          const missing = Array.isArray(probe.missing) ? probe.missing.join(", ") : "missing";
+          parts.push(`${label}: ${missing || "missing"}`);
+        }
+      }
+      return parts.join(" · ");
+    },
+
+    get remarkVisionSelect() {
+      const value = String(this.s.imagine?.remark_vision_model || "").trim();
+      if (!value) return "";
+      const ids = (this.catalog.remark_vision_models || []).map((m) => m.id);
+      return ids.includes(value) ? value : "__custom__";
+    },
+
+    get remarkVisionCustom() {
+      return this.remarkVisionSelect === "__custom__";
+    },
+
+    onRemarkVisionSelectChange(value) {
+      if (value === "__custom__") return;
+      this.s.imagine.remark_vision_model = value;
+      this.save();
     },
 
     normalizeDiscordGuildId() {
