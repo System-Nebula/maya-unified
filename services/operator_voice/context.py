@@ -46,6 +46,7 @@ __all__ = [
     "append_turn",
     "get_conversation",
     "get_history_messages",
+    "clear_conversation",
     "sync_operator_files",
 ]
 
@@ -137,6 +138,15 @@ def get_conversation(operator_id: str | uuid.UUID) -> list[dict[str, str]]:
         return await op_store.get_conversation_turns(session, operator_id)
 
     return run_sync(_with_session(_go))
+
+
+def clear_conversation(operator_id: str | uuid.UUID) -> int:
+    from services.async_bridge import run_sync
+
+    async def _go(session):
+        return await op_store.clear_conversation(session, operator_id)
+
+    return int(run_sync(_with_session(_go)) or 0)
 
 
 def get_history_messages(operator_id: str | uuid.UUID, *, limit: int = 40) -> list[dict[str, str]]:
