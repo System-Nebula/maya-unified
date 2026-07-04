@@ -114,12 +114,19 @@ class Hub:
             from eq import get_preset_bands
             bands = get_preset_bands(CONFIG.audio.eq_preset)
 
+        voice = self.agent.voice if self.agent is not None else None
+        loaded_tts_model = str(getattr(voice, "model_id", "") or "") if voice else ""
+
         return {
             "ok": True,
             "ready": self.ready,
             "system_prompt": CONFIG.llm.system_prompt,
             "personalities": self._list_personalities(),
             "delivery": CONFIG.tts.delivery,
+            "tts_mode": CONFIG.tts.mode,
+            "clone_model": CONFIG.tts.clone_model,
+            "custom_model": CONFIG.tts.custom_model,
+            "loaded_tts_model": loaded_tts_model,
             "barge_mode": (self.agent.barge_mode if self.agent is not None else CONFIG.audio.barge_mode),
             "instruct": CONFIG.tts.instruct,
             "auto_instruct": CONFIG.tts.auto_instruct,

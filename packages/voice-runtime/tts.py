@@ -22,6 +22,8 @@ import numpy as np
 
 from config import CONFIG, TTSConfig
 
+from ref_text import clear_voice_prompt_cache, sync_clone_ref_text
+
 log = logging.getLogger("voice-agent.tts")
 
 _TTS_SETUP_HINT = (
@@ -44,12 +46,22 @@ class NullTTS:
         self.degrade_reason = reason
 
     def stream(
-        self, text: str, stop: threading.Event | None = None, instruct: str | None = None
+        self,
+        text: str,
+        stop: threading.Event | None = None,
+        instruct: str | None = None,
+        *,
+        xvec_only: bool | None = None,
     ) -> Iterator[Tuple[np.ndarray, int]]:
         yield from ()
 
     def stream_timed(
-        self, text: str, stop: threading.Event | None = None, instruct: str | None = None
+        self,
+        text: str,
+        stop: threading.Event | None = None,
+        instruct: str | None = None,
+        *,
+        xvec_only: bool | None = None,
     ) -> Iterator[Tuple[np.ndarray, int, dict[str, Any]]]:
         yield from ()
 
@@ -123,18 +135,7 @@ class Qwen3TTS:
     available = True
 
     def _try_load_ref_text_sidecar(self) -> None:
-        if self.cfg.ref_text.strip():
-            return
-        base, _ = os.path.splitext(self.cfg.ref_audio)
-        ref_dir = os.path.dirname(self.cfg.ref_audio) or "."
-        for candidate in (f"{base}.txt", os.path.join(ref_dir, "ref.txt")):
-            if os.path.exists(candidate):
-                try:
-                    with open(candidate, encoding="utf-8") as fh:
-                        self.cfg.ref_text = fh.read().strip()
-                    break
-                except OSError:
-                    pass
+        sync_clone_ref_text(self.cfg)
 
     def __init__(self, cfg: TTSConfig | None = None):
         self.cfg = cfg or CONFIG.tts
@@ -200,15 +201,26 @@ class Qwen3TTS:
         except Exception:  # noqa: BLE001
             pass
 
-    def _generator(self, text: str, instruct: str | None = None):
+    def _effective_xvec_only(self, override: bool | None) -> bool:
+        """Resolve x-vector vs full ICL for one generation."""
+        if override is not None:
+            return bool(override)
+        return bool(self.cfg.xvec_only)
+
+    def _generator(
+        self, text: str, instruct: str | None = None, *, xvec_only: bool | None = None
+    ):
         """Return the underlying faster-qwen3-tts streaming generator for `text`.
 
         `instruct` overrides the configured base description for this call (used by
         per-reply auto-delivery); pass None to fall back to `cfg.instruct`.
+        `xvec_only` overrides `cfg.xvec_only` for this call (playback uses True to
+        avoid replaying the reference clip at the start of each sentence).
         """
         self._seed()
         eff_instruct = (instruct if instruct is not None else self.cfg.instruct) or None
         if self.mode == "clone":
+            use_xvec = self._effective_xvec_only(xvec_only)
             return self.model.generate_voice_clone_streaming(
                 text=text,
                 language=self.cfg.language,
@@ -216,7 +228,7 @@ class Qwen3TTS:
                 ref_text=self.cfg.ref_text,
                 chunk_size=self.cfg.chunk_size,
                 max_new_tokens=self.cfg.max_new_tokens,
-                xvec_only=self.cfg.xvec_only,
+                xvec_only=use_xvec,
                 temperature=self.cfg.temperature,
                 top_k=self.cfg.top_k,
                 repetition_penalty=self.cfg.repetition_penalty,
@@ -237,13 +249,18 @@ class Qwen3TTS:
         )
 
     def stream_timed(
-        self, text: str, stop: threading.Event | None = None, instruct: str | None = None
+        self,
+        text: str,
+        stop: threading.Event | None = None,
+        instruct: str | None = None,
+        *,
+        xvec_only: bool | None = None,
     ) -> Iterator[Tuple[np.ndarray, int, dict[str, Any]]]:
         """Yield (float32 mono audio, sample_rate, engine_timing) per chunk."""
         text = text.strip()
         if not text:
             return
-        gen = self._generator(text, instruct=instruct)
+        gen = self._generator(text, instruct=instruct, xvec_only=xvec_only)
         first = True
         try:
             for audio_chunk, sr, timing in gen:
@@ -266,7 +283,12 @@ class Qwen3TTS:
                 close()
 
     def stream(
-        self, text: str, stop: threading.Event | None = None, instruct: str | None = None
+        self,
+        text: str,
+        stop: threading.Event | None = None,
+        instruct: str | None = None,
+        *,
+        xvec_only: bool | None = None,
     ) -> Iterator[Tuple[np.ndarray, int]]:
         """Yield (float32 mono audio, sample_rate) chunks as they are generated.
 
@@ -274,7 +296,9 @@ class Qwen3TTS:
         synthesis mid-sentence instead of finishing the whole reply. `instruct`
         overrides the base voice description for this call only.
         """
-        for audio, sr, _timing in self.stream_timed(text, stop=stop, instruct=instruct):
+        for audio, sr, _timing in self.stream_timed(
+            text, stop=stop, instruct=instruct, xvec_only=xvec_only
+        ):
             yield audio, sr
 
     def warmup(self, *, instruct: str | None = None) -> None:
@@ -304,9 +328,10 @@ class Qwen3TTS:
         if ref_text.strip():
             self.cfg.ref_text = ref_text.strip()
         else:
-            self._try_load_ref_text_sidecar()
+            sync_clone_ref_text(self.cfg)
         if not os.path.exists(self.cfg.ref_audio):
             raise FileNotFoundError(self.cfg.ref_audio)
+        clear_voice_prompt_cache(self.model)
         self.cfg.mode = "clone"
         self.mode = "clone"
         self.current_ref = self.cfg.ref_audio
@@ -324,3 +349,28 @@ class Qwen3TTS:
         except Exception as exc:  # noqa: BLE001
             print(f"[tts] could not list speakers: {exc}")
             return []
+
+
+def release_tts(tts: Qwen3TTS | NullTTS | None) -> None:
+    """Drop TTS weights and free GPU memory before loading a different model."""
+    if tts is None:
+        return
+    model_id = getattr(tts, "model_id", "") or "TTS"
+    backend = getattr(tts, "model", None)
+    if backend is not None:
+        try:
+            del tts.model
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        import gc
+
+        gc.collect()
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:  # noqa: BLE001
+        pass
+    log.info("released TTS model %s", model_id)

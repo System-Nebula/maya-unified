@@ -111,6 +111,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "camera_distance": 1.8,
         "idle_enabled": True,
         "idle_animation": "Idle.fbx",
+        "idle_variants": [],
+        "idle_variant_min_s": 10,
+        "idle_variant_max_s": 28,
     },
     "delivery": {
         "tts_mode": "clone",

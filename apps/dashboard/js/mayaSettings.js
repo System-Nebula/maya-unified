@@ -15,6 +15,9 @@ document.addEventListener("alpine:init", () => {
     loading: true,
     agentReady: false,
     currentVoice: "",
+    loadedTtsModel: "",
+    ttsReloading: false,
+    ttsStatus: "",
     health: null,
     healthTesting: false,
     voiceUploadName: "",
@@ -25,6 +28,7 @@ document.addEventListener("alpine:init", () => {
     _llmFetchTimer: null,
     _saveTimer: null,
     _voiceUiReady: false,
+    _voiceFile: "",
 
     user: { id: "", username: "", display_name: "", role: "operator", avatar_color: "#0a84ff" },
     colours: AVATAR_COLOURS,
@@ -97,7 +101,8 @@ document.addEventListener("alpine:init", () => {
       vrm: {
         enabled: true, model: "Yuki.vrm", lip_sync_mode: "viseme",
         mouth_gain: 6, mouth_smoothing: 0.5, look_at_camera: true, camera_distance: 1.8,
-        idle_enabled: true, idle_animation: "Idle.fbx",
+        idle_enabled: true, idle_animation: "Idle.fbx", idle_variants: [],
+        idle_variant_min_s: 10, idle_variant_max_s: 28,
       },
       discord: {
         enabled: false, token: "", guild_id: "", auto_reply: true, attach_voice: true,
@@ -178,11 +183,12 @@ document.addEventListener("alpine:init", () => {
     },
 
     get voiceSelectValue() {
-      return this.voiceFileName();
+      return this._voiceFile || this.voiceFileName();
     },
 
     set voiceSelectValue(v) {
       if (!this._voiceUiReady || !v) return;
+      this._voiceFile = v;
       const current = this.voiceFileName();
       if (v === current) return;
       this.selectVoiceFile(v);
@@ -365,6 +371,61 @@ document.addEventListener("alpine:init", () => {
       if (!c.eq_presets?.length) {
         c.eq_presets = [{ id: "off", label: "Off (bypass)" }];
       }
+      this.ensureVoiceModelOptions();
+    },
+
+    ensureVoiceModelOptions() {
+      const ensureModel = (list, id) => {
+        const items = Array.isArray(list) ? [...list] : [];
+        if (id && !items.some((m) => m.id === id)) {
+          items.push({ id, label: id });
+        }
+        return items;
+      };
+      this.catalog.clone_models = ensureModel(
+        this.catalog.clone_models,
+        this.s.voice?.clone_model,
+      );
+      this.catalog.custom_tts_models = ensureModel(
+        this.catalog.custom_tts_models,
+        this.s.voice?.custom_model,
+      );
+      const speaker = this.s.voice?.speaker;
+      if (speaker && !(this.catalog.speakers || []).includes(speaker)) {
+        this.catalog.speakers = [...(this.catalog.speakers || []), speaker];
+      }
+      const lang = this.s.voice?.language;
+      if (lang && !(this.catalog.tts_languages || []).includes(lang)) {
+        this.catalog.tts_languages = [...(this.catalog.tts_languages || []), lang];
+      }
+    },
+
+    syncVoiceCatalogSelection() {
+      const voices = this.catalog.voices || [];
+      const current = this.voiceFileName();
+      if (!current) {
+        this._voiceFile = "";
+        return;
+      }
+      const base = current.split(/[/\\]/).pop() || current;
+      const stem = base.replace(/\.[^.]+$/, "");
+      let match = voices.find((v) => v.file === base || v.file === current);
+      if (!match) {
+        match = voices.find(
+          (v) => v.file?.toLowerCase() === base.toLowerCase() || v.name === stem,
+        );
+      }
+      if (match) {
+        this._voiceFile = match.file;
+        const path = match.file.includes("/") ? match.file : `voices/${match.file}`;
+        if (this.s.voice.ref_audio !== path) {
+          this.s.voice.ref_audio = path;
+          this.s.voice.ref_text = "";
+        }
+      } else {
+        this.catalog.voices = [...voices, { name: stem, file: base }];
+        this._voiceFile = base;
+      }
     },
 
     async init() {
@@ -397,6 +458,7 @@ document.addEventListener("alpine:init", () => {
           this.s = this.deepMerge(this.s, data.settings || {});
           this.normalizeWebLLM();
           this.normalizeDiscordGuildId();
+          this.ensureVoiceModelOptions();
         }
       } catch (e) {
         this.error = String(e.message || e);
@@ -437,6 +499,8 @@ document.addEventListener("alpine:init", () => {
         if (cfgR.ok) {
           const cfg = await cfgR.json();
           this.currentVoice = cfg.current_voice || cfg.voice || "";
+          this.loadedTtsModel = cfg.loaded_tts_model || "";
+          this.ensureVoiceModelOptions();
         }
         await this.loadVrmModels();
         await this.loadAnimations();
@@ -446,7 +510,11 @@ document.addEventListener("alpine:init", () => {
       } catch (e) {
         if (!this.error) this.error = String(e.message || e);
       } finally {
+        this.syncVoiceCatalogSelection();
         this._voiceUiReady = true;
+        this.$nextTick(() => {
+          this.syncVoiceCatalogSelection();
+        });
       }
     },
 
@@ -508,6 +576,9 @@ document.addEventListener("alpine:init", () => {
         if (!r.ok) throw new Error("Health check failed");
         const data = await r.json();
         this.health = data.health || null;
+        if (this.health?.status) {
+          this.health.status = String(this.health.status).toLowerCase();
+        }
         if (this.health?.status === "error") {
           this.error = this.health.detail || "LLM connection error";
         } else if (this.health?.status === "warn" || this.health?.status === "skipped") {
@@ -530,6 +601,54 @@ document.addEventListener("alpine:init", () => {
         return;
       }
       disc.guild_id = String(gid);
+    },
+
+    activeTtsModelId() {
+      const mode = (this.s.delivery?.tts_mode || "clone").toLowerCase();
+      return mode === "clone"
+        ? (this.s.voice?.clone_model || "")
+        : (this.s.voice?.custom_model || "");
+    },
+
+    async onTtsEngineChange() {
+      this.ttsReloading = true;
+      this.ttsStatus = "Switching TTS model…";
+      this.error = "";
+      try {
+        await this._saveNow();
+        await this.waitForTtsReload();
+      } catch (e) {
+        this.error = String(e.message || e);
+      } finally {
+        this.ttsReloading = false;
+      }
+    },
+
+    async waitForTtsReload(maxMs = 180000) {
+      const want = this.activeTtsModelId();
+      const deadline = Date.now() + maxMs;
+      while (Date.now() < deadline) {
+        const [statusR, cfgR] = await Promise.all([
+          fetch("/api/voice/agent/status"),
+          fetch("/api/voice/agent/config"),
+        ]);
+        if (statusR.ok && cfgR.ok) {
+          const st = await statusR.json();
+          const cfg = await cfgR.json();
+          if (st.ready) {
+            this.agentReady = true;
+            this.loadedTtsModel = cfg.loaded_tts_model || "";
+            if (!want || this.loadedTtsModel === want) {
+              const label = (this.loadedTtsModel || want).split("/").pop();
+              this.ttsStatus = label ? `Loaded: ${label}` : "";
+              setTimeout(() => { this.ttsStatus = ""; }, 5000);
+              return;
+            }
+          }
+        }
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+      this.ttsStatus = "TTS reload is still running — check server console for progress.";
     },
 
     save() {
@@ -559,6 +678,7 @@ document.addEventListener("alpine:init", () => {
     async selectVoiceFile(file) {
       if (!file) return;
       this.s.voice.ref_audio = file.includes("/") ? file : `voices/${file}`;
+      this.s.voice.ref_text = "";
       await this._saveNow();
       const base = file.split(/[/\\]/).pop();
       this.currentVoice = base.replace(/\.[^.]+$/, "");
@@ -610,6 +730,8 @@ document.addEventListener("alpine:init", () => {
         if (uploaded) {
           const fname = String(uploaded).includes(".") ? uploaded : `${uploaded}.wav`;
           this.s.voice.ref_audio = fname.includes("/") ? fname : `voices/${fname}`;
+          this.s.voice.ref_text = "";
+          this.syncVoiceCatalogSelection();
           await this._saveNow();
           this.currentVoice = data.name || fname.replace(/\.[^.]+$/, "");
           if (this.agentReady) {

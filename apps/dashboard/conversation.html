@@ -36,7 +36,10 @@
       </nav>
       <div class="mu-status">
         <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
-        <span class="mu-hint" x-show="s.hint()" x-text="s.hint()"></span>
+        <span class="mu-hint-wrap" x-show="s.hint()">
+          <span class="mu-hint" x-text="s.hint()"></span>
+          <span class="mu-llm-dot" x-show="s.ready && s.llmOk && s.llmModel" aria-hidden="true"></span>
+        </span>
       </div>
       <button
         class="mu-panel-toggle"
@@ -98,7 +101,7 @@
           </div>
 
           <div class="md-session">
-            <div class="md-log md-scroll">
+            <div class="md-log md-scroll" :class="{ 'md-log--detailed': $store.mayaConversation.detailed }">
               <template x-for="(t, i) in $store.mayaConversation.turns" :key="t.messageId">
                 <div
                   class="md-turn"
@@ -229,7 +232,6 @@
                 <a href="/settings?tab=expressions" class="md-vrm-placeholder-link" x-show="!modelLoaded">Upload in Settings</a>
               </div>
             </div>
-            <p class="mv-desc md-vrm-immersive-foot">Powered by <a href="https://github.com/pixiv/three-vrm" target="_blank" rel="noopener">three-vrm</a> — drag to orbit</p>
           </div>
         </div>
 
@@ -545,7 +547,6 @@
                     face: <span x-text="$store.mayaVrm.moodLabel"></span>
                   </p>
                   <p class="mv-desc md-vrm-visemes" x-show="$store.mayaVrm.lipSyncLabel && $store.mayaVrm.modelLoaded" x-text="$store.mayaVrm.lipSyncLabel"></p>
-                  <p class="mv-desc md-vrm-hint">Powered by <a href="https://github.com/pixiv/three-vrm" target="_blank" rel="noopener">three-vrm</a> — drag to orbit</p>
                 </div>
               </div>
             </div>

@@ -28,6 +28,15 @@ export class MayaVrmEngine {
     this.cameraDistance = Number(opts.cameraDistance ?? 1.8);
     this.idleEnabled = opts.idleEnabled !== false;
     this.idleAnimation = opts.idleAnimation || DEFAULT_IDLE_ANIM;
+    this.idleVariants = Array.isArray(opts.idleVariants)
+      ? opts.idleVariants.filter(Boolean)
+      : [];
+    this.idleVariantMinS = Math.max(3, Number(opts.idleVariantMinS ?? 10));
+    this.idleVariantMaxS = Math.max(
+      this.idleVariantMinS + 1,
+      Number(opts.idleVariantMaxS ?? 28),
+    );
+    this._idleVariantCountdown = 4 + Math.random() * 6;
 
     this.lipSync = new VrmLipSync({
       gain: opts.mouthGain ?? 6,
@@ -180,6 +189,7 @@ export class MayaVrmEngine {
       this._idleAction = this._mixer.clipAction(clip);
       this._idleAction.setLoop(THREE.LoopRepeat, Infinity);
       this._idleAction.play();
+      this._scheduleIdleVariant();
     } catch (_) {
       /* idle clip optional */
     }
@@ -194,6 +204,59 @@ export class MayaVrmEngine {
       this._idleAction = null;
     }
     await this._loadIdleAnimation(token);
+    this._scheduleIdleVariant();
+  }
+
+  setIdleVariants(names) {
+    this.idleVariants = Array.isArray(names) ? names.map((n) => String(n || "").trim()).filter(Boolean) : [];
+    this._scheduleIdleVariant();
+  }
+
+  setIdleVariantInterval(minS, maxS) {
+    this.idleVariantMinS = Math.max(3, Number(minS ?? this.idleVariantMinS));
+    this.idleVariantMaxS = Math.max(this.idleVariantMinS + 1, Number(maxS ?? this.idleVariantMaxS));
+    this._scheduleIdleVariant();
+  }
+
+  _idleVariantPool() {
+    const base = String(this.idleAnimation || "").trim();
+    return this.idleVariants.filter((f) => f && f !== base);
+  }
+
+  _scheduleIdleVariant() {
+    const pool = this._idleVariantPool();
+    if (!this.idleEnabled || !pool.length) {
+      this._idleVariantCountdown = Infinity;
+      return;
+    }
+    const span = Math.max(1, this.idleVariantMaxS - this.idleVariantMinS);
+    this._idleVariantCountdown = this.idleVariantMinS + Math.random() * span;
+  }
+
+  async _playIdleVariant() {
+    const pool = this._idleVariantPool();
+    if (!pool.length || this._gestureAction || this._returnIdleGuard > 0) {
+      this._scheduleIdleVariant();
+      return;
+    }
+    const name = pool[Math.floor(Math.random() * pool.length)];
+    const ok = await this.playAnimation(name, {
+      loop: false,
+      fadeIn: 0.38,
+      fadeOut: 0.55,
+      onFinished: () => this._scheduleIdleVariant(),
+    });
+    if (!ok) this._scheduleIdleVariant();
+  }
+
+  _updateIdleVariantScheduler(delta) {
+    if (!this.idleEnabled || !this._idleVariantPool().length) return;
+    if (this._gestureAction || this._returnIdleGuard > 0) return;
+    if (!Number.isFinite(this._idleVariantCountdown)) return;
+    this._idleVariantCountdown -= delta;
+    if (this._idleVariantCountdown > 0) return;
+    this._idleVariantCountdown = Infinity;
+    void this._playIdleVariant();
   }
 
   _clearGestureListener() {
@@ -269,6 +332,7 @@ export class MayaVrmEngine {
     this._returnIdleGuard = fadeIn + 0.05;
 
     if (!loop) {
+      const onFinished = typeof opts.onFinished === "function" ? opts.onFinished : null;
       this._gestureFinishHandler = (e) => {
         if (e.action !== action) return;
         this._clearGestureListener();
@@ -281,6 +345,13 @@ export class MayaVrmEngine {
           this._idleAction.play();
         } else {
           action.fadeOut(fadeOut);
+        }
+        if (onFinished) {
+          try {
+            onFinished();
+          } catch (_) {
+            /* ignore */
+          }
         }
       };
       this._mixer.addEventListener("finished", this._gestureFinishHandler);
@@ -394,6 +465,7 @@ export class MayaVrmEngine {
           this._returnIdleGuard = Math.max(0, this._returnIdleGuard - delta);
         }
         this._mixer.update(delta);
+        this._updateIdleVariantScheduler(delta);
         if (this.idleEnabled && !this._gestureAction) {
           if (this._headSwayRamp < 1) {
             this._headSwayRamp = Math.min(1, this._headSwayRamp + delta / 0.7);

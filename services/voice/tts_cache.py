@@ -26,8 +26,11 @@ def cache_key(
     voice_id: str,
     mode: str,
     model_id: str,
+    *,
+    xvec_only: bool | None = None,
 ) -> str:
-    """sha256 hex key from text + instruct + voice + mode + model."""
+    """sha256 hex key from text + instruct + voice + mode + model + xvec flag."""
+    xvec = "" if xvec_only is None else ("1" if xvec_only else "0")
     payload = _SEP.join(
         [
             (text or "").strip(),
@@ -35,6 +38,7 @@ def cache_key(
             (voice_id or "").strip(),
             (mode or "").strip().lower(),
             (model_id or "").strip(),
+            xvec,
         ]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

@@ -377,3 +377,117 @@
   font-size: 11px;
   color: var(--mv-fg, #fff);
 }
+
+.ma-idle-zone {
+  margin: 0 16px 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1.5px dashed rgba(124, 255, 180, 0.22);
+  background: rgba(124, 255, 180, 0.04);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ma-idle-zone.drag-hover {
+  border-color: rgba(124, 255, 180, 0.55);
+  background: rgba(124, 255, 180, 0.09);
+}
+
+.ma-idle-head h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9dffc4;
+}
+
+.ma-idle-head p {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--mv-muted);
+  line-height: 1.4;
+}
+
+.ma-idle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ma-idle-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.2);
+  cursor: grab;
+  transition: background 0.12s, opacity 0.12s;
+}
+
+.ma-idle-item:active {
+  cursor: grabbing;
+}
+
+.ma-idle-item.dragging {
+  opacity: 0.45;
+}
+
+.ma-idle-item.default {
+  border-color: rgba(124, 255, 180, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(124, 255, 180, 0.12);
+}
+
+.ma-idle-grip {
+  color: var(--mv-muted);
+  font-size: 12px;
+  letter-spacing: -2px;
+  user-select: none;
+}
+
+.ma-idle-meta {
+  min-width: 0;
+}
+
+.ma-idle-meta strong {
+  display: block;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ma-idle-file {
+  display: block;
+  font-size: 10px;
+  font-family: var(--mv-mono, "DM Mono", monospace);
+  color: var(--mv-muted);
+}
+
+.ma-idle-remove {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--mv-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.ma-idle-remove:hover {
+  background: rgba(255, 120, 120, 0.15);
+  color: #ffb0b0;
+}
+
+.ma-idle-empty {
+  padding: 14px 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--mv-muted);
+  border-radius: 8px;
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+}

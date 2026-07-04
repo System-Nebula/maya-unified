@@ -30,7 +30,8 @@ CARD_KEYS = (
 VOICE_RULES = (
     "Voice interface rules: every reply is spoken aloud. Keep it to one–three "
     "short sentences. No markdown, lists, asterisks, stage directions, "
-    "parentheses, or emojis."
+    "parentheses, or emojis. Never prefix lines with your character name and a "
+    "colon (e.g. 'Maya:'). Never repeat the same paragraph or sentence twice."
 )
 
 
@@ -174,11 +175,152 @@ def compile_character_prompt(
     return system, post
 
 
-def _strip_roleplay_actions(text: str) -> str:
-    """Remove *action* blocks and collapse whitespace for spoken greetings."""
-    out = re.sub(r"\*[^*]+\*", " ", text or "")
+_START_TOKEN_RE = re.compile(r"<\s*START\s*>", re.IGNORECASE)
+_PSEUDO_TOOL_CALL_RE = re.compile(
+    r"(?:play_avatar_animation|set_avatar_expression|list_avatar_animations|"
+    r"list_avatar_expressions)\s*\([^)]*\)",
+    re.IGNORECASE,
+)
+_PSEUDO_SET_EXPR_RE = re.compile(
+    r"set_avatar_expression\s*\(\s*mood\s*=\s*['\"]([^'\"]+)['\"]\s*\)",
+    re.IGNORECASE,
+)
+_PSEUDO_PLAY_ANIM_RE = re.compile(
+    r"play_avatar_animation\s*\(\s*clip_name\s*=\s*['\"]([^'\"]+)['\"]\s*\)",
+    re.IGNORECASE,
+)
+
+
+def strip_wrapping_quotes(text: str) -> str:
+    """Remove a single pair of quotes wrapped around the whole reply."""
+    body = (text or "").strip()
+    if len(body) >= 2 and body[0] == body[-1] and body[0] in "\"'":
+        inner = body[1:-1].strip()
+        if inner:
+            return inner
+    return body
+
+
+def strip_llm_artifacts(text: str) -> str:
+    """Drop pseudo tool calls and roleplay control tokens that leak into speech."""
+    body = (text or "").strip()
+    if not body:
+        return ""
+    body = _START_TOKEN_RE.sub("", body)
+    body = _PSEUDO_TOOL_CALL_RE.sub("", body)
+    return re.sub(r"\s{2,}", " ", body).strip()
+
+
+def extract_pseudo_tool_calls(text: str) -> list[tuple[str, dict]]:
+    """Parse Python-style tool calls the model wrote as plain text."""
+    calls: list[tuple[str, dict]] = []
+    for match in _PSEUDO_SET_EXPR_RE.finditer(text or ""):
+        calls.append(("set_avatar_expression", {"mood": match.group(1).strip()}))
+    for match in _PSEUDO_PLAY_ANIM_RE.finditer(text or ""):
+        calls.append(("play_avatar_animation", {"clip_name": match.group(1).strip()}))
+    return calls
+
+
+_ASTERISK_BLOCK_RE = re.compile(r"\*[^*]+\*")
+_LEADING_DELIVERY_ASTERISK_RE = re.compile(r"^\s*\*([^*]{1,60}?)\*\s*", re.IGNORECASE)
+_ACTION_START_RE = re.compile(
+    r"^\s*(?:flips?|flipping|waves?|waving|lands?|landing|smirks?|smirking|"
+    r"grins?|grinning|nods?|nodding|bows?|bowing|dances?|dancing|spins?|spinning|"
+    r"jumps?|jumping|leaps?|leaping|struts?|strutting|winks?|winking|giggles?|"
+    r"giggling|chuckles?|chuckling|saunters?|stomps?|twirls?|cartwheels?|"
+    r"backflips?|kicks?|punches?|slashes?|lunges?|crouches?|stretches?)\b",
+    re.IGNORECASE,
+)
+
+
+def peel_leading_delivery_asterisk(text: str) -> tuple[str, str | None]:
+    """If a short leading *cue* precedes dialogue, peel it for TTS delivery."""
+    raw = (text or "").strip()
+    match = _LEADING_DELIVERY_ASTERISK_RE.match(raw)
+    if not match:
+        return raw, None
+    block = match.group(1).strip().rstrip(".")
+    rest = raw[match.end() :].strip()
+    if not rest or _ACTION_START_RE.match(block) or len(block.split()) > 6:
+        return raw, None
+    return rest, block
+
+
+def collapse_immediate_duplicate(text: str) -> str:
+    """If the model echoed the same block twice back-to-back, keep one copy."""
+    t = (text or "").strip()
+    if len(t) < 16:
+        return t
+    half = len(t) // 2
+    if t[:half] == t[half:]:
+        return t[:half].strip()
+    return t
+
+
+def strip_dialogue_name_prefix(text: str, *, name: str = "") -> str:
+    """Remove leading 'Character:' / 'Maya-sama:' style roleplay labels."""
+    body = (text or "").strip()
+    if not body:
+        return ""
+    names = []
+    if name.strip():
+        names.append(name.strip())
+        first = name.strip().split()[0]
+        if first and first not in names:
+            names.append(first)
+    names.extend(("Maya", "Maya-sama"))
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for n in names:
+        key = n.lower()
+        if key not in seen:
+            seen.add(key)
+            ordered.append(n)
+    if ordered:
+        label = "|".join(re.escape(n) for n in ordered)
+        pattern = re.compile(rf"^(?:{label})(?:-sama)?\s*:\s*", re.IGNORECASE)
+        while True:
+            match = pattern.match(body)
+            if not match:
+                break
+            body = body[match.end() :].strip()
+    return body
+
+
+def strip_roleplay_actions(text: str) -> str:
+    """Remove *action* blocks; keep spoken dialogue outside (or salvage mis-wrapped lines)."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    blocks = [m.group(1).strip() for m in re.finditer(r"\*([^*]+)\*", raw)]
+    out = _ASTERISK_BLOCK_RE.sub(" ", raw)
     out = re.sub(r"\s+", " ", out).strip()
-    return out
+    if out:
+        return out
+    for block in reversed(blocks):
+        if len(block) < 8 or _ACTION_START_RE.match(block):
+            continue
+        if re.search(
+            r'[.!?"]|^(?:Hey|Hello|Hi|Oh|Well|So|I[''`]?m|You )',
+            block,
+            re.IGNORECASE,
+        ):
+            return block
+    return ""
+
+
+def polish_spoken_reply(text: str, *, name: str = "") -> str:
+    """Final pass for text that will be shown and spoken aloud."""
+    body = strip_llm_artifacts(text)
+    body = collapse_immediate_duplicate(body)
+    body = strip_dialogue_name_prefix(body, name=name)
+    body = strip_roleplay_actions(body)
+    body = strip_wrapping_quotes(body)
+    return re.sub(r"\s{2,}", " ", body).strip()
+
+
+def _strip_roleplay_actions(text: str) -> str:
+    return strip_roleplay_actions(text)
 
 
 def compile_greeting(

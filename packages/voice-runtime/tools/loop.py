@@ -216,6 +216,8 @@ class ToolLoop:
     @staticmethod
     def _strip_json(text: str) -> str:
         """Remove any leftover tool-call JSON / code fences from spoken text."""
+        from memory.character_card import strip_llm_artifacts
+
         if not text:
             return ""
         cleaned = text
@@ -227,4 +229,4 @@ class ToolLoop:
             if isinstance(obj, dict) and "tool" in obj:
                 cleaned = cleaned[:_start] + cleaned[_end:]
         cleaned = re.sub(r"```(?:json)?\s*```", "", cleaned)
-        return cleaned.strip()
+        return strip_llm_artifacts(cleaned)

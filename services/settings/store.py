@@ -154,12 +154,22 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
         CONFIG.tts.instruct = str(deliv["instruct"])
 
     voice = settings.get("voice", {})
-    if voice.get("ref_audio"):
-        CONFIG.tts.ref_audio = resolve_voice_ref(str(voice["ref_audio"]))
-    if voice.get("ref_text") is not None:
-        CONFIG.tts.ref_text = str(voice["ref_text"])
-    elif not CONFIG.tts.ref_text.strip():
-        _load_ref_text_sidecar(CONFIG.tts)
+    if voice:
+        from ref_text import sync_clone_ref_text
+
+        if voice.get("ref_audio"):
+            new_ref = resolve_voice_ref(str(voice["ref_audio"]))
+            old_ref = os.path.normpath(str(CONFIG.tts.ref_audio or ""))
+            if os.path.normpath(new_ref) != old_ref:
+                CONFIG.tts.ref_text = ""
+            CONFIG.tts.ref_audio = new_ref
+        explicit_raw = voice.get("ref_text")
+        explicit = (
+            str(explicit_raw).strip()
+            if explicit_raw is not None and str(explicit_raw).strip()
+            else None
+        )
+        sync_clone_ref_text(CONFIG.tts, explicit=explicit)
     if voice.get("speaker"):
         CONFIG.tts.speaker = str(voice["speaker"])
     if voice.get("clone_model"):
@@ -260,18 +270,10 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
 
 
 def _load_ref_text_sidecar(tts_cfg) -> None:
-    import os
+    """Deprecated: use ref_text.sync_clone_ref_text."""
+    from ref_text import sync_clone_ref_text
 
-    base, _ = os.path.splitext(tts_cfg.ref_audio)
-    ref_dir = os.path.dirname(tts_cfg.ref_audio) or "."
-    for candidate in (f"{base}.txt", os.path.join(ref_dir, "ref.txt")):
-        if os.path.exists(candidate):
-            try:
-                with open(candidate, encoding="utf-8") as fh:
-                    tts_cfg.ref_text = fh.read().strip()
-                break
-            except OSError:
-                pass
+    sync_clone_ref_text(tts_cfg)
 
 
 def _apply_reasoning_env(reasoning: dict[str, Any], *, provider: str, litellm_mode: str, litellm_model: str, base_url: str, model: str, api_key: str) -> None:

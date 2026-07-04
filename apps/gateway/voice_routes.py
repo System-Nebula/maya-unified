@@ -234,6 +234,7 @@ def register_agent_routes(app) -> None:
             hub.current_voice or "",
             CONFIG.tts.mode,
             model_id,
+            xvec_only=CONFIG.tts.xvec_only,
         )
         cached = tts_cache.get(cache_key)
         if cached is not None:
@@ -289,6 +290,7 @@ def register_agent_routes(app) -> None:
             hub.current_voice or "",
             CONFIG.tts.mode,
             model_id,
+            xvec_only=CONFIG.tts.xvec_only,
         )
         cached = tts_cache.get(cache_key)
         if cached is not None:
@@ -406,31 +408,32 @@ def register_agent_routes(app) -> None:
     def save_personality(request: Request, data: dict = Body(...)) -> dict:
         oid = _operator_id(request)
         if oid:
-            hub.apply_operator_context(oid)
+            return hub.save_personality_for_operator(oid, data or {})
         return hub.save_personality(data or {})
 
     @app.post(f"{prefix}/personalities/delete")
     def delete_personality(request: Request, data: dict = Body(...)) -> dict:
         oid = _operator_id(request)
+        pid = str((data or {}).get("id", ""))
         if oid:
-            hub.apply_operator_context(oid)
-        return hub.delete_personality(str((data or {}).get("id", "")))
+            return hub.delete_personality_for_operator(oid, pid)
+        return hub.delete_personality(pid)
 
     @app.post(f"{prefix}/personalities/import")
     def import_personality(request: Request, data: dict = Body(...)) -> dict:
         oid = _operator_id(request)
         if oid:
-            hub.apply_operator_context(oid)
+            return hub.import_personality_for_operator(oid, data or {})
         return hub.import_personality(data or {})
 
     @app.post(f"{prefix}/personalities/import-png")
     async def import_personality_png(request: Request, file: UploadFile = File(...)) -> dict:
         oid = _operator_id(request)
-        if oid:
-            hub.apply_operator_context(oid)
         data = await file.read()
         if not data:
             return {"ok": False, "error": "empty file"}
+        if oid:
+            return hub.import_personality_png_for_operator(oid, data)
         return hub.import_personality_png(data)
 
     @app.post(f"{prefix}/personalities/build")

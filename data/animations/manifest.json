@@ -16,5 +16,17 @@
   "flip.fbx": {
     "label": "do a flip",
     "description": "do a flip"
+  },
+  "idle1.fbx": {
+    "label": "idle",
+    "description": "idle1"
+  },
+  "idle2.fbx": {
+    "label": "idle",
+    "description": "idle"
+  },
+  "idle3.fbx": {
+    "label": "idle3",
+    "description": "idle"
   }
 }

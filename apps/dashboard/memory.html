@@ -26,7 +26,10 @@
       </nav>
       <div class="mu-status">
         <span class="mu-chip" :class="s.chipClass()"><span class="dot"></span><span x-text="s.label()"></span></span>
-        <span class="mu-hint" x-show="s.hint()" x-text="s.hint()"></span>
+        <span class="mu-hint-wrap" x-show="s.hint()">
+          <span class="mu-hint" x-text="s.hint()"></span>
+          <span class="mu-llm-dot" x-show="s.ready && s.llmOk && s.llmModel" aria-hidden="true"></span>
+        </span>
       </div>
       <div class="mu-user" x-show="currentUser" x-data="{ open: false }" @click.away="open = false">
         <button class="mu-user-btn" @click="open = !open" id="user-menu-btn">

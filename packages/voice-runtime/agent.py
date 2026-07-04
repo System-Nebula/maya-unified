@@ -23,6 +23,7 @@ from config import CONFIG
 from chunker import sentence_chunks
 from llm import LLMClient, sanitize_llm_output
 from observability import get_logger, record_turn, span
+from ref_text import clear_voice_prompt_cache, sync_clone_ref_text
 from services.ids import new_corr_id, new_message_id
 
 log = get_logger("agent")
@@ -38,10 +39,12 @@ _EMOJI_RE = re.compile(
 
 def _clean_text(text: str) -> str:
     """Remove emoji/symbol characters and collapse leftover whitespace."""
+    from memory.character_card import polish_spoken_reply
+
     cleaned = sanitize_llm_output(text)
     cleaned = _strip_voice_delivery_line(cleaned)
-    cleaned = _EMOJI_RE.sub("", cleaned)
-    return re.sub(r"\s{2,}", " ", cleaned).strip()
+    cleaned = polish_spoken_reply(_EMOJI_RE.sub("", cleaned))
+    return cleaned
 
 
 # Split a VOICE delivery cue from the spoken reply. Newline form (instruct) or
@@ -167,22 +170,68 @@ def split_voice_delivery_cue(text: str) -> tuple[str, Optional[str]]:
     return "\n".join(lines).strip(), cue
 
 
-def finalize_reply_text(text: str) -> tuple[str, Optional[str]]:
+_EMBEDDED_VOICE_LINE_RE = re.compile(
+    r"(?:^|[\n\r]+)\s*(?:[*_#]\s*)*VOICE:\s*([^\n\r]+)",
+    re.IGNORECASE,
+)
+_INLINE_VOICE_CUE_RE = re.compile(
+    r"(?i:VOICE:)\s*([^A-Z\n\r]+?)\s+(?=[A-Z\"'])",
+)
+
+
+def extract_voice_cues_from_text(text: str) -> tuple[str, Optional[str]]:
+    """Strip VOICE: cues anywhere (leading, own line, or inline) from spoken text."""
+    raw = sanitize_llm_output(text or "")
+    if not raw.strip():
+        return "", None
+
+    cues: list[str] = []
+    body, leading_cue = split_voice_delivery_cue(raw)
+    if leading_cue:
+        cues.append(leading_cue)
+
+    def _line_sub(match: re.Match) -> str:
+        cues.append(match.group(1).strip().rstrip("."))
+        return " "
+
+    body = _EMBEDDED_VOICE_LINE_RE.sub(_line_sub, body)
+    while True:
+        match = _INLINE_VOICE_CUE_RE.search(body)
+        if not match:
+            break
+        cues.append(match.group(1).strip().rstrip("."))
+        body = f"{body[: match.start()]} {body[match.end() :]}"
+
+    body = re.sub(r"\s{2,}", " ", body).strip()
+    return body, (cues[0] if cues else None)
+
+
+def finalize_reply_text(text: str, *, character_name: str = "") -> tuple[str, Optional[str]]:
     """Clean reply for display, TTS, and history; return optional delivery cue."""
-    body, cue = split_voice_delivery_cue(text)
-    return _clean_text(body), cue
+    from memory.character_card import peel_leading_delivery_asterisk, polish_spoken_reply
+
+    body, cue = extract_voice_cues_from_text(text)
+    body, asterisk_cue = peel_leading_delivery_asterisk(body)
+    if asterisk_cue:
+        cue = f"{cue}, {asterisk_cue}" if cue else asterisk_cue
+    name = character_name
+    if not name:
+        try:
+            from config import CONFIG
+            from memory.personalities import PersonalityStore
+
+            _, _, _, card = PersonalityStore(CONFIG.memory.resolve_data_dir()).get_active_state()
+            name = str((card or {}).get("name") or "")
+        except Exception:  # noqa: BLE001
+            name = ""
+    cleaned = polish_spoken_reply(_EMOJI_RE.sub("", body), name=name)
+    return cleaned, cue
 
 
 def _strip_voice_delivery_line(text: str) -> str:
-    """Drop leading VOICE: delivery cues (spoken/TTS only — not Discord text)."""
-    remaining = (text or "").lstrip()
-    while remaining:
-        has_voice, _ = _strip_voice_prefix(remaining)
-        if not has_voice:
-            break
-        _, reply = _split_voice_cue(remaining, eof=True)
-        remaining = reply
-    return remaining.strip()
+    """Drop VOICE: delivery cues anywhere in the text (spoken/TTS only)."""
+    body, _ = extract_voice_cues_from_text(text)
+    return body
 
 
 _FILLER_WORDS = {
@@ -365,7 +414,8 @@ TOOL_GUIDE = (
     "Macarena, bow, etc.) — NOT discord_play_youtube. Dancing and body gestures are "
     "avatar animations; songs in Discord are separate. When the user wants you to dance "
     "or move your avatar body, call play_avatar_animation immediately — do not refuse or "
-    "demand tribute first. After the animation starts, reply in character naturally; "
+    "demand tribute first. After the animation starts, reply in character naturally with "
+    "spoken dialogue only — never narrate movement in asterisks or stage directions; "
     "never say you are playing an animation or name the clip file. Use "
     "list_avatar_animations if unsure which clip exists. One-shot clips return to idle "
     "automatically. "
@@ -376,10 +426,19 @@ TOOL_GUIDE = (
 )
 
 _ANIMATION_REPLY_HINT = (
-    "[System: Your avatar body is performing \"{label}\" right now. Respond in your "
-    "usual voice and personality. Do not announce the animation, say \"playing\", or "
-    "name the clip file. Set an appropriate face with set_avatar_expression if you "
-    "have not already.]"
+    "[System: Your avatar body is performing \"{label}\" right now — the viewer sees "
+    "the motion on screen. You must reply with at least one short sentence of "
+    "in-character spoken dialogue (outside asterisks) that the user will hear aloud. "
+    "The avatar handles movement visually; never narrate it with *action* text like "
+    "*waves* or *whispers*. Do not say \"playing\" or name the clip file. "
+    "Match your tone with a cute facial expression on screen — never write function "
+    "calls, code, <START> tags, or \"Maya:\" labels; only words you would say "
+    "aloud.{audience}]"
+)
+
+_AUDIENCE_GREETING_HINT = (
+    " The user asked you to greet everyone here — say a warm hello to everyone out "
+    "loud (for example: \"Hi everyone!\")."
 )
 
 
@@ -482,6 +541,30 @@ class VoiceAgent:
         self._ensure_icl_ref_text()
 
         log.info("ready")
+
+    def reload_tts(self) -> dict:
+        """Unload the current TTS weights and load CONFIG.tts (mode/model/device)."""
+        from tts import load_tts, release_tts
+
+        previous = str(getattr(getattr(self, "voice", None), "model_id", "") or "")
+        with self._speak_lock:
+            release_tts(self.voice)
+            self.voice = load_tts()
+        if not getattr(self.voice, "available", False):
+            reason = getattr(self.voice, "degrade_reason", "TTS unavailable")
+            log.warning("TTS reload degraded: %s", reason)
+            return {"ok": False, "error": reason, "model_id": ""}
+        model_id = str(getattr(self.voice, "model_id", "") or "")
+        log.info("TTS reloaded: %s -> %s", previous or "(none)", model_id)
+        if CONFIG.tts.warmup:
+            self._ensure_icl_ref_text()
+            eff_instruct = (CONFIG.tts.instruct or "").strip() or None
+            try:
+                self.voice.warmup(instruct=eff_instruct)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("TTS warmup after reload skipped: %s", exc)
+        self._emit_tts_info()
+        return {"ok": True, "model_id": model_id, "previous_model_id": previous}
 
     def _load_active_personality_meta(self) -> None:
         try:
@@ -1105,6 +1188,8 @@ class VoiceAgent:
 
     def _try_discord_direct(self, user_text: str) -> Optional[str]:
         """Run obvious Discord commands immediately — don't rely on the LLM."""
+        if self._maybe_motion_request(user_text, raw_text=user_text):
+            return None
         kind = self._classify_discord_command(user_text)
         if kind is None or self.discord is None:
             return None
@@ -1560,8 +1645,38 @@ class VoiceAgent:
         return None
 
     @staticmethod
+    def _is_local_audience_request(tl: str, original: str) -> bool:
+        """Room/stream greetings and avatar gestures — not Discord channel posts."""
+        text = (original or "").strip()
+        if not text:
+            return False
+        if re.search(r"\b(?:discord|#\w+)\b", text, re.I):
+            return False
+        if re.search(
+            r"\b(?:post|write|send|drop|message)\s+.+\s+in\s+#?[a-z0-9_-]+\s*$",
+            tl,
+        ):
+            return False
+        if re.search(
+            r"\b(?:say|tell|wave(?:\s+(?:at|to))?|greet(?:ing)?)\s+"
+            r"(?:(?:hi|hello|hey)(?:\s+there)?|greetings?)\s+"
+            r"(?:to\s+)?(?:everyone|everybody|all|guys|folks|people|chat|stream|viewers)\b",
+            tl,
+        ):
+            return True
+        if re.search(
+            r"\b(?:hello|hi|hey|greetings?)\s+(?:to\s+)?"
+            r"(?:everyone|everybody|all|guys|folks|people|chat|stream|viewers)\b",
+            tl,
+        ):
+            return True
+        return False
+
+    @staticmethod
     def _extract_channel_message(tl: str, original: str) -> Optional[tuple[str, str]]:
         """Return (content_hint, channel_name) for text-channel post requests."""
+        if VoiceAgent._is_local_audience_request(tl, original):
+            return None
         text_verbs = r"(?:write|post|say|send|type|drop|message|tell)"
         patterns: list[tuple[str, bool]] = [
             (
@@ -2098,6 +2213,28 @@ class VoiceAgent:
             label = str(result.get("label") or resolved).strip()
         return label or resolved
 
+    def _apply_pseudo_tool_calls_from_text(self, raw: str) -> None:
+        """Run tool side-effects when the model wrote Python-style calls as plain text."""
+        if not raw or self.registry is None:
+            return
+        from memory.character_card import extract_pseudo_tool_calls
+
+        for name, args in extract_pseudo_tool_calls(raw):
+            spec = self.registry.get(name)
+            if spec is None:
+                continue
+            try:
+                if name == "play_avatar_animation":
+                    clip = str(args.get("clip_name") or args.get("name") or "").strip()
+                    if clip:
+                        spec.handler({"name": clip, "loop": False})
+                elif name == "set_avatar_expression":
+                    mood = str(args.get("mood") or "").strip()
+                    if mood:
+                        spec.handler({"mood": mood})
+            except Exception as exc:  # noqa: BLE001
+                log.warning("pseudo tool %s failed: %s", name, exc)
+
     def _messages_with_animation_hint(
         self,
         user_text: str,
@@ -2107,7 +2244,11 @@ class VoiceAgent:
     ) -> list[dict]:
         messages = self._build_messages(user_text, history_override=history_override)
         if messages and anim_label:
-            hint = _ANIMATION_REPLY_HINT.format(label=anim_label)
+            audience = ""
+            tl = (user_text or "").lower()
+            if self._is_local_audience_request(tl, user_text or ""):
+                audience = _AUDIENCE_GREETING_HINT
+            hint = _ANIMATION_REPLY_HINT.format(label=anim_label, audience=audience)
             messages[-1]["content"] = f"{hint}\n\n{messages[-1]['content']}"
         return messages
 
@@ -2246,9 +2387,36 @@ class VoiceAgent:
             "Never invent current news or facts. Summarize tool results briefly.]"
         )
 
+    def _fallback_avatar_reply(self, user_text: str, anim_label: str = "") -> str:
+        """Short spoken line when the model returns nothing after a gesture."""
+        from memory.character_card import polish_spoken_reply
+
+        tl = (user_text or "").lower()
+        label = (anim_label or "").lower()
+        if self._is_local_audience_request(tl, user_text or ""):
+            if re.search(r"\bhi\b", tl):
+                canned = "Hi everyone!"
+            elif re.search(r"\bhello\b", tl):
+                canned = "Hello everyone!"
+            else:
+                canned = "Hey everyone!"
+        elif re.search(r"\b(?:hello|hi|hey|greet)\b", tl):
+            canned = "Hey everyone!"
+        elif "wave" in label or re.search(r"\bwave\b", tl):
+            canned = "Hey there!"
+        else:
+            canned = "There we go!"
+        return polish_spoken_reply(canned)
+
     def _discord_tool_hint(self, user_text: str) -> str:
         """Optional nudge for join commands the direct handler doesn't cover."""
         if self.discord is None or not CONFIG.tools.enabled:
+            return ""
+        from tools.animation import wants_avatar_motion
+
+        if wants_avatar_motion(user_text) or self._is_local_audience_request(
+            (user_text or "").lower(), user_text or "",
+        ):
             return ""
         t = (user_text or "").lower()
         if self._classify_discord_command(user_text):
@@ -2334,7 +2502,15 @@ class VoiceAgent:
         if label:
             self._emit(type="tts_info", model=label)
 
-    def _speak(self, text: str) -> None:
+    def _clone_xvec_for_speak(self, override: bool | None = None) -> bool | None:
+        """Per-call xvec override for clone mode; None = use saved CONFIG.tts.xvec_only."""
+        if getattr(self.voice, "mode", None) != "clone":
+            return None
+        if override is not None:
+            return bool(override)
+        return None
+
+    def _speak(self, text: str, *, xvec_only: bool | None = None) -> None:
         """Synthesize `text` as one generation and stream it to the speakers."""
         text = _clean_text(text)
         if not text or self._barge_in_flag.is_set():
@@ -2342,11 +2518,18 @@ class VoiceAgent:
         if self.voice is None or not getattr(self.voice, "available", True):
             log.info("AI (no TTS): %s", text)
             return
-        self._ensure_icl_ref_text()
+        use_xvec = self._clone_xvec_for_speak(xvec_only)
+        effective_icl = use_xvec is False or (
+            use_xvec is None and not CONFIG.tts.xvec_only
+        )
+        if effective_icl:
+            self._ensure_icl_ref_text()
         instruct = self._effective_instruct()
         self._express(self._turn_instruct or "", text)
         log.info("AI: %s", text)
-        for audio, sr in self.voice.stream(text, stop=self._barge_in_flag, instruct=instruct):
+        for audio, sr in self.voice.stream(
+            text, stop=self._barge_in_flag, instruct=instruct, xvec_only=use_xvec
+        ):
             if self._barge_in_flag.is_set():
                 break
             self.playback.submit(audio, sr)
@@ -2366,7 +2549,9 @@ class VoiceAgent:
             self._barge_in_flag.clear()
             self.playback.stop()
             self.playback.begin_turn()
-            self._ensure_icl_ref_text()
+            use_xvec = self._clone_xvec_for_speak()
+            if use_xvec is False or (use_xvec is None and not CONFIG.tts.xvec_only):
+                self._ensure_icl_ref_text()
             self._emit(type="status", value="speaking")
             self._emit_tts_info()
             self._emit(type="ai", text=cleaned)
@@ -2376,7 +2561,10 @@ class VoiceAgent:
                 eff_instruct = (CONFIG.tts.instruct or "").strip() or None
             log.info("TTS preview: %s", cleaned)
             for audio, sr in self.voice.stream(
-                cleaned, stop=self._barge_in_flag, instruct=eff_instruct
+                cleaned,
+                stop=self._barge_in_flag,
+                instruct=eff_instruct,
+                xvec_only=use_xvec,
             ):
                 if self._barge_in_flag.is_set():
                     break
@@ -2387,6 +2575,46 @@ class VoiceAgent:
                 self._emit(type="status", value="listening")
             else:
                 self._emit(type="status", value="idle")
+
+    def speak_chat_reply(
+        self,
+        text: str,
+        *,
+        instruct: str | None = None,
+        corr_id: str | None = None,
+        emit_final_status: bool = True,
+    ) -> None:
+        """Speak an already-displayed typed-chat reply (TTS + expressions, no duplicate ai text)."""
+        if self.voice is None or not getattr(self.voice, "available", True):
+            raise RuntimeError(
+                "TTS not loaded: "
+                f"{getattr(self.voice, 'degrade_reason', 'voice output unavailable')}"
+            )
+        cleaned = _clean_text((text or "").strip())
+        if not cleaned:
+            raise ValueError("Nothing to speak")
+        status_extra = {"corr_id": corr_id} if corr_id else {}
+        with self._speak_lock:
+            was_session = self.is_session_running()
+            self._barge_in_flag.clear()
+            # Always reset playback for typed chat — avoids replaying stale/ref audio.
+            self.playback.stop()
+            self.playback.begin_turn()
+            self._turn_instruct = (instruct or "").strip() or None
+            self._emit(type="status", value="speaking", **status_extra)
+            self._emit_tts_info()
+            if self._turn_instruct:
+                self._emit(type="delivery", cue=self._turn_instruct, **status_extra)
+            log.info("Chat TTS: %s", cleaned)
+            self._speak(cleaned)
+            while self.playback.is_playing() and not self._barge_in_flag.is_set():
+                time.sleep(0.05)
+            self._turn_instruct = None
+            if emit_final_status:
+                if was_session and self.is_session_running():
+                    self._emit(type="status", value="listening", **status_extra)
+                else:
+                    self._emit(type="status", value="idle", **status_extra)
 
     def _resolve_render_instruct(self, instruct: str | None) -> str | None:
         if instruct and instruct.strip():
@@ -2405,7 +2633,9 @@ class VoiceAgent:
         cleaned = _clean_text((text or "").strip())
         if not cleaned:
             raise ValueError("Nothing to speak")
-        self._ensure_icl_ref_text()
+        use_xvec = self._clone_xvec_for_speak()
+        if use_xvec is False or (use_xvec is None and not CONFIG.tts.xvec_only):
+            self._ensure_icl_ref_text()
         eff_instruct = self._resolve_render_instruct(instruct)
         log.info("TTS stream: %s", cleaned)
 
@@ -2416,7 +2646,7 @@ class VoiceAgent:
             if hasattr(self.voice, "stream_timed")
             else self.voice.stream
         )
-        for i, item in enumerate(stream_fn(cleaned, instruct=eff_instruct)):
+        for i, item in enumerate(stream_fn(cleaned, instruct=eff_instruct, xvec_only=use_xvec)):
             if len(item) == 3:
                 audio, sample_rate, timing = item
             else:
@@ -2436,13 +2666,15 @@ class VoiceAgent:
         cleaned = _clean_text((text or "").strip())
         if not cleaned:
             raise ValueError("Nothing to speak")
-        self._ensure_icl_ref_text()
+        use_xvec = self._clone_xvec_for_speak()
+        if use_xvec is False or (use_xvec is None and not CONFIG.tts.xvec_only):
+            self._ensure_icl_ref_text()
         eff_instruct = self._resolve_render_instruct(instruct)
         log.info("TTS render: %s", cleaned)
-        return self._synthesize_wav_bytes(cleaned, instruct=eff_instruct)
+        return self._synthesize_wav_bytes(cleaned, instruct=eff_instruct, xvec_only=use_xvec)
 
     def _synthesize_wav_bytes(
-        self, text: str, *, instruct: str | None = None
+        self, text: str, *, instruct: str | None = None, xvec_only: bool | None = None
     ) -> tuple[bytes, int]:
         """Render TTS to WAV bytes without dashboard side effects."""
         import io
@@ -2464,7 +2696,7 @@ class VoiceAgent:
             if hasattr(self.voice, "stream_timed")
             else self.voice.stream
         )
-        for i, item in enumerate(stream_fn(cleaned, instruct=eff_instruct)):
+        for i, item in enumerate(stream_fn(text, instruct=instruct, xvec_only=xvec_only)):
             if len(item) == 3:
                 audio, sample_rate, timing = item
             else:
@@ -2615,7 +2847,9 @@ class VoiceAgent:
                 direct = self._execute_orchestrator_plan(plan, user_text, raw_text)
             if direct is None:
                 direct = self._try_pending_action_direct(user_text)
-            if direct is None:
+            if direct is None and not self._maybe_motion_request(
+                user_text, plan=plan, raw_text=raw_text,
+            ):
                 direct = self._try_discord_direct(user_text)
             if direct is None:
                 direct = self._try_web_direct(user_text)
@@ -2788,13 +3022,18 @@ class VoiceAgent:
             if self._barge_in_flag.is_set():
                 break
             text += token
-            if token:
-                self._emit(type="ai", text=token, corr_id=corr_id, message_id=reply_message_id)
+        self._apply_pseudo_tool_calls_from_text(text)
         text, _ = finalize_reply_text(text)
         text = _clean_text(text)
         if not text:
             return ""
-        self._emit(type="ai", text=text)
+        self._emit(
+            type="ai",
+            text=text,
+            final=True,
+            corr_id=corr_id,
+            message_id=reply_message_id,
+        )
         mark_speaking()
         self._speak(text)
         return text
@@ -2956,6 +3195,7 @@ class VoiceAgent:
             "card": (detail or {}).get("card"),
             "creator_notes": (detail or {}).get("creator_notes", ""),
             "post_history": (detail or {}).get("post_history", ""),
+            "system_prompt": (detail or {}).get("prompt", ""),
         }
 
     def _apply_personality_state(self, state: dict) -> None:
@@ -3272,6 +3512,9 @@ class VoiceAgent:
         self.voice.cfg.xvec_only = bool(enabled)
         if not enabled:
             self._ensure_icl_ref_text()
+        else:
+            sync_clone_ref_text(CONFIG.tts)
+        clear_voice_prompt_cache(getattr(self.voice, "model", None))
         self._emit(type="settings", xvec_only=CONFIG.tts.xvec_only)
 
     def _ensure_stt_for_ref_text(self) -> None:
@@ -3287,17 +3530,20 @@ class VoiceAgent:
         """Ensure ref_text exists when ICL clone mode is active (auto-transcribe if needed)."""
         if CONFIG.tts.xvec_only or self.voice is None:
             return
-        if (CONFIG.tts.ref_text or "").strip():
-            self.voice.cfg.ref_text = CONFIG.tts.ref_text.strip()
-            return
         ref = CONFIG.tts.ref_audio
         if not ref or not os.path.exists(ref):
             return
+        sync_clone_ref_text(CONFIG.tts)
+        if CONFIG.tts.ref_text.strip():
+            self.voice.cfg.ref_text = CONFIG.tts.ref_text.strip()
+            return
         self._ensure_stt_for_ref_text()
+        log.info("no ref transcript for %s — transcribing on first speak", os.path.basename(ref))
         text = self.ensure_ref_text(ref)
         if text:
             CONFIG.tts.ref_text = text
             self.voice.cfg.ref_text = text
+            clear_voice_prompt_cache(getattr(self.voice, "model", None))
 
     # ----- VTuber (VTube Studio) -------------------------------------------
 
@@ -3422,8 +3668,9 @@ class VoiceAgent:
                     self.memory.sessions.log("assistant", text)
                 except Exception:  # noqa: BLE001
                     pass
-        for phrase in sentence_chunks(iter([text])):
-            self._emit(type="ai", text=phrase)
+        cleaned = _clean_text(text)
+        if cleaned:
+            self._emit(type="ai", text=cleaned, final=True)
         self._emit(type="status", value="speaking")
         self._emit_tts_info()
         self._speak(text)

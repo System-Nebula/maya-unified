@@ -36,9 +36,33 @@ document.addEventListener("alpine:init", () => {
         if (!d.ok) throw new Error(d.error || "load failed");
         this.personalities = d.personalities || [];
         this.activeId = d.active || "";
-        if (d.card) this.applyDetail(d);
+        if (!this.activeId && this.personalities.length) {
+          this.activeId = this.personalities[0].id;
+        }
+        if (d.card) {
+          this.applyDetail(d);
+        } else if (this.activeId) {
+          await this.loadActiveDetail();
+        }
       } catch (e) {
         this.error = String(e.message || e);
+      }
+    },
+
+    async loadActiveDetail() {
+      if (!this.activeId) return;
+      try {
+        const r = await fetch(`${API}/export?id=${encodeURIComponent(this.activeId)}`);
+        const d = await r.json();
+        if (!d.ok || !d.export?.data) return;
+        const card = d.export.data;
+        this.applyDetail({
+          card,
+          creator_notes: card.creator_notes || "",
+          system_prompt: card.system_prompt || "",
+        });
+      } catch (_) {
+        /* export fallback is best-effort */
       }
     },
 
@@ -54,7 +78,7 @@ document.addEventListener("alpine:init", () => {
       this.card.post_history_instructions = c.post_history_instructions || "";
       this.card.tags = Array.isArray(c.tags) ? c.tags.join(", ") : "";
       this.creatorNotes = (d.creator_notes || c.creator_notes || "").trim() || "—";
-      this.promptPreview = d.system_prompt || d.prompt || "";
+      this.promptPreview = d.system_prompt || d.prompt || c.system_prompt || "";
     },
 
     collectCard() {
