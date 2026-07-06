@@ -13,6 +13,14 @@ from maya_db.models.image_workflow import ImageWorkflowRow
 
 logger = structlog.get_logger()
 
+# Semantic Image Director tool -> workflow name
+SEMANTIC_TOOL_WORKFLOWS: dict[str, str] = {
+    "txt2img": "z-image-turbo-t2i",
+    "inpaint": "z-image-inpaint",
+    "img2img": "z-image-img2img",
+    "upscale": "latent-upscale",
+}
+
 # Discord model choice -> (generate workflow name, edit workflow name)
 _MODEL_WORKFLOW_NAMES: dict[str, tuple[str, str | None]] = {
     "ideogram": ("ideogram4-t2i", "ideogram4-remix"),
@@ -315,8 +323,19 @@ def list_workflows(
     )
 
 
-def resolve_workflow_for_model(model_choice: str | None, mode: str = "generate") -> ImageWorkflow:
+def resolve_workflow_for_model(
+    model_choice: str | None,
+    mode: str = "generate",
+    *,
+    semantic: str | None = None,
+) -> ImageWorkflow:
     """Map a Discord/portal model choice + mode to a workflow row."""
+    if semantic and semantic in SEMANTIC_TOOL_WORKFLOWS:
+        wf_name = SEMANTIC_TOOL_WORKFLOWS[semantic]
+        try:
+            return get_workflow(wf_name)
+        except ValueError:
+            logger.warning("semantic_workflow_missing", semantic=semantic, name=wf_name)
     choice = model_choice or "ideogram"
     names = _MODEL_WORKFLOW_NAMES.get(choice)
     if names is None:

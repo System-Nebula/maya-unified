@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Download Krea 2 Turbo FP8 weights for local ComfyUI inference.
+"""Download Krea 2 Turbo int8 convrot weights for local ComfyUI inference.
 
 Pulls the Turbo daily-driver stack from Comfy-Org/Krea-2 and the official
-ComfyUI workflow template. RAW bf16 is optional (--include-raw).
+ComfyUI workflow template. RAW bf16 is optional (--include-raw); legacy fp8
+UNet is optional (--include-fp8).
 
 Usage:
     uv run python infra/comfyui/scripts/fetch_krea2_weights.py --dry-run
@@ -34,9 +35,13 @@ class Artifact:
 
 
 TURBO_ARTIFACTS: tuple[Artifact, ...] = (
-    Artifact("Comfy-Org/Krea-2", "krea2_turbo_fp8_scaled.safetensors", "diffusion_models", 12.0),
+    Artifact("Comfy-Org/Krea-2", "krea2_turbo_int8_convrot.safetensors", "diffusion_models", 12.6),
     Artifact("Comfy-Org/Krea-2", "qwen3vl_4b_fp8_scaled.safetensors", "text_encoders", 2.5),
     Artifact("Comfy-Org/Krea-2", "qwen_image_vae.safetensors", "vae", 0.2),
+)
+
+FP8_ARTIFACTS: tuple[Artifact, ...] = (
+    Artifact("Comfy-Org/Krea-2", "krea2_turbo_fp8_scaled.safetensors", "diffusion_models", 12.0),
 )
 
 RAW_ARTIFACTS: tuple[Artifact, ...] = (
@@ -102,6 +107,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Download Krea 2 weights for ComfyUI.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--include-raw", action="store_true", help="also fetch krea2_raw_bf16 (~24 GB)")
+    parser.add_argument("--include-fp8", action="store_true", help="also fetch legacy krea2_turbo_fp8_scaled UNet (~12 GB)")
     parser.add_argument("--models-dir", type=Path, default=None)
     parser.add_argument("--workflow-dir", type=Path, default=None)
     parser.add_argument("--skip-workflow", action="store_true")
@@ -111,7 +117,11 @@ def main() -> int:
     workflow_dir = args.workflow_dir or _default_workflow_dir()
     token = resolve_hf_token()
 
-    artifacts = TURBO_ARTIFACTS + (RAW_ARTIFACTS if args.include_raw else ())
+    artifacts = TURBO_ARTIFACTS
+    if args.include_fp8:
+        artifacts = artifacts + FP8_ARTIFACTS
+    if args.include_raw:
+        artifacts = artifacts + RAW_ARTIFACTS
     total_gb = sum(a.approx_gb for a in artifacts)
 
     print("Krea 2 provisioning")

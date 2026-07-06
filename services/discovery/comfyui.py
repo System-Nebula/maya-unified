@@ -28,11 +28,11 @@ ZIMAGE_WEIGHTS: dict[str, tuple[str, str]] = {
     "vae": ("VAELoader", "ae.safetensors"),
 }
 KREA2_WEIGHTS: dict[str, tuple[str, str]] = {
-    "unet": ("UNETLoader", "krea2_turbo_fp8_scaled.safetensors"),
+    "unet": ("UNETLoader", "krea2_turbo_int8_convrot.safetensors"),
     "clip": ("CLIPLoader", "qwen3vl_4b_fp8_scaled.safetensors"),
     "vae": ("VAELoader", "qwen_image_vae.safetensors"),
 }
-KREA2_MIN_COMFYUI_VERSION = "0.26.0"
+KREA2_MIN_COMFYUI_VERSION = "0.27.0"
 _health_cache: dict[str, tuple[float, ServiceHealth]] = {}
 
 
@@ -219,7 +219,7 @@ def probe_krea2_capability(native_url: str) -> dict[str, Any]:
                 "comfyui_version": version,
                 "detail": (
                     f"Krea 2 requires ComfyUI {KREA2_MIN_COMFYUI_VERSION}+ "
-                    f"(CLIPLoader type `krea2`). Your ComfyUI is {version_label}. "
+                    f"(int8 convrot + CLIPLoader type `krea2`). Your ComfyUI is {version_label}. "
                     "Rebuild comfyui-api — see infra/comfyui/README.md."
                 ),
             }

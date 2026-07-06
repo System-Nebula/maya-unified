@@ -176,6 +176,7 @@ def auto_bind(comfy_graph: dict[str, Any]) -> list[dict[str, Any]]:
                 {"path": f"{sid}.inputs.steps", "key": "steps", "type": "int"},
                 {"path": f"{sid}.inputs.cfg", "key": "cfg", "type": "float"},
                 {"path": f"{sid}.inputs.seed", "key": "seed", "type": "int"},
+                {"path": f"{sid}.inputs.denoise", "key": "denoise", "type": "float"},
                 {"path": f"{sid}.inputs.sampler_name", "key": "sampler_name", "type": "string"},
             ]
         )
@@ -223,7 +224,7 @@ def build_values_from_request(
     if seed is None:
         seed = secrets.randbelow(2**32)
 
-    return {
+    values = {
         "prompt": request.prompt,
         "width": width,
         "height": height,
@@ -232,6 +233,10 @@ def build_values_from_request(
         "seed": seed,
         "sampler_name": meta.get("sampler_name") or p.get("sampler_name"),
     }
+    denoise = meta.get("denoise") or p.get("denoise")
+    if denoise is not None:
+        values["denoise"] = denoise
+    return values
 
 
 def inject_request(

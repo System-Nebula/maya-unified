@@ -68,9 +68,9 @@ _MANIFEST: dict[str, Asset] = {
         "vae",
     ),
     # Krea2 — Comfy-Org/Krea-2
-    "krea2_turbo_fp8_scaled.safetensors": Asset(
+    "krea2_turbo_int8_convrot.safetensors": Asset(
         "Comfy-Org/Krea-2",
-        "diffusion_models/krea2_turbo_fp8_scaled.safetensors",
+        "diffusion_models/krea2_turbo_int8_convrot.safetensors",
         "diffusion_models",
     ),
     "qwen3vl_4b_fp8_scaled.safetensors": Asset(

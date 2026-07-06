@@ -11,6 +11,12 @@ if TYPE_CHECKING:
     from maya_image.types.image_job import ImageJobInput
     from maya_image.workflows import ImageWorkflow
 
+_ARENA_ZIT_WORKFLOW_ID = "a0000001-0000-4000-8000-000000000004"
+_ARENA_KREA2_WORKFLOW_ID = "a0000001-0000-4000-8000-000000000007"
+_ARENA_POLL_INTERVAL_SEC = 5.0
+_ARENA_TIMEOUT_SEC = 300.0
+_ARENA_MAX_POLLS = int(_ARENA_TIMEOUT_SEC // _ARENA_POLL_INTERVAL_SEC)
+
 
 def _resolve_mode(raw: str | None):
     from maya_image.types.image_job import ImageMode
@@ -138,6 +144,114 @@ async def run_imagine_job(
     }
 
 
+async def run_arena_job(
+    *,
+    prompt: str,
+    operator_id: str | None,
+    size: str = "1024x1024",
+    quality: str = "high",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run a blind Z-Image Turbo vs Krea 2 Turbo arena battle and wait for both slots."""
+    from maya_image.service import get_image_service
+    from maya_image.types.image_job import ImageJobInput, ImageJobStatus, ImageMode
+
+    service = get_image_service()
+    request = ImageJobInput(
+        prompt=prompt,
+        mode=ImageMode.ARENA,
+        references=[],
+        size=size,
+        quality=quality,
+        user_id=operator_id or "anonymous",
+        metadata={**(metadata or {}), "source": "cmd_registry"},
+    )
+    battle = await service.submit_named_workflow_battle(
+        request,
+        _ARENA_ZIT_WORKFLOW_ID,
+        _ARENA_KREA2_WORKFLOW_ID,
+    )
+    finalized = await service.finalize_arena_jobs(
+        battle["battle_id"],
+        battle["job_ids"],
+        battle["candidate_ids"],
+        max_polls=_ARENA_MAX_POLLS,
+        poll_interval=_ARENA_POLL_INTERVAL_SEC,
+        timeout_sec=_ARENA_TIMEOUT_SEC,
+    )
+
+    slot_data: dict[str, dict[str, Any]] = {}
+    for slot in ("a", "b"):
+        job = finalized.get(slot)
+        if job is None:
+            slot_data[slot] = {"url": "", "gen_ms": None, "status": "failed", "job_id": "", "error": "missing job"}
+            continue
+        url = ""
+        gen_ms: int | None = None
+        if job.status == ImageJobStatus.COMPLETED and job.output and job.output.outputs:
+            output = await service.ensure_local_output(job.output.outputs[0], subdir="arena")
+            url = output.url or ""
+            if job.started_at and job.completed_at:
+                gen_ms = int((job.completed_at - job.started_at).total_seconds() * 1000)
+        slot_data[slot] = {
+            "url": url,
+            "gen_ms": gen_ms,
+            "status": job.status.value,
+            "job_id": job.id,
+            "error": job.error,
+        }
+
+    any_url = any(slot_data[s].get("url") for s in ("a", "b"))
+    both_failed = all(
+        slot_data[s].get("status") == ImageJobStatus.FAILED.value for s in ("a", "b")
+    )
+    return {
+        "battle_id": str(battle["battle_id"]),
+        "status": "completed" if any_url else "failed",
+        "both_failed": both_failed,
+        "slots": slot_data,
+        "contender_labels": dict(battle.get("contender_labels") or {}),
+        "candidate_ids": battle.get("candidate_ids") or {},
+        "workflow_contenders": battle.get("workflow_contenders") or {},
+    }
+
+
+def _arena_weights_error(
+    health: dict[str, Any],
+    *,
+    fake_comfy: bool,
+) -> str | None:
+    """Return an error message when zit or krea2 weights are unavailable for arena."""
+    if fake_comfy or health.get("status") == "error":
+        return None
+    from services.discovery.comfyui import KREA2_MIN_COMFYUI_VERSION, krea2_capability_status, weight_status_for_model
+    from services.imagine.health import format_model_weights_label
+
+    for model in ("zit", "krea2"):
+        if model == "krea2":
+            capability = krea2_capability_status(health.get("weights") or {})
+            if capability is not None and capability.get("ok") is False:
+                return str(
+                    capability.get("detail")
+                    or (
+                        f"Krea 2 requires ComfyUI {KREA2_MIN_COMFYUI_VERSION}+ "
+                        "(int8 convrot + CLIPLoader type `krea2`). "
+                        "Rebuild comfyui-api — see infra/comfyui/README.md."
+                    )
+                )
+        weights = weight_status_for_model(health.get("weights") or {}, model)
+        if weights is not None and weights.get("ok") is False:
+            missing = weights.get("missing") or []
+            missing_labels = [item if isinstance(item, str) else str(item) for item in missing]
+            detail = weights.get("detail") or f"{format_model_weights_label(model)} weights not visible to ComfyUI"
+            missing_text = ", ".join(missing_labels) if missing_labels else "unknown"
+            return (
+                f"{format_model_weights_label(model)} weights missing ({missing_text}). {detail}. "
+                "See infra/comfyui/README.md."
+            )
+    return None
+
+
 def _trace_id() -> str | None:
     from maya_image.service import current_trace_id
 
@@ -165,6 +279,7 @@ async def exec_imagine(ctx: CmdContext, args: dict[str, Any]) -> CmdResult:
         dev_policy_message,
         fake_comfy_enabled,
     )
+    from services.discovery.comfyui import KREA2_MIN_COMFYUI_VERSION
     from services.imagine.health import (
         apply_comfyui_url_from_settings,
         format_comfyui_unavailable_error,
@@ -208,7 +323,8 @@ async def exec_imagine(ctx: CmdContext, args: dict[str, Any]) -> CmdResult:
                 return CmdResult(
                     ok=False,
                     error=str(capability.get("detail") or (
-                        "Krea 2 requires ComfyUI 0.26+ (CLIPLoader type `krea2`). "
+                        f"Krea 2 requires ComfyUI {KREA2_MIN_COMFYUI_VERSION}+ "
+                        "(int8 convrot + CLIPLoader type `krea2`). "
                         "Rebuild comfyui-api — see infra/comfyui/README.md."
                     )),
                     trace_id=_trace_id(),
@@ -235,6 +351,62 @@ async def exec_imagine(ctx: CmdContext, args: dict[str, Any]) -> CmdResult:
     quality = str(args.get("quality") or "high")
     ctx_meta = dict(ctx.metadata or {})
     job_metadata = {"surface": ctx.surface.value, **ctx_meta}
+    image_mode = _resolve_mode(mode)
+
+    if image_mode == _resolve_mode("arena"):
+        arena_weights_err = _arena_weights_error(health, fake_comfy=fake_comfy_enabled())
+        if arena_weights_err:
+            return CmdResult(ok=False, error=arena_weights_err, trace_id=_trace_id())
+        try:
+            arena_result = await run_arena_job(
+                prompt=prompt,
+                operator_id=ctx.operator_id,
+                size=size,
+                quality=quality,
+                metadata=job_metadata,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return CmdResult(ok=False, error=str(exc), trace_id=_trace_id())
+
+        if arena_result.get("both_failed") or not arena_result.get("status") == "completed":
+            err_parts = []
+            for slot in ("a", "b"):
+                slot_err = (arena_result.get("slots") or {}).get(slot, {}).get("error")
+                if slot_err:
+                    err_parts.append(f"{slot.upper()}: {slot_err}")
+            msg = "Arena battle failed — both providers failed to generate an image."
+            if err_parts:
+                msg = f"{msg} {' · '.join(err_parts)}"
+            return CmdResult(
+                ok=False,
+                error=msg,
+                trace_id=_trace_id(),
+                job_id=str(arena_result.get("battle_id") or "") or None,
+            )
+
+        slots = arena_result.get("slots") or {}
+        artifacts = [
+            {
+                "type": "arena",
+                "battle_id": str(arena_result["battle_id"]),
+                "state": "voting",
+                "prompt": prompt,
+                "image_a": slots.get("a", {}).get("url") or "",
+                "image_b": slots.get("b", {}).get("url") or "",
+                "gen_ms_a": slots.get("a", {}).get("gen_ms"),
+                "gen_ms_b": slots.get("b", {}).get("gen_ms"),
+                "user_id": ctx.operator_id,
+                "corr_id": ctx_meta.get("corr_id"),
+            }
+        ]
+        return CmdResult(
+            ok=True,
+            text="Arena ready — vote for A, B, or Tie.",
+            artifacts=artifacts,
+            trace_id=_trace_id(),
+            job_id=str(arena_result.get("battle_id") or "") or None,
+        )
+
     try:
         result = await run_imagine_job(
             prompt=prompt,

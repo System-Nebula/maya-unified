@@ -132,7 +132,7 @@ async def test_exec_imagine_preflight_blocks_missing_krea2_weights_only() -> Non
             "zit": {"ok": True, "missing": [], "detail": "Z-Image Turbo weights visible to ComfyUI"},
             "krea2": {
                 "ok": False,
-                "missing": ["krea2_turbo_fp8_scaled.safetensors"],
+                "missing": ["krea2_turbo_int8_convrot.safetensors"],
                 "detail": "Krea 2 Turbo weights not visible to ComfyUI",
             },
         },
@@ -148,7 +148,7 @@ async def test_exec_imagine_preflight_blocks_missing_krea2_weights_only() -> Non
 
     assert result.ok is False
     assert "Krea 2 Turbo weights missing" in (result.error or "")
-    assert "krea2_turbo_fp8_scaled.safetensors" in (result.error or "")
+    assert "krea2_turbo_int8_convrot.safetensors" in (result.error or "")
     mock_run.assert_not_called()
 
 
@@ -167,12 +167,12 @@ async def test_exec_imagine_preflight_blocks_krea2_without_capability() -> None:
             "krea2": {
                 "ok": False,
                 "missing": [],
-                "detail": "Krea 2 requires ComfyUI 0.26+",
+                "detail": "Krea 2 requires ComfyUI 0.27+",
                 "capability": {
                     "ok": False,
                     "comfyui_version": "0.19.3",
                     "detail": (
-                        "Krea 2 requires ComfyUI 0.26+ (CLIPLoader type `krea2`). "
+                        "Krea 2 requires ComfyUI 0.27+ (int8 convrot + CLIPLoader type `krea2`). "
                         "Your ComfyUI is 0.19.3. Rebuild comfyui-api — see infra/comfyui/README.md."
                     ),
                 },
@@ -189,7 +189,7 @@ async def test_exec_imagine_preflight_blocks_krea2_without_capability() -> None:
         result = await exec_imagine(ctx, {"prompt": "sunset", "model": "krea2"})
 
     assert result.ok is False
-    assert "0.26" in (result.error or "")
+    assert "0.27" in (result.error or "")
     assert "0.19.3" in (result.error or "")
     mock_run.assert_not_called()
 
@@ -214,7 +214,7 @@ async def test_exec_imagine_allows_krea2_when_zit_missing() -> None:
                 "ok": True,
                 "missing": [],
                 "detail": "Krea 2 Turbo ready",
-                "capability": {"ok": True, "comfyui_version": "0.26.0"},
+                "capability": {"ok": True, "comfyui_version": "0.27.0"},
             },
         },
     }

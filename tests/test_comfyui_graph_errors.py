@@ -97,5 +97,5 @@ def test_summarize_comfy_error_krea2_type_unsupported() -> None:
         }
     )
     summary = _summarize_comfy_error(body, workflow_name="krea2-turbo-t2i")
-    assert "0.26" in summary
+    assert "0.27" in summary
     assert "infra/comfyui/README.md" in summary

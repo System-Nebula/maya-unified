@@ -31,17 +31,99 @@ _MODEL_PATTERNS = (
     (re.compile(r"\bideogram\b", re.I), "ideogram-local"),
 )
 
+_MUSIC_NOUNS = re.compile(
+    r"\b(song|songs|track|tracks|music|playlist|queue|album|artist)\b",
+    re.I,
+)
+_PREVIOUS_TRACK = re.compile(
+    r"\b(previous\s+(?:song|track)|last\s+(?:song|track)|back\s+one)\b",
+    re.I,
+)
+_GO_BACK = re.compile(r"\bgo\s+back\b", re.I)
+_SKIP_TRACK = re.compile(
+    r"\b("
+    r"skip(?:\s+(?:the|this|to\s+the))?\s*(?:song|track)|"
+    r"next\s+(?:song|track)|"
+    r"skip\s+it|"
+    r"(?:start|play)\s+(?:the\s+)?next\s+(?:song|track)"
+    r")\b",
+    re.I,
+)
+_MUSIC_CONTROL = re.compile(
+    r"\b(pause|resume|stop|play|skip|unpause|continue|start)\b",
+    re.I,
+)
+
+
+_CLEAR_QUEUE = re.compile(
+    r"\b(?:clear|empty|reset|remove|delete|wipe)\b",
+    re.I,
+)
+
+
+def classify_music_playback_command(text: str) -> str | None:
+    """Return skip|previous|pause|resume|clear for dashboard/discord playback control."""
+    raw = (text or "").strip()
+    tl = raw.lower()
+    if not tl:
+        return None
+    if _PREVIOUS_TRACK.search(raw) or (_GO_BACK.search(raw) and _MUSIC_NOUNS.search(raw)):
+        return "previous"
+    if _SKIP_TRACK.search(raw):
+        return "skip"
+    if _MUSIC_NOUNS.search(raw):
+        if _CLEAR_QUEUE.search(raw):
+            return "clear"
+        if re.search(r"\b(?:pause|stop)\b", tl):
+            return "pause"
+        if re.search(r"\b(?:resume|unpause|continue)\b", tl):
+            return "resume"
+    return None
+
+
+def looks_like_music_playback_request(text: str) -> bool:
+    """True when the user likely wants music playback control, not image generation."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if classify_music_playback_command(raw):
+        return True
+    if _MUSIC_NOUNS.search(raw) and _MUSIC_CONTROL.search(raw):
+        return True
+    return False
+
 
 def looks_like_imagine_request(text: str) -> bool:
     """True when the user likely wants an image generated, not plain chat."""
     raw = (text or "").strip()
     if not raw:
         return False
+    if looks_like_music_playback_request(raw):
+        return False
+    if looks_like_director_refinement(raw):
+        return True
     if _IMAGINE_VERBS.search(raw) and _IMAGINE_NOUNS.search(raw):
         return True
     if _DRAW_OBJECT.search(raw):
         return True
     return False
+
+
+_DIRECTOR_REFINE = re.compile(
+    r"\b(bigger|smaller|inpaint|edit|fix|change|adjust|refine|more\s+runescape|"
+    r"background|expression|hat|style|upscale|go\s+back|restore|version)\b",
+    re.I,
+)
+
+
+def looks_like_director_refinement(text: str) -> bool:
+    """True when user language implies iterative image editing."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if looks_like_music_playback_request(raw):
+        return False
+    return bool(_DIRECTOR_REFINE.search(raw))
 
 
 def extract_imagine_prompt(text: str) -> str:

@@ -81,6 +81,7 @@ _MODE_CHOICES = [
     app_commands.Choice(name="Generate", value="generate"),
     app_commands.Choice(name="Edit", value="edit"),
     app_commands.Choice(name="Arena", value="arena"),
+    app_commands.Choice(name="Director", value="director"),
 ]
 
 # Maps legacy model choice names (kept for tests importing resolve_provider_key).
@@ -539,6 +540,8 @@ class ImagineCog(commands.Cog):
             return "Maya is editing the image..."
         if mode == ImageMode.REFINE:
             return "Maya is refining your creative direction…"
+        if mode == ImageMode.DIRECTOR:
+            return "Maya is directing the image — planning, generating, and critiquing…"
         return "Maya is generating the image..."
 
     def _file_from_output(self, output) -> tuple[discord.File | None, str]:
@@ -1324,6 +1327,13 @@ class ImagineCog(commands.Cog):
                 if portal_user_id is None:
                     return
             image_mode = ImageMode(mode.value)
+            if image_mode == ImageMode.DIRECTOR:
+                await self._run_director_agent(
+                    interaction,
+                    prompt=prompt,
+                    portal_user_id=portal_user_id,
+                )
+                return
             if image_mode == ImageMode.REFINE:
                 await self._run_refine_agent(
                     interaction,
@@ -1442,6 +1452,65 @@ class ImagineCog(commands.Cog):
             "Refine mode is not available in the public self-hosted build.",
             ephemeral=True,
         )
+
+    async def _run_director_agent(
+        self,
+        interaction: discord.Interaction,
+        *,
+        prompt: str,
+        portal_user_id: str,
+    ) -> None:
+        """Run the shared Image Director loop for Discord."""
+        from maya_image.director.service import get_director_service
+        from services.settings.store import load_effective_settings
+
+        progress = await interaction.followup.send(self._progress_text(ImageMode.DIRECTOR))
+
+        def _emit(**ev: object) -> None:
+            text = str(ev.get("text") or "").strip()
+            if text and ev.get("type", "").startswith("image.director"):
+                asyncio.create_task(self._edit_message(progress, content=text[:2000]))
+
+        settings = load_effective_settings(portal_user_id)
+        llm = getattr(self.bot, "llm", None)
+        director = get_director_service(llm=llm)
+        try:
+            result = await director.run_turn(
+                prompt,
+                operator_id=portal_user_id,
+                discord_user_id=str(interaction.user.id),
+                discord_channel_id=str(interaction.channel_id),
+                settings=settings,
+                emit=_emit,
+            )
+        except Exception as exc:
+            logger.error("director_discord_failed", error=str(exc))
+            await self._edit_message(progress, content=f"Director failed: {exc}")
+            return
+
+        if not result.get("ok"):
+            await self._edit_message(
+                progress,
+                content=result.get("error") or "Director session failed.",
+            )
+            return
+
+        url = str(result.get("url") or "")
+        narration = result.get("narration") or []
+        caption = narration[-1] if narration else "Here's the final version."
+        embed = discord.Embed(
+            title=prompt[:256],
+            description=caption[:2048],
+            color=discord.Color.purple(),
+        )
+        embed.add_field(name="Mode", value="director", inline=True)
+        embed.add_field(name="Score", value=f"{result.get('goal_match', 0):.2f}", inline=True)
+        if url:
+            embed.set_image(url=url)
+        try:
+            await progress.edit(content=None, embed=embed)
+        except Exception:
+            await interaction.followup.send(embed=embed)
 
 
 async def setup(bot: MayaBot) -> None:

@@ -243,7 +243,7 @@ def create_krea2_turbo_graph(
         seed = random.randint(0, 2**32 - 1)
     return {
         "1": {
-            "inputs": {"unet_name": "krea2_turbo_fp8_scaled.safetensors", "weight_dtype": "default"},
+            "inputs": {"unet_name": "krea2_turbo_int8_convrot.safetensors", "weight_dtype": "default"},
             "class_type": "UNETLoader",
         },
         "2": {

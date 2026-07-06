@@ -37,10 +37,10 @@ After `docker compose up`, ComfyUI must see model weights in its loader dropdown
 curl -s http://127.0.0.1:8188/object_info/UNETLoader | jq '.UNETLoader.input.required.unet_name[0] | index("z_image_turbo_bf16.safetensors")'
 
 # Krea2
-curl -s http://127.0.0.1:8188/object_info/UNETLoader | jq '.UNETLoader.input.required.unet_name[0] | index("krea2_turbo_fp8_scaled.safetensors")'
+curl -s http://127.0.0.1:8188/object_info/UNETLoader | jq '.UNETLoader.input.required.unet_name[0] | index("krea2_turbo_int8_convrot.safetensors")'
 # expect a number (file is listed), not null
 
-# Krea2 also needs ComfyUI 0.26+ (native CLIPLoader type `krea2`)
+# Krea2 needs ComfyUI 0.27+ (native int8 convrot + CLIPLoader type `krea2`)
 curl -s http://127.0.0.1:8188/system_stats | jq '.system.comfyui_version'
 curl -s http://127.0.0.1:8188/object_info/CLIPLoader \
   | jq '.CLIPLoader.input.required.type[0] | index("krea2")'
@@ -52,7 +52,20 @@ curl -s http://127.0.0.1:8188/object_info/CLIPLoader \
 | Model | Min ComfyUI | Notes |
 |-------|-------------|-------|
 | Z-Image Turbo | 0.19.3+ | Default local model |
-| Krea 2 Turbo | **0.26.0+** | Requires `CLIPLoader type=krea2`; rebuild docker image after bump |
+| Krea 2 Turbo | **0.27.0+** | int8 convrot UNet + `CLIPLoader type=krea2`; CLIP stays fp8; rebuild docker image after bump |
+
+Krea 2 int8 convrot performs best with **PyTorch 2.12+ / CUDA 13.0** inside the container (see `docker/comfyui.dockerfile` build args). If int8 is slower than fp8, confirm the container was rebuilt with those versions and NVIDIA drivers are current.
+
+### Rebuild for Krea 2 int8 convrot
+
+The compose file layers `comfyui-api` on a ComfyUI base image. After pulling the latest Salad clone, build the base then the API image:
+
+```bash
+cd infra/comfyui/ComfyUI/docker
+./build-comfy-base-images 0.27.0 2.12.0 13.0
+cd ..
+COMFY_HOME=$HOME/ComfyUI docker compose up -d --build
+```
 
 If Krea2 weights are visible but `krea2` is missing from CLIPLoader types, rebuild:
 

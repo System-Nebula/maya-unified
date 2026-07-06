@@ -213,7 +213,7 @@ _MODEL_MOUNT_MISMATCH_MSG = (
     "See infra/comfyui/README.md."
 )
 _KREA2_VERSION_MSG = (
-    "Krea 2 is not supported by this ComfyUI build (needs 0.26+). "
+    "Krea 2 is not supported by this ComfyUI build (needs 0.27+). "
     "Rebuild comfyui-api per infra/comfyui/README.md."
 )
 

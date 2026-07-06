@@ -51,12 +51,19 @@ def get_imagine_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
     if remark_enabled is None:
         remark_enabled = True
     remark_vision_model = str(imagine.get("remark_vision_model") or "").strip()
+    critique_vision_model = str(
+        imagine.get("critique_vision_model") or remark_vision_model
+    ).strip()
     return {
         "enabled": bool(enabled),
         "comfyui_url": url.rstrip("/") or DEFAULT_IMAGINE_URL,
         "default_model": default_model,
         "remark_enabled": bool(remark_enabled),
         "remark_vision_model": remark_vision_model,
+        "director_enabled": bool(imagine.get("director_enabled", True)),
+        "director_max_iterations": int(imagine.get("director_max_iterations") or 3),
+        "director_multi_critic": bool(imagine.get("director_multi_critic", True)),
+        "critique_vision_model": critique_vision_model,
     }
 
 
@@ -81,6 +88,14 @@ def migrate_imagine_settings(settings: dict[str, Any]) -> dict[str, Any]:
         imagine["remark_enabled"] = True
     if "remark_vision_model" not in imagine:
         imagine["remark_vision_model"] = DEFAULT_REMARK_VISION_MODEL
+    if "director_enabled" not in imagine:
+        imagine["director_enabled"] = True
+    if "director_max_iterations" not in imagine:
+        imagine["director_max_iterations"] = 3
+    if "director_multi_critic" not in imagine:
+        imagine["director_multi_critic"] = True
+    if "critique_vision_model" not in imagine:
+        imagine["critique_vision_model"] = imagine.get("remark_vision_model") or DEFAULT_REMARK_VISION_MODEL
 
     out["imagine"] = imagine
     return out

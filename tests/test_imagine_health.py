@@ -127,7 +127,7 @@ def test_probe_krea2_weights_reports_missing_files() -> None:
         result = probe_krea2_weights("http://127.0.0.1:8188")
 
     assert result["ok"] is False
-    assert "krea2_turbo_fp8_scaled.safetensors" in result["missing"]
+    assert "krea2_turbo_int8_convrot.safetensors" in result["missing"]
 
 
 def test_probe_krea2_capability_reports_missing_type() -> None:
@@ -163,7 +163,7 @@ def test_probe_krea2_capability_reports_missing_type() -> None:
 
     assert result["ok"] is False
     assert result["comfyui_version"] == "0.19.3"
-    assert "0.26" in result["detail"]
+    assert "0.27" in result["detail"]
     assert "krea2" in result["detail"]
 
 
@@ -172,7 +172,7 @@ def test_probe_krea2_capability_ok_when_type_present() -> None:
 
     stats = MagicMock()
     stats.status_code = 200
-    stats.json.return_value = {"system": {"comfyui_version": "0.26.0"}}
+    stats.json.return_value = {"system": {"comfyui_version": "0.27.0"}}
     clip = MagicMock()
     clip.status_code = 200
     clip.json.return_value = {
@@ -193,7 +193,7 @@ def test_probe_krea2_capability_ok_when_type_present() -> None:
         result = probe_krea2_capability("http://127.0.0.1:8188")
 
     assert result["ok"] is True
-    assert result["comfyui_version"] == "0.26.0"
+    assert result["comfyui_version"] == "0.27.0"
 
 
 def test_check_comfyui_health_connect_error() -> None:

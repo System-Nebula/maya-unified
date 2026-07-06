@@ -23,6 +23,7 @@ class ImageMode(str, Enum):
     EDIT = "edit"
     ARENA = "arena"
     REFINE = "refine"
+    DIRECTOR = "director"
 
 
 class ImageReference(BaseModel):
