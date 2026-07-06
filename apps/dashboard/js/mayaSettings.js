@@ -114,7 +114,7 @@ document.addEventListener("alpine:init", () => {
         idle_enabled: true, idle_animation: "Idle.fbx", idle_variants: [],
         idle_variant_min_s: 10, idle_variant_max_s: 28,
       },
-      imagine: { enabled: false, comfyui_url: "http://127.0.0.1:3030", default_model: "zit", remark_enabled: true, remark_vision_model: "openrouter/minimax/minimax-m3" },
+      imagine: { enabled: false, comfyui_url: "http://127.0.0.1:3030", default_model: "zit", remark_enabled: true, remark_vision_model: "openrouter/minimax/minimax-m3", director_enabled: true, director_max_iterations: 3, director_multi_critic: true, critique_vision_model: "" },
       discord: {
         enabled: false, token: "", guild_id: "", auto_reply: true, attach_voice: true,
         music_volume: 0.85,
@@ -165,7 +165,7 @@ document.addEventListener("alpine:init", () => {
         items: [
           { id: "discord", label: "Discord", hint: "Bot · music" },
           { id: "imagine", label: "Imagine", hint: "ComfyUI · /imagine" },
-          { id: "integrations", label: "Integrations", hint: "Google · mailbox" },
+          { id: "integrations", label: "Integrations", hint: "Google · Bandcamp" },
           { id: "platform", label: "Platform", hint: "DB · telemetry" },
         ],
       },
@@ -649,7 +649,7 @@ document.addEventListener("alpine:init", () => {
           parts.push(`${label}: ok`);
         } else if (key === "krea2" && probe.capability && probe.capability.ok === false) {
           const ver = probe.capability.comfyui_version || "unknown";
-          parts.push(`${label}: needs ComfyUI 0.26+ (have ${ver})`);
+          parts.push(`${label}: needs ComfyUI 0.27+ (have ${ver})`);
         } else {
           const missing = Array.isArray(probe.missing) ? probe.missing.join(", ") : "missing";
           parts.push(`${label}: ${missing || "missing"}`);

@@ -4,6 +4,16 @@ document.addEventListener("alpine:init", () => {
     loading: true,
     error: "",
     disconnecting: false,
+    bandcampUsername: "",
+    bandcampSaving: false,
+    bandcampTesting: false,
+    bandcampError: "",
+    bandcampStatus: {
+      connected: false,
+      username: "",
+      wishlist_count: 0,
+      display_name: "",
+    },
     status: {
       connected: false,
       email: "",
@@ -39,7 +49,7 @@ document.addEventListener("alpine:init", () => {
     },
 
     async init() {
-      await Promise.all([this.refresh(), this.refreshImagine()]);
+      await Promise.all([this.refresh(), this.refreshImagine(), this.refreshBandcamp()]);
     },
 
     async refresh() {
@@ -142,13 +152,67 @@ document.addEventListener("alpine:init", () => {
           parts.push(`${label}: ok`);
         } else if (key === "krea2" && probe.capability && probe.capability.ok === false) {
           const ver = probe.capability.comfyui_version || "unknown";
-          parts.push(`${label}: needs ComfyUI 0.26+ (have ${ver})`);
+          parts.push(`${label}: needs ComfyUI 0.27+ (have ${ver})`);
         } else {
           const missing = Array.isArray(probe.missing) ? probe.missing.join(", ") : "missing";
           parts.push(`${label}: ${missing || "missing"}`);
         }
       }
       return parts.join(" · ");
+    },
+
+    async refreshBandcamp() {
+      this.bandcampError = "";
+      try {
+        const res = await fetch("/api/integrations/bandcamp/status");
+        if (res.status === 401) return;
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          this.bandcampError = data.detail || "Could not load Bandcamp status.";
+          return;
+        }
+        this.bandcampStatus = await res.json();
+        if (this.bandcampStatus.username && !this.bandcampUsername) {
+          this.bandcampUsername = this.bandcampStatus.username;
+        }
+      } catch (_) {
+        this.bandcampError = "Network error loading Bandcamp status.";
+      }
+    },
+
+    async saveBandcampUsername() {
+      this.bandcampSaving = true;
+      this.bandcampError = "";
+      try {
+        const res = await fetch("/api/integrations/bandcamp/username", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: this.bandcampUsername, enabled: true }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.bandcampError = data.detail || "Could not save Bandcamp username.";
+          return;
+        }
+        const { ok: _ok, ...status } = data;
+        this.bandcampStatus = status;
+        if (status.username) this.bandcampUsername = status.username;
+      } catch (_) {
+        this.bandcampError = "Network error saving Bandcamp username.";
+      } finally {
+        this.bandcampSaving = false;
+      }
+    },
+
+    async testBandcampConnection() {
+      this.bandcampTesting = true;
+      this.bandcampError = "";
+      try {
+        await this.saveBandcampUsername();
+        if (!this.bandcampError) await this.refreshBandcamp();
+      } finally {
+        this.bandcampTesting = false;
+      }
     },
 
     connectUrl(permissions) {

@@ -5,6 +5,8 @@ from __future__ import annotations
 from services.cmd.executors.builtin import exec_help, exec_status
 from services.cmd.executors.blender import exec_blend
 from services.cmd.executors.imagine import exec_imagine
+from services.cmd.executors.play import exec_play
+from services.cmd.executors.queue import exec_queue
 from services.cmd.models import CmdDefinition, CmdParameter, CmdSurface
 from services.cmd.registry import registry
 
@@ -72,6 +74,7 @@ def ensure_cmds_registered() -> None:
                     type="string",
                     default="generate",
                     choices=["generate"],
+                    hidden_choices=["arena"],
                 ),
                 CmdParameter(
                     name="model",
@@ -134,5 +137,59 @@ def ensure_cmds_registered() -> None:
                 "/blend code import bpy; result = [o.name for o in bpy.data.objects]",
             ],
             executor=exec_blend,
+        )
+    )
+
+    registry.register(
+        CmdDefinition(
+            id="play",
+            name="play",
+            description="Queue music into Discord voice (URL, Bandcamp album, or search)",
+            category="Media",
+            aliases=["p"],
+            icon="music",
+            tags=["music", "audio", "discord", "bandcamp", "youtube", "queue"],
+            surfaces=[CmdSurface.CHAT, CmdSurface.DASHBOARD, CmdSurface.DISCORD],
+            parameters=[
+                CmdParameter(
+                    name="query",
+                    type="string",
+                    # Optional so a bare /play (resume) passes validate_args; the
+                    # executor re-derives the full query from ctx.raw_text.
+                    required=False,
+                    description="URL, Bandcamp album link, or search text (empty resumes playback)",
+                ),
+            ],
+            examples=[
+                "/play https://00000ooooo.bandcamp.com/album/--5",
+                "/play daft punk one more time",
+                "/play",
+            ],
+            executor=exec_play,
+        )
+    )
+
+    registry.register(
+        CmdDefinition(
+            id="queue",
+            name="queue",
+            description="Add music to the dashboard player queue without stopping playback",
+            category="Media",
+            icon="music",
+            tags=["music", "audio", "dashboard", "queue"],
+            surfaces=[CmdSurface.CHAT, CmdSurface.DASHBOARD],
+            parameters=[
+                CmdParameter(
+                    name="query",
+                    type="string",
+                    required=True,
+                    description="URL or search text to append to the queue",
+                ),
+            ],
+            examples=[
+                "/queue gangnam style",
+                "/queue hyuna bubble pop",
+            ],
+            executor=exec_queue,
         )
     )

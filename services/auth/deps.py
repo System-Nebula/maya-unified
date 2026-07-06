@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Cookie, Depends, HTTPException, Request
+from fastapi import Cookie, Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from maya_db.models.operator import OperatorUser
@@ -63,4 +63,27 @@ async def require_admin(
 ) -> OperatorUser:
     if op.role != "admin":
         raise HTTPException(status_code=403, detail="admin role required")
+    return op
+
+
+async def require_browser_capture(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    maya_op_session: Annotated[str | None, Cookie(alias=OPERATOR_SESSION_COOKIE)] = None,
+    x_maya_capture_token: Annotated[str | None, Header(alias="X-Maya-Capture-Token")] = None,
+) -> OperatorUser | None:
+    """Accept operator session cookie or extension capture token."""
+    from services.browser.config import MAYA_BROWSER_CAPTURE_TOKEN
+
+    expected = MAYA_BROWSER_CAPTURE_TOKEN
+    if x_maya_capture_token and expected and x_maya_capture_token == expected:
+        op = await resolve_operator_from_token(session, maya_op_session)
+        request.state.operator = op
+        return op
+
+    op = await _get_operator(request, session, maya_op_session)
+    if op is None:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    if getattr(op, "is_banned", False):
+        raise HTTPException(status_code=403, detail="account banned")
     return op

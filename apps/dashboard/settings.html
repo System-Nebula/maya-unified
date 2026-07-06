@@ -937,7 +937,7 @@
               <template x-for="(line, i) in toolLog" :key="i">
                 <li x-text="line"></li>
               </template>
-              <li class="ms-empty" x-show="!toolLog.length">No tool calls yet — start a voice session on the Dashboard.</li>
+              <li class="ms-empty" x-show="!toolLog.length">No tool calls yet — start a voice or chat session.</li>
             </ul>
           </div>
           </template>
@@ -1080,6 +1080,29 @@
               </div>
               <div class="mv-list-row" x-show="s.imagine.enabled">
                 <div class="lhs">
+                  <div class="mv-row-label">Image Director</div>
+                  <div class="mv-row-hint">Multi-step planning, critique, and inpaint refinement instead of single-shot prompts.</div>
+                </div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.imagine.director_enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row" x-show="s.imagine.enabled && s.imagine.director_enabled">
+                <div class="lhs">
+                  <div class="mv-row-label">Director max refinement passes</div>
+                  <div class="mv-row-hint">Automatic generate → critique → edit loops before presenting (default 3).</div>
+                </div>
+                <div class="rhs">
+                  <input class="mv-input" style="width:80px" type="number" min="1" max="12" x-model.number="s.imagine.director_max_iterations" @change="save()" />
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.imagine.enabled && s.imagine.director_enabled">
+                <div class="lhs">
+                  <div class="mv-row-label">Multi-critic vision</div>
+                  <div class="mv-row-hint">Run art, prompt, character, and technical critics in parallel (uses remark vision model when critique model is blank).</div>
+                </div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.imagine.director_multi_critic" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row" x-show="s.imagine.enabled">
+                <div class="lhs">
                   <div class="mv-row-label">ComfyUI connection</div>
                   <div class="mv-row-sub" x-show="imagineHealth?.detail" x-text="imagineHealth.detail"></div>
                   <div class="mv-row-sub" x-show="imagineWeightsSummary()" x-text="imagineWeightsSummary()"></div>
@@ -1114,7 +1137,7 @@
             <div class="ms-panel-head">
               <p class="mv-eyebrow">Connect</p>
               <h2 class="mv-title">App Integrations</h2>
-              <p class="mv-desc">Connect Google for mailbox and calendar access. Permissions can be updated anytime via reconnect.</p>
+              <p class="mv-desc">Connect Google for mailbox and calendar access. Set your Bandcamp username so Maya can read your wishlist aloud.</p>
             </div>
 
             <div class="mv-card" x-show="loading" x-cloak>
@@ -1212,6 +1235,46 @@
                 <button type="button" class="mv-btn" style="background:var(--mv-danger,#ff453a)"
                   @click="disconnectGoogle()" :disabled="disconnecting">
                   <span x-text="disconnecting ? 'Disconnecting…' : 'Disconnect Google'"></span>
+                </button>
+              </div>
+            </div>
+
+            <div class="mv-card" x-show="!loading && !error" x-cloak style="margin-top:16px">
+              <div class="mp-section-head" style="margin-bottom:12px">
+                <h2>Bandcamp</h2>
+                <span class="mp-role-badge" :class="bandcampStatus.connected ? 'operator' : ''"
+                  x-text="bandcampStatus.connected ? 'Connected' : 'Not connected'"></span>
+              </div>
+              <p class="mv-desc" style="margin:0 0 12px">Public wishlist username — used when you ask Maya to read your Bandcamp wishlist.</p>
+              <div class="mv-list-row">
+                <div class="lhs">
+                  <div class="mv-row-label">Username</div>
+                  <div class="mv-row-hint">e.g. king_myles (from bandcamp.com/username/wishlist)</div>
+                </div>
+                <div class="rhs">
+                  <input class="mv-input" style="width:220px" x-model="bandcampUsername"
+                    placeholder="king_myles" @keydown.enter.prevent="saveBandcampUsername()" />
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="bandcampStatus.connected">
+                <div class="lhs">
+                  <div class="mv-row-label">Wishlist</div>
+                  <div class="mv-row-hint" x-text="`${bandcampStatus.wishlist_count || 0} items`"></div>
+                </div>
+                <div class="rhs">
+                  <span class="mv-row-sub" x-show="bandcampStatus.display_name"
+                    x-text="bandcampStatus.display_name"></span>
+                </div>
+              </div>
+              <p class="mp-save-err" x-show="bandcampError" x-text="bandcampError" style="margin:8px 0 0"></p>
+              <div class="mp-save-row" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+                <button type="button" class="mv-btn" @click="saveBandcampUsername()"
+                  :disabled="bandcampSaving">
+                  <span x-text="bandcampSaving ? 'Saving…' : 'Save username'"></span>
+                </button>
+                <button type="button" class="mv-btn" @click="testBandcampConnection()"
+                  :disabled="bandcampTesting || !bandcampUsername">
+                  <span x-text="bandcampTesting ? 'Checking…' : 'Test connection'"></span>
                 </button>
               </div>
             </div>

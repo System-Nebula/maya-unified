@@ -25,6 +25,16 @@ class CmdParameter(BaseModel):
     required: bool = False
     default: Any = None
     choices: list[str] = Field(default_factory=list)
+    hidden_choices: list[str] = Field(default_factory=list)
+
+    def discovery_dict(self) -> dict[str, Any]:
+        """Serialize for cmd palette / help — omit hidden_choices."""
+        data = self.model_dump()
+        data.pop("hidden_choices", None)
+        return data
+
+    def allowed_values(self) -> list[str]:
+        return list(self.choices) + list(self.hidden_choices)
 
 
 class CmdDefinition(BaseModel):
@@ -54,7 +64,7 @@ class CmdDefinition(BaseModel):
             "aliases": list(self.aliases),
             "icon": self.icon,
             "permissions": list(self.permissions),
-            "parameters": [p.model_dump() for p in self.parameters],
+            "parameters": [p.discovery_dict() for p in self.parameters],
             "examples": list(self.examples),
             "tags": list(self.tags),
             "surfaces": [s.value for s in self.surfaces],

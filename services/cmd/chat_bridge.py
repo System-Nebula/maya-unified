@@ -15,7 +15,7 @@ from services.ids import new_corr_id, new_message_id
 
 log = structlog.get_logger("maya-unified.cmd")
 
-_LONG_RUNNING_CMDS = frozenset({"imagine", "blend"})
+_LONG_RUNNING_CMDS = frozenset({"imagine", "blend", "play"})
 _LONG_CMD_TIMEOUT_SEC = 300.0
 _IMAGINE_MODEL_LABELS = {
     "zit": "Z-Image Turbo",
@@ -28,10 +28,15 @@ _IMAGINE_MODEL_LABELS = {
 _CMD_ACK_TEXT = {
     "imagine": "Generating image… selected model may take up to a minute while models load.",
     "blend": "Running Blender…",
+    "play": "Queuing music…",
 }
 
 
-def _imagine_ack_text(*, model: str | None = None) -> str:
+def _imagine_ack_text(*, model: str | None = None, mode: str | None = None) -> str:
+    if str(mode or "").strip().lower() == "arena":
+        return (
+            "Running arena battle… Z-Image Turbo vs Krea 2 Turbo may take up to two minutes."
+        )
     key = str(model or "").strip().lower()
     label = _IMAGINE_MODEL_LABELS.get(key, "selected model")
     return f"Generating image… {label} may take up to a minute while models load."
@@ -39,7 +44,7 @@ def _imagine_ack_text(*, model: str | None = None) -> str:
 
 def _cmd_ack_text(cmd_id: str, parsed: ParsedCmd | None = None) -> str:
     if cmd_id == "imagine" and parsed is not None:
-        return _imagine_ack_text(model=parsed.args.get("model"))
+        return _imagine_ack_text(model=parsed.args.get("model"), mode=parsed.args.get("mode"))
     return _CMD_ACK_TEXT.get(cmd_id, "Working on it…")
 
 
@@ -309,7 +314,7 @@ async def _run_long_cmd_async(
             defer_remark_persist = (
                 parsed.cmd_id == "imagine"
                 and result.ok
-                and bool(result.artifacts)
+                and any(a.get("type") == "image" for a in (result.artifacts or []))
                 and remark_enabled(settings)
             )
         except Exception:

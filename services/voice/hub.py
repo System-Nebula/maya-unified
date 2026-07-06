@@ -251,6 +251,7 @@ class VoiceHub(Hub):
     voice_lease: VoiceLease | None = None
     _active_operator_id: str | None = None
     _active_room_id: str | None = None
+    _last_user_text: str = ""
     _scoped_subscribers: list[_Subscriber]
 
     def __init__(self) -> None:
@@ -267,6 +268,10 @@ class VoiceHub(Hub):
             self._subscribers.add(q)
         q.put({"type": "status", "value": self.status})
         q.put({"type": "ready", "value": self.ready})
+        if operator_id and not room_id:
+            from services.dashboard.player import replay_player_to_subscriber
+
+            replay_player_to_subscriber(q, operator_id=operator_id)
         return q
 
     def unsubscribe(self, q: queue.Queue) -> None:
@@ -957,6 +962,7 @@ class VoiceHub(Hub):
             reply = ""
             streamed = False
             imagine_artifact_emitted = False
+            self._last_user_text = text
             with span(
                 "chat.corr",
                 corr_id=corr_id,
@@ -986,9 +992,19 @@ class VoiceHub(Hub):
                 from services.imagine.tool_context import set_imagine_tool_context
 
                 set_imagine_tool_context(operator_id=operator_id, corr_id=corr_id)
+                try:
+                    from services.imagine.director_context import set_image_director_context
+
+                    set_image_director_context(operator_id=operator_id, corr_id=corr_id)
+                except ImportError:
+                    pass
 
                 from services.imagine.chat_fallback import trace_has_imagine_success
-                from services.imagine.intent import looks_like_imagine_request
+                from services.imagine.intent import (
+                    looks_like_director_refinement,
+                    looks_like_imagine_request,
+                    looks_like_music_playback_request,
+                )
                 from services.imagine.settings import get_imagine_settings
 
                 effective_settings = load_effective_settings(operator_id)
@@ -1003,6 +1019,7 @@ class VoiceHub(Hub):
                 def _emit_chat(**ev: object) -> None:
                     nonlocal streamed, imagine_artifact_emitted
                     payload = dict(ev)
+                    ev_type = str(payload.get("type") or "")
                     if payload.get("type") == "ai":
                         if payload.get("text") or payload.get("artifacts"):
                             streamed = True
@@ -1013,7 +1030,19 @@ class VoiceHub(Hub):
                             corr_id=corr_id,
                             message_id=reply_message_id,
                         )
+                    elif ev_type.startswith("image.director."):
+                        payload = _chat_event(
+                            payload,
+                            corr_id=corr_id,
+                            message_id=reply_message_id,
+                        )
+                        if ev_type != "image.director.versions":
+                            streamed = True
                     elif payload.get("type") in {"status", "delivery"}:
+                        payload = _chat_event(payload, corr_id=corr_id)
+                    elif payload.get("type") in {"tool_start", "tool_end", "tool_trace"}:
+                        payload = _chat_event(payload, corr_id=corr_id)
+                    elif payload.get("type") == "system" and payload.get("text"):
                         payload = _chat_event(payload, corr_id=corr_id)
                     self.broadcast(payload, operator_id=operator_id)
 
@@ -1022,7 +1051,16 @@ class VoiceHub(Hub):
                 motion_turn = False
                 direct = None
                 if self.agent._tools_active():  # noqa: SLF001
-                    direct = self.agent._try_discord_direct(text)  # noqa: SLF001
+                    if self.agent._is_discord_context_turn(text):  # noqa: SLF001
+                        direct = self.agent._try_discord_direct(text)  # noqa: SLF001
+                    else:
+                        direct = self.agent._try_bandcamp_direct(text)  # noqa: SLF001
+                        if direct is None:
+                            direct = self.agent._try_dashboard_music_direct(text)  # noqa: SLF001
+                        if direct is None:
+                            direct = self.agent._try_dashboard_queue_direct(text)  # noqa: SLF001
+                        if direct is None:
+                            direct = self.agent._try_discord_direct(text)  # noqa: SLF001
                 with _inference_lock:
                     self.agent._avatar_mood_set_this_turn = False  # noqa: SLF001
                     if direct:
@@ -1057,10 +1095,48 @@ class VoiceHub(Hub):
                                     parts.append(chunk)
                             reply = "".join(parts).strip()
                         else:
-                            result = self.agent.tool_loop.run(messages, emit=_emit_chat)  # noqa: SLF001
+                            tool_rounds = None
+                            if imagine_nl or looks_like_director_refinement(text):
+                                try:
+                                    from tools.image_director import image_director_max_rounds
+
+                                    tool_rounds = image_director_max_rounds()
+                                except ImportError:
+                                    pass
+                            result = self.agent.tool_loop.run(  # noqa: SLF001
+                                messages,
+                                emit=_emit_chat,
+                                max_rounds=tool_rounds,
+                            )
                             reply = (result.final_text or "").strip()
                             tool_trace = list(result.trace or [])
-                            if imagine_nl and not trace_has_imagine_success(tool_trace):
+                            if tool_trace:
+                                self.broadcast(
+                                    _chat_event(
+                                        {"type": "tool_trace", "trace": tool_trace},
+                                        corr_id=corr_id,
+                                    ),
+                                    operator_id=operator_id,
+                                )
+                            from services.dashboard.music_intent import (
+                                looks_like_dashboard_queue_request,
+                            )
+
+                            def _trace_has_tool(trace: list[dict], name: str) -> bool:
+                                return any(entry.get("tool") == name for entry in trace)
+
+                            if (
+                                looks_like_dashboard_queue_request(text)
+                                and not _trace_has_tool(tool_trace, "dashboard_queue_music")
+                            ):
+                                guarded = self.agent._try_dashboard_queue_direct(text)  # noqa: SLF001
+                                if guarded:
+                                    reply = guarded
+                            if (
+                                imagine_nl
+                                and not trace_has_imagine_success(tool_trace)
+                                and not looks_like_music_playback_request(text)
+                            ):
                                 from services.imagine.chat_fallback import run_imagine_nl_fallback
 
                                 fallback_reply, fallback_streamed = run_imagine_nl_fallback(
@@ -1105,6 +1181,15 @@ class VoiceHub(Hub):
                     if delivery_cue:
                         self.broadcast(
                             _chat_event({"type": "delivery", "cue": delivery_cue}, corr_id=corr_id),
+                            operator_id=operator_id,
+                        )
+                    if streamed:
+                        self.broadcast(
+                            _chat_event(
+                                {"type": "ai", "text": reply, "final": True},
+                                corr_id=corr_id,
+                                message_id=reply_message_id,
+                            ),
                             operator_id=operator_id,
                         )
                 elif motion_turn:

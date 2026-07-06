@@ -80,6 +80,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "default_model": "zit",
         "remark_enabled": True,
         "remark_vision_model": "openrouter/minimax/minimax-m3",
+        "director_enabled": True,
+        "director_max_iterations": 3,
+        "director_multi_critic": True,
+        "critique_vision_model": "",
     },
     "discord": {
         "enabled": False,
@@ -92,6 +96,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "default_voice_channel": "",
         "youtube_cookies_browser": "",
         "youtube_cookies_file": "",
+    },
+    "bandcamp": {
+        "enabled": True,
+        "username": "",
     },
     "platform": {
         "database_url": "",

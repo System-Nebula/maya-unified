@@ -391,7 +391,27 @@ TOOL_GUIDE = (
     "without interrupting. discord_skip_music plays the next queued track; "
     "discord_stop_music stops and clears the queue. discord_show_queue and "
     "discord_resume_playback diagnose stalled playback. Use discord_set_volume for "
-    "music loudness. For Discord text channels use discord_send_message when the user "
+    "music loudness. For in-browser dashboard music use dashboard_play_music "
+    "(Bandcamp/YouTube/search) to replace the playlist, or dashboard_queue_music "
+    "to add without interrupting (queue, add to queue, play next). NOT discord_play_youtube unless the user wants "
+    "Discord voice playback. dashboard_pause_music, dashboard_resume_music, "
+    "dashboard_skip_music, dashboard_previous_music, and dashboard_clear_music "
+    "control the sticky browser player (skip/next, go back/previous track, clear queue). "
+    "Never claim you queued or added music unless dashboard_queue_music or dashboard_play_music "
+    "returned success — always call the tool instead of describing what you would do. "
+    "Never use imagine_generate or "
+    "Image Director tools for music playback — skip, previous, pause, resume, clear, and "
+    "play requests belong to dashboard_* or discord_* music tools. "
+    "When the user says go back with song/track/music, use dashboard_previous_music, "
+    "not image restore. "
+    "When the user asks about their Bandcamp wishlist, what they want to buy, or to "
+    "read their wishlist aloud, use bandcamp_read_wishlist. When they want to play or "
+    "queue music from their wishlist (including genre filters like DNB or jungle), use "
+    "bandcamp_play_wishlist. Always call a bandcamp tool when a Bandcamp URL or wishlist "
+    "is mentioned — extract the username from bandcamp.com/username URLs; never ask the "
+    "user to configure settings if the URL already contains their username. Do not "
+    "web-search Bandcamp for wishlist items. "
+    "For Discord text channels use discord_send_message when the user "
     "asks to write, post, say, or type something in a channel — compose the full "
     "message body, then send it. Use discord_read_channel when the user asks to "
     "read, recap, or summarize recent messages in a Discord text channel. "
@@ -424,9 +444,15 @@ TOOL_GUIDE = (
     "idle, happy, excited, surprised, angry, or frustrated — cute subtle faces, not "
     "extreme. Call when your tone clearly matches; do not announce the mood in speech. "
     "Use list_avatar_expressions to see options. "
-    "For image generation use imagine_generate when the user asks to draw, generate, or "
-    "create a picture — pick model zit (fast) or krea2 (heavy) when they specify. After "
-    "the tool returns, react in one witty spoken line about the result; do not read URLs aloud."
+    "For image generation use imagine_generate when the user asks for a quick one-shot picture. "
+    "For multi-step creative work (refinement, editing, 'make the hat bigger', iterative art) use "
+    "the Image Director tools: image_parse_intent → image_generate → image_score → image_edit_region "
+    "or image_edit_style as needed → image_save_version. Never pass raw prompt strings to director "
+    "tools — mutate structured goal fields via image_parse_intent or image_update_goal. "
+    "After image_generate always call image_score. If goal_match < 0.90 and fixable, prefer "
+    "image_edit_region over regenerating. When score >= 0.90 or should_stop is true, call "
+    "image_save_version and narrate your artistic process briefly in Maya's voice. "
+    "After imagine_generate (simple path), react in one witty spoken line; do not read URLs aloud."
 )
 
 _ANIMATION_REPLY_HINT = (
@@ -689,6 +715,40 @@ class VoiceAgent:
         except Exception as exc:  # noqa: BLE001
             log.warning("imagine tool disabled: %s", exc)
 
+        try:
+            from tools.image_director import build_image_director_tools
+            from services.voice.agent_ref import set_agent_llm
+
+            set_agent_llm(self.llm)
+            registry.register_many(build_image_director_tools(emit=self._emit, llm=self.llm))
+            log.info("image director tools enabled")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("image director tools disabled: %s", exc)
+
+        try:
+            from tools.dashboard_player import build_dashboard_player_tools
+
+            registry.register_many(build_dashboard_player_tools(emit=self._emit))
+            log.info("dashboard music player tools enabled")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("dashboard player tools disabled: %s", exc)
+
+        try:
+            from tools.bandcamp import build_bandcamp_tools
+
+            registry.register_many(build_bandcamp_tools(emit=self._emit))
+            log.info("bandcamp wishlist tool enabled")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bandcamp tools disabled: %s", exc)
+
+        try:
+            from tools.music_ontology import build_music_ontology_tools
+
+            registry.register_many(build_music_ontology_tools(emit=self._emit))
+            log.info("music ontology lookup tool enabled")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("music ontology tools disabled: %s", exc)
+
         self.registry = registry
         if CONFIG.tools.enabled and len(registry) > 0:
             from tools import ToolExecutor, ToolLoop
@@ -744,6 +804,8 @@ class VoiceAgent:
             if pre:
                 user_content = f"{pre}\n\n{user_text}"
         hint = self._discord_tool_hint(user_text)
+        if not hint:
+            hint = self._dashboard_music_tool_hint(user_text)
         if not hint:
             hint = self._web_tool_hint(user_text)
         if hint:
@@ -1502,6 +1564,146 @@ class VoiceAgent:
             parts.append(f"Up next: {preview}.")
         return " ".join(parts)
 
+    def _classify_dashboard_music_command(self, user_text: str) -> Optional[str]:
+        if self._is_discord_context_turn(user_text):
+            return None
+        from services.imagine.intent import classify_music_playback_command
+
+        return classify_music_playback_command(user_text)
+
+    def _try_dashboard_music_direct(self, user_text: str) -> Optional[str]:
+        """Run obvious dashboard player commands immediately — don't rely on the LLM."""
+        if self._maybe_motion_request(user_text, raw_text=user_text):
+            return None
+        if not CONFIG.tools.enabled or self.registry is None:
+            return None
+        if self.registry.get("dashboard_skip_music") is None:
+            return None
+        kind = self._classify_dashboard_music_command(user_text)
+        if kind is None:
+            return None
+
+        tool_names = {
+            "skip": "dashboard_skip_music",
+            "previous": "dashboard_previous_music",
+            "pause": "dashboard_pause_music",
+            "resume": "dashboard_resume_music",
+            "clear": "dashboard_clear_music",
+        }
+        ok_messages = {
+            "skip": "Skipped to the next track.",
+            "previous": "Back to the previous track.",
+            "pause": "Paused the music.",
+            "resume": "Resuming playback.",
+            "clear": "Paused and cleared the playlist.",
+        }
+        fail_messages = {
+            "skip": "Nothing to skip — load a playlist first or you're on the last track.",
+            "previous": "Nothing to go back to — you're already on the first track.",
+            "pause": "I couldn't pause the player.",
+            "resume": "Nothing to resume — load something to play first.",
+            "clear": "I couldn't clear the player.",
+        }
+        tool = tool_names[kind]
+        spec = self.registry.get(tool)
+        if spec is None:
+            return None
+
+        def _run() -> dict:
+            return spec.handler({})
+
+        return self._direct_tool_reply(
+            tool,
+            {},
+            _run,
+            ok=lambda r, msg=ok_messages[kind]: str(r.get("message") or msg),
+            fail=fail_messages[kind],
+        )
+
+    def _try_dashboard_queue_direct(self, user_text: str) -> Optional[str]:
+        """Add tracks to the dashboard player queue without relying on the LLM."""
+        if self._maybe_motion_request(user_text, raw_text=user_text):
+            return None
+        if self._is_discord_context_turn(user_text):
+            return None
+        if not CONFIG.tools.enabled or self.registry is None:
+            return None
+        spec = self.registry.get("dashboard_queue_music")
+        if spec is None:
+            return None
+        from services.dashboard.music_intent import (
+            extract_dashboard_queue_query,
+            queue_after_current,
+        )
+
+        query = extract_dashboard_queue_query(user_text)
+        if not query:
+            return None
+        after_current = queue_after_current(user_text)
+        args = {"query": query, "after_current": after_current}
+
+        def _run() -> dict:
+            return spec.handler(args)
+
+        return self._direct_tool_reply(
+            "dashboard_queue_music",
+            args,
+            _run,
+            ok=lambda r: str(r.get("message") or f"Added “{query}” to the queue."),
+            fail=f"I couldn't queue {query}.",
+        )
+
+    def _try_bandcamp_direct(self, user_text: str) -> Optional[str]:
+        """Resolve Bandcamp wishlist URLs and queue/read without waiting on the LLM."""
+        if not CONFIG.tools.enabled or self.registry is None:
+            return None
+        from services.integrations.bandcamp import (
+            bandcamp_playback_intent,
+            is_bandcamp_wishlist_turn,
+            resolve_username,
+        )
+        from services.settings.store import load_effective_settings
+        from services.voice.hub import hub
+
+        if not is_bandcamp_wishlist_turn(user_text):
+            return None
+
+        operator_id = hub._active_operator_id
+        hub._last_user_text = user_text
+        settings = load_effective_settings(operator_id)
+        username = resolve_username(settings, hint=user_text)
+        if not username:
+            return None
+
+        tl = (user_text or "").lower()
+        filter_text = ""
+        if "dnb" in tl or "drum" in tl:
+            filter_text = "dnb"
+        elif "jungle" in tl:
+            filter_text = "jungle"
+
+        if bandcamp_playback_intent(user_text):
+            tool = "bandcamp_play_wishlist"
+            args: dict[str, Any] = {"username": username, "filter": filter_text}
+        else:
+            tool = "bandcamp_read_wishlist"
+            args = {"username": username}
+
+        spec = self.registry.get(tool)
+        if spec is None:
+            return None
+
+        def _run() -> dict:
+            return spec.handler(args)
+
+        return self._direct_tool_reply(
+            tool,
+            args,
+            _run,
+            ok=lambda r: str(r.get("message") or "Done."),
+            fail="Could not access the Bandcamp wishlist.",
+        )
+
     def _classify_discord_command(self, user_text: str) -> Optional[str]:
         if self.discord is None:
             return None
@@ -1520,6 +1722,8 @@ class VoiceAgent:
         skip_phrases = (
             "skip the song", "skip song", "skip this song", "skip this",
             "next song", "next track", "skip track", "skip it",
+            "start the next song", "start the next track",
+            "play the next song", "play the next track",
         )
         if any(p in tl for p in skip_phrases):
             return "skip"
@@ -1998,6 +2202,11 @@ class VoiceAgent:
 
     @staticmethod
     def _extract_queue_query(tl: str, original: str) -> Optional[str]:
+        from services.dashboard.music_intent import extract_dashboard_queue_query
+
+        query = extract_dashboard_queue_query(original)
+        if query:
+            return query
         for prefix in ("queue ", "add to queue ", "queue up ", "queue song "):
             if prefix in tl:
                 idx = tl.index(prefix)
@@ -2076,8 +2285,8 @@ class VoiceAgent:
             result = {"error": str(exc)}
         self._emit(type="tool_end", tool=tool, result=str(result))
         if isinstance(result, dict):
-            if result.get("error"):
-                return fail
+            if result.get("error") or result.get("ok") is False:
+                return str(result.get("error") or fail)
             if tool == "discord_stop_music" and not result.get("stopped"):
                 return fail
             if tool == "discord_skip_music" and not result.get("skipped"):
@@ -2298,6 +2507,10 @@ class VoiceAgent:
             return "Skipped — nothing else in the queue."
         if name == "discord_show_queue":
             return VoiceAgent._format_playback_status_reply(result)
+        if name == "dashboard_play_music":
+            return str(result.get("message") or f"Playing {result.get('title', 'that')}.")
+        if name == "dashboard_queue_music":
+            return str(result.get("message") or "Added to the queue.")
         return "Done."
 
     def _messages_with_animation_hint(
@@ -2435,6 +2648,20 @@ class VoiceAgent:
         )
         query = re.sub(r"\?$", "", query).strip()
         return query if len(query) >= 4 else original
+
+    def _dashboard_music_tool_hint(self, user_text: str) -> str:
+        if not CONFIG.tools.enabled or self.registry is None:
+            return ""
+        if self.registry.get("dashboard_skip_music") is None:
+            return ""
+        if self._classify_dashboard_music_command(user_text) is None:
+            return ""
+        return (
+            "[System: call the matching dashboard_* music tool immediately "
+            "(dashboard_skip_music, dashboard_previous_music, dashboard_pause_music, "
+            "or dashboard_resume_music). Do not use imagine_generate or Image Director "
+            "tools for playback control.]"
+        )
 
     def _web_tool_hint(self, user_text: str) -> str:
         if not CONFIG.web.enabled or not CONFIG.tools.enabled:
@@ -2915,7 +3142,16 @@ class VoiceAgent:
             if direct is None and not self._maybe_motion_request(
                 user_text, plan=plan, raw_text=raw_text,
             ):
-                direct = self._try_discord_direct(user_text)
+                if self._is_discord_context_turn(user_text):
+                    direct = self._try_discord_direct(user_text)
+                else:
+                    direct = self._try_bandcamp_direct(user_text)
+                    if direct is None:
+                        direct = self._try_dashboard_music_direct(user_text)
+                    if direct is None:
+                        direct = self._try_dashboard_queue_direct(user_text)
+                    if direct is None:
+                        direct = self._try_discord_direct(user_text)
             if direct is None:
                 direct = self._try_web_direct(user_text)
             anim_label = self._maybe_play_avatar_animation(

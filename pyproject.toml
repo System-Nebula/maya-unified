@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.0",
     "sqlalchemy>=2.0",
     "asyncpg>=0.29",
+    "redis>=5.0",
     "rapidfuzz>=3.6",
     "feedparser>=6.0",
     "langgraph>=0.2",
@@ -35,6 +36,7 @@ dependencies = [
     "google-api-python-client>=2.100",
     "maya-image",
     "maya-db",
+    "maya-graph",
 ]
 
 [project.optional-dependencies]
@@ -99,4 +101,12 @@ maya-spider = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["apps/gateway/tests", "tests"]
+markers = [
+    "integration: live network tests (OpenRouter, etc.)",
+]
+testpaths = [
+    "apps/gateway/tests",
+    "packages/maya-graph/tests",
+    "packages/maya-db/tests",
+    "tests",
+]

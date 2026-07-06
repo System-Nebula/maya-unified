@@ -44,6 +44,12 @@ document.addEventListener("alpine:init", () => {
         const res = ev.result ? ` → ${String(ev.result).slice(0, 100)}` : "";
         this.pushLog(`${ev.tool} · done${res}`);
       }
+      if (ev.type === "tool_trace" && Array.isArray(ev.trace)) {
+        for (const entry of ev.trace) {
+          const args = entry.args ? ` ${JSON.stringify(entry.args).slice(0, 60)}` : "";
+          this.pushLog(`${entry.tool} · trace${args}`);
+        }
+      }
       if (ev.type === "ready" && ev.value) this.refresh();
     },
 

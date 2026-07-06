@@ -79,14 +79,27 @@ class ToolLoop:
         # None = undecided (auto); set once we learn what the server supports.
         self._use_native: Optional[bool] = {"native": True, "json": False}.get(self.mode)
 
-    def run(self, messages: list[dict], emit: Optional[Callable[..., None]] = None) -> ToolLoopResult:
+    def run(
+        self,
+        messages: list[dict],
+        emit: Optional[Callable[..., None]] = None,
+        *,
+        max_rounds: int | None = None,
+    ) -> ToolLoopResult:
         with span("tool.loop"):
-            return self._run(messages, emit)
+            return self._run(messages, emit, max_rounds=max_rounds)
 
-    def _run(self, messages: list[dict], emit: Optional[Callable[..., None]] = None) -> ToolLoopResult:
+    def _run(
+        self,
+        messages: list[dict],
+        emit: Optional[Callable[..., None]] = None,
+        *,
+        max_rounds: int | None = None,
+    ) -> ToolLoopResult:
         messages = [dict(m) for m in messages]
         trace: list[dict] = []
         json_injected = False
+        rounds = max(1, max_rounds if max_rounds is not None else self.max_rounds)
 
         def _emit(**ev) -> None:
             if emit is not None:
@@ -95,7 +108,7 @@ class ToolLoop:
                 except Exception:  # noqa: BLE001
                     pass
 
-        for rnd in range(self.max_rounds):
+        for rnd in range(rounds):
             if self._want_native():
                 try:
                     resp = self.llm.complete(messages, tools=self.registry.openai_schema())
@@ -179,7 +192,7 @@ class ToolLoop:
 
         # Rounds exhausted: force a final spoken answer with no further tools.
         resp = self.llm.complete(messages)
-        return ToolLoopResult(self._strip_json(resp.content), trace, self.max_rounds)
+        return ToolLoopResult(self._strip_json(resp.content), trace, rounds)
 
     # ----- helpers ----------------------------------------------------------
 

@@ -76,7 +76,7 @@ def test_validate_missing_required_parameter():
 def test_registry_discovery_by_surface():
     dashboard_cmds = registry.discovery(surface=CmdSurface.DASHBOARD)
     ids = {item["id"] for item in dashboard_cmds}
-    assert {"help", "status", "imagine", "blend"}.issubset(ids)
+    assert {"help", "status", "imagine", "blend", "play"}.issubset(ids)
 
 
 @pytest.mark.asyncio
@@ -277,3 +277,294 @@ def test_custom_cmd_registration():
     parsed = parse_cmd_input("/echo hello world")
     assert parsed is not None
     assert parsed.args["text"] == "hello world"
+
+
+def _fake_yt_dlp(info):
+    """Return a stand-in yt_dlp module whose YoutubeDL yields ``info``."""
+    import types
+
+    class _YDL:
+        def __init__(self, _opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def extract_info(self, _url, download=False):
+            return info
+
+    return types.SimpleNamespace(YoutubeDL=_YDL)
+
+
+def test_parse_play_url_resolves_to_play() -> None:
+    parsed = parse_cmd_input("/play https://00000ooooo.bandcamp.com/album/--5")
+    assert parsed is not None
+    assert parsed.cmd_id == "play"
+
+
+def test_parse_play_alias_resolves_to_play() -> None:
+    parsed = parse_cmd_input("/p https://00000ooooo.bandcamp.com/album/--5")
+    assert parsed is not None
+    assert parsed.cmd_id == "play"
+
+
+def test_play_extracts_full_url_from_raw_text() -> None:
+    from services.cmd.executors.play import _extract_query
+
+    ctx = CmdContext(
+        surface=CmdSurface.DASHBOARD,
+        raw_text="/play https://00000ooooo.bandcamp.com/album/--5",
+    )
+    assert _extract_query(ctx) == "https://00000ooooo.bandcamp.com/album/--5"
+
+
+def test_play_extracts_multiword_search() -> None:
+    from services.cmd.executors.play import _extract_query
+
+    ctx = CmdContext(raw_text="/play daft punk one more time")
+    assert _extract_query(ctx) == "daft punk one more time"
+
+
+def test_play_bare_extracts_empty() -> None:
+    from services.cmd.executors.play import _extract_query
+
+    assert _extract_query(CmdContext(raw_text="/play")) == ""
+
+
+def test_expand_playlist_album(monkeypatch) -> None:
+    import sys
+
+    from services.discord import playlist
+
+    info = {
+        "title": "Album X",
+        "entries": [
+            {"url": "https://x.bandcamp.com/track/a", "title": "A"},
+            {"url": "https://x.bandcamp.com/track/b", "title": "B"},
+        ],
+    }
+    monkeypatch.setitem(sys.modules, "yt_dlp", _fake_yt_dlp(info))
+    monkeypatch.setattr("services.discord.youtube_patch._cookie_opts", lambda: {})
+
+    result = playlist.expand_playlist("https://x.bandcamp.com/album/--5")
+    assert result is not None
+    assert result.title == "Album X"
+    assert [t[0] for t in result.tracks] == [
+        "https://x.bandcamp.com/track/a",
+        "https://x.bandcamp.com/track/b",
+    ]
+
+
+def test_expand_playlist_single_track_returns_none(monkeypatch) -> None:
+    import sys
+
+    from services.discord import playlist
+
+    info = {"title": "Song", "webpage_url": "https://x.bandcamp.com/track/a"}
+    monkeypatch.setitem(sys.modules, "yt_dlp", _fake_yt_dlp(info))
+    monkeypatch.setattr("services.discord.youtube_patch._cookie_opts", lambda: {})
+
+    assert playlist.expand_playlist("https://x.bandcamp.com/track/a") is None
+
+
+def test_expand_playlist_non_url_returns_none() -> None:
+    from services.discord import playlist
+
+    assert playlist.expand_playlist("daft punk one more time") is None
+
+
+def test_stream_src_percent_encodes_query() -> None:
+    from services.dashboard.player import stream_src
+
+    assert stream_src("https://x.bandcamp.com/track/a b") == (
+        "/api/media/stream?q=https%3A%2F%2Fx.bandcamp.com%2Ftrack%2Fa%20b"
+    )
+
+
+def test_playlist_artifact_album() -> None:
+    from services.dashboard.player import build_playlist_artifact
+    from services.discord.playlist import PlaylistExpansion
+
+    exp = PlaylistExpansion(title="Album X", tracks=[("https://x/t1", "One"), ("https://x/t2", "Two")])
+    art = build_playlist_artifact("https://x/album", exp)
+    assert art["type"] == "playlist"
+    assert art["title"] == "Album X"
+    assert art["url"] == "https://x/album"  # x-for :key
+    assert [t["title"] for t in art["tracks"]] == ["One", "Two"]
+    assert art["tracks"][0]["query"] == "https://x/t1"
+    assert art["tracks"][0]["src"].startswith("/api/media/stream?q=")
+
+
+def test_playlist_artifact_single_search() -> None:
+    from services.dashboard.player import build_playlist_artifact
+
+    art = build_playlist_artifact("daft punk one more time", None)
+    assert art["type"] == "playlist"
+    assert len(art["tracks"]) == 1
+    assert art["tracks"][0]["title"] == "daft punk one more time"
+
+
+def test_media_resolve_target() -> None:
+    from apps.gateway.music_routes import _resolve_target
+
+    assert _resolve_target("https://x.bandcamp.com/album/--5") == "https://x.bandcamp.com/album/--5"
+    assert _resolve_target("daft punk") == "ytsearch1:daft punk"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_play_dashboard_emits_playlist(monkeypatch) -> None:
+    import sys
+    import types
+
+    from services.discord.playlist import PlaylistExpansion
+
+    fake_hub = types.ModuleType("services.voice.hub")
+    broadcasts: list[dict] = []
+
+    class _Hub:
+        ready = False
+        agent = None
+
+        @staticmethod
+        def broadcast(event, *, operator_id=None, room_id=None):
+            broadcasts.append(event)
+
+    fake_hub.hub = _Hub()
+    monkeypatch.setitem(sys.modules, "services.voice.hub", fake_hub)
+    monkeypatch.setattr(
+        "services.discord.playlist.expand_playlist",
+        lambda _q: PlaylistExpansion(title="Album X", tracks=[("u/a", "A"), ("u/b", "B")]),
+    )
+
+    parsed = parse_cmd_input("/play https://x.bandcamp.com/album/--5")
+    assert parsed is not None
+    result = await dispatch_cmd_async(
+        parsed,
+        CmdContext(surface=CmdSurface.DASHBOARD, raw_text="/play https://x.bandcamp.com/album/--5"),
+    )
+    assert result.ok is True
+    assert not result.artifacts
+    assert "Queued 2 tracks" in (result.text or "")
+    load_events = [e for e in broadcasts if e.get("type") == "player.load"]
+    assert len(load_events) == 1
+    assert load_events[0]["playlist"]["type"] == "playlist"
+    assert len(load_events[0]["playlist"]["tracks"]) == 2
+
+
+def test_player_cache_remembers_playlist_and_position() -> None:
+    from services.dashboard.player import (
+        build_playlist_artifact,
+        player_snapshot,
+        remember_player_control,
+        remember_player_load,
+    )
+    from services.discord.playlist import PlaylistExpansion
+
+    exp = PlaylistExpansion(title="Album X", tracks=[("https://x/t1", "One"), ("https://x/t2", "Two")])
+    playlist = build_playlist_artifact("https://x/album", exp)
+    remember_player_load(playlist, operator_id="op1")
+    remember_player_control("skip", operator_id="op1")
+    snap = player_snapshot("op1")
+    assert snap is not None
+    assert snap["current"] == 1
+    assert snap["tracks"][1]["query"] == "https://x/t2"
+
+
+def test_player_cache_clear_removes_state() -> None:
+    from services.dashboard.player import (
+        build_playlist_artifact,
+        player_snapshot,
+        remember_player_control,
+        remember_player_load,
+    )
+    from services.discord.playlist import PlaylistExpansion
+
+    exp = PlaylistExpansion(title="Album X", tracks=[("https://x/t1", "One")])
+    playlist = build_playlist_artifact("https://x/album", exp)
+    remember_player_load(playlist, operator_id="op1")
+    remember_player_control("clear", operator_id="op1")
+    assert player_snapshot("op1") is None
+
+
+def test_expand_playlist_youtube_id_fallback(monkeypatch) -> None:
+    import sys
+
+    from services.discord import playlist
+
+    info = {
+        "title": "Mix",
+        "extractor": "youtube:tab",
+        "entries": [
+            {"id": "abc12345678", "title": "Song A", "ie_key": "Youtube"},
+        ],
+    }
+    monkeypatch.setitem(sys.modules, "yt_dlp", _fake_yt_dlp(info))
+    monkeypatch.setattr("services.discord.youtube_patch._cookie_opts", lambda: {})
+
+    result = playlist.expand_playlist("https://www.youtube.com/playlist?list=PLx")
+    assert result is not None
+    assert result.tracks[0][0] == "https://www.youtube.com/watch?v=abc12345678"
+
+
+def test_parse_imagine_hidden_arena_mode() -> None:
+    parsed = parse_cmd_input("/imagine cat astronaut mode=arena")
+    assert parsed is not None
+    assert parsed.args["prompt"] == "cat astronaut"
+    assert parsed.args["mode"] == "arena"
+
+
+def test_validate_imagine_accepts_hidden_arena_mode() -> None:
+    cmd = registry.get("imagine")
+    assert cmd is not None
+    assert validate_args(cmd, {"prompt": "sunset", "mode": "arena"}) is None
+
+
+def test_validate_imagine_rejects_unknown_mode() -> None:
+    cmd = registry.get("imagine")
+    assert cmd is not None
+    err = validate_args(cmd, {"prompt": "sunset", "mode": "edit"})
+    assert err is not None
+    assert "mode" in err
+
+
+def test_imagine_discovery_hides_arena_mode() -> None:
+    cmd = registry.get("imagine")
+    assert cmd is not None
+    mode_param = next(p for p in cmd.discovery_dict()["parameters"] if p["name"] == "mode")
+    assert mode_param["choices"] == ["generate"]
+    assert "hidden_choices" not in mode_param
+    assert "arena" not in mode_param.get("choices", [])
+
+
+@pytest.mark.asyncio
+async def test_dispatch_imagine_arena_mode(imagine_preflight_ok):
+    parsed = parse_cmd_input("/imagine fox in rain mode=arena")
+    assert parsed is not None
+    mock_arena = AsyncMock(
+        return_value={
+            "battle_id": "battle-1",
+            "status": "completed",
+            "both_failed": False,
+            "slots": {
+                "a": {"url": "/imagine-outputs/a.png", "gen_ms": 1000, "status": "completed"},
+                "b": {"url": "/imagine-outputs/b.png", "gen_ms": 1200, "status": "completed"},
+            },
+        }
+    )
+    with patch("services.cmd.executors.imagine.run_arena_job", mock_arena):
+        result = await dispatch_cmd_async(
+            parsed,
+            CmdContext(surface=CmdSurface.CHAT, operator_id="op-1"),
+        )
+    assert result.ok is True
+    assert result.text.startswith("Arena ready")
+    assert result.artifacts[0]["type"] == "arena"
+    assert result.artifacts[0]["battle_id"] == "battle-1"
+    assert result.artifacts[0]["image_a"] == "/imagine-outputs/a.png"
+    assert "model_a" not in result.artifacts[0]
+    import json
+
+    json.dumps(result.artifacts[0])

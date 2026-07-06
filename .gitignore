@@ -51,3 +51,6 @@ local/
 docs/node_modules/
 docs/public/
 docs/.quartz-cache/
+
+# runtime-generated research artifacts
+apps/maya-gateway/src/maya_gateway/static/artifacts/

@@ -39,10 +39,10 @@ def validate_args(cmd: CmdDefinition, args: dict[str, Any]) -> str | None:
     for param in cmd.parameters:
         if param.required and param.name not in args:
             return f"missing required parameter: {param.name}"
-        if param.name in args and param.choices:
+        if param.name in args and param.allowed_values():
             value = str(args[param.name])
-            if value not in param.choices:
-                allowed = ", ".join(param.choices)
+            if value not in param.allowed_values():
+                allowed = ", ".join(param.allowed_values())
                 return f"invalid value for {param.name}: {value!r} (allowed: {allowed})"
     return None
 

@@ -187,14 +187,20 @@ def register_agent_routes(app) -> None:
         return hub.conversation_state(oid or None)
 
     @app.post(f"{prefix}/conversation/clear")
-    def agent_conversation_clear(request: Request) -> dict:
+    def agent_conversation_clear(request: Request, player: bool = False) -> dict:
         oid = _operator_id(request)
         if not oid:
             return {"ok": False, "error": "not authenticated"}
         from services.operator_voice import context as op_ctx
 
         deleted = op_ctx.clear_conversation(oid)
-        return {"ok": True, "deleted_messages": deleted}
+        player_cleared = False
+        if player:
+            from services.dashboard.player import clear_player_and_broadcast
+
+            clear_player_and_broadcast(operator_id=oid)
+            player_cleared = True
+        return {"ok": True, "deleted_messages": deleted, "player_cleared": player_cleared}
 
     @app.post(f"{prefix}/chat")
     def agent_chat(request: Request, data: dict = Body(...)) -> dict:

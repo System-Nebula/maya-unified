@@ -25,6 +25,8 @@ REMARK_VISION_MODELS = [
 LITELLM_MODELS = [
     "openrouter/deepseek/deepseek-v4-flash",
     "openrouter/deepseek/deepseek-v4-pro",
+    "openrouter/moonshotai/kimi-k2-0905",
+    "openrouter/z-ai/glm-4.7-flash",
     "gemini/gemini-2.0-flash",
     "gemini/gemini-2.5-flash-preview-04-17",
     "openai/gpt-4o-mini",

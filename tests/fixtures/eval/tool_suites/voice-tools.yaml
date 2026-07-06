@@ -1,0 +1,74 @@
+suite: voice-tools-v1
+models:
+  - openrouter/deepseek/deepseek-v4-flash
+  - openrouter/moonshotai/kimi-k2-0905
+  - openrouter/z-ai/glm-4.7-flash
+api_key_env: OPENROUTER_API_KEY
+tool_mode: auto
+max_rounds: 3
+cases:
+  - id: play-despacito
+    transcript: []
+    user: play despacito
+    expect:
+      tools:
+        - name: dashboard_play_music
+          args:
+            query: {contains: despacito}
+      max_rounds: 2
+      final_text: {not_empty: true}
+
+  - id: imagine-cat
+    user: generate a cat image
+    expect:
+      tools:
+        - name: imagine_generate
+          args:
+            prompt: {contains: cat}
+      max_rounds: 2
+
+  - id: music-lookup-m83
+    user: who made Midnight City?
+    expect:
+      tools:
+        - name: music_lookup
+          args:
+            query: {contains: midnight}
+      forbid_tools:
+        - dashboard_play_music
+      max_rounds: 2
+
+  - id: play-not-discord
+    transcript:
+      - role: user
+        content: I want to listen to something chill
+      - role: assistant
+        content: Sure, what should I queue up?
+    user: play some lofi hip hop in the dashboard player
+    expect:
+      tools:
+        - name: dashboard_play_music
+          args:
+            query: {contains: lofi}
+      forbid_tools:
+        - web_search
+      max_rounds: 2
+
+  - id: queue-after-current
+    user: play gangnam style next
+    expect:
+      tools:
+        - name: dashboard_queue_music
+          args:
+            query: {contains: gangnam}
+            after_current: {eq: true}
+      max_rounds: 2
+
+  - id: queue-append-tail
+    user: add hyuna bubble pop to the queue
+    expect:
+      tools:
+        - name: dashboard_queue_music
+          args:
+            query: {contains: bubble pop}
+      max_rounds: 2

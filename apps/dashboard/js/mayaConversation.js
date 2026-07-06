@@ -20,6 +20,164 @@ function _sidebarStorageKey() {
   return `maya.conversation.sidebar.v1.${uid}`;
 }
 
+function _playerStorageKey() {
+  const uid = window._mayaCurrentUser?.id || "anonymous";
+  return `maya.player.v2.${uid}`;
+}
+
+function _streamSrcForQuery(query) {
+  const q = String(query || "").trim();
+  if (!q) return "";
+  return `/api/media/stream?q=${encodeURIComponent(q)}`;
+}
+
+function _queryFromStreamSrc(src) {
+  const raw = String(src || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw, window.location.origin);
+    return u.searchParams.get("q") || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+const _PLAYER_ACCENT_PALETTE = ["#00d4a0", "#7b6fff", "#ff6b35", "#e040fb", "#00b4e6", "#ffcc00"];
+
+function _trackSeed(str) {
+  let h = 0;
+  for (const c of String(str || "")) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return h || 1;
+}
+
+function _generatePlayerPeaks(seed, count = 200) {
+  if (window.mayaWaveformUtils?.generatePeaks) {
+    return window.mayaWaveformUtils.generatePeaks(seed, count);
+  }
+  const peaks = [];
+  let v = (seed * 9301 + 49297) % 233280;
+  const rng = () => {
+    v = (v * 9301 + 49297) % 233280;
+    return v / 233280;
+  };
+  let prev = 0.5;
+  for (let i = 0; i < count; i++) {
+    prev = Math.max(0.05, Math.min(1, prev + (rng() - 0.5) * 0.35));
+    peaks.push(prev);
+  }
+  return peaks;
+}
+
+function _normalizePlayerTrack(tr, index) {
+  const query = String(tr?.query || _queryFromStreamSrc(tr?.src) || "").trim();
+  let title = String(tr?.title || "").trim().normalize("NFC");
+  title = title.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
+  if (!title) title = query ? query.replace(/^https?:\/\//, "").slice(0, 80) : `Track ${index + 1}`;
+  const out = {
+    title,
+    query,
+    src: query ? _streamSrcForQuery(query) : String(tr?.src || ""),
+    color: String(tr?.color || "").trim() || _PLAYER_ACCENT_PALETTE[index % _PLAYER_ACCENT_PALETTE.length],
+    peaks: Array.isArray(tr?.peaks) && tr.peaks.length ? tr.peaks : _generatePlayerPeaks(_trackSeed(query || title), 200),
+  };
+  const art = String(tr?.art || "").trim();
+  if (art) out.art = art;
+  const artist = String(tr?.artist || "").trim();
+  if (artist) out.artist = artist;
+  const genre = String(tr?.genre || "").trim();
+  if (genre) out.genre = genre;
+  const key = String(tr?.key || "").trim();
+  if (key) out.key = key;
+  if (tr?.bpm != null && tr.bpm !== "") out.bpm = tr.bpm;
+  if (tr?.duration != null && isFinite(Number(tr.duration))) out.duration = Number(tr.duration);
+  return out;
+}
+
+function _normalizePlayerTracks(tracks) {
+  return (tracks || []).map((tr, i) => _normalizePlayerTrack(tr, i)).filter((tr) => tr.src || tr.query);
+}
+
+function _mayaPlayerStore() {
+  return window.Alpine?.store?.("mayaPlayer") || null;
+}
+
+function _routePlaylistArtifacts(artifacts) {
+  if (!artifacts?.length) return artifacts;
+  let lastPlaylist = null;
+  for (const a of artifacts) {
+    if (a?.type === "playlist") lastPlaylist = a;
+  }
+  if (lastPlaylist) {
+    const player = _mayaPlayerStore();
+    if (player) player.load(lastPlaylist);
+  }
+  const filtered = artifacts.filter((a) => a?.type !== "playlist");
+  return filtered.length ? filtered : undefined;
+}
+
+function _migrateLegacyPlaylists(store) {
+  let newest = null;
+  for (const t of store.turns || []) {
+    if (!t.artifacts?.length) continue;
+    for (const a of t.artifacts) {
+      if (a?.type === "playlist") newest = a;
+    }
+    t.artifacts = t.artifacts.filter((a) => a?.type !== "playlist");
+    if (!t.artifacts.length) delete t.artifacts;
+  }
+  if (newest) {
+    const player = _mayaPlayerStore();
+    if (player) player.load(newest, { autoplay: false });
+  }
+}
+
+function _restorePlayerStore(player) {
+  try {
+    let raw = localStorage.getItem(_playerStorageKey());
+    if (!raw) {
+      const legacy = sessionStorage.getItem(_playerStorageKey().replace(".v2.", ".v1."));
+      if (legacy) raw = legacy;
+    }
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.tracks?.length) {
+      player.active = true;
+      player.title = data.title || "";
+      player.url = data.url || "";
+      player.tracks = _normalizePlayerTracks(data.tracks);
+      player.current = Math.min(
+        Math.max(0, Number(data.current) || 0),
+        player.tracks.length - 1,
+      );
+    }
+    if (typeof data.volume === "number") player.volume = Math.min(1, Math.max(0, data.volume));
+    if (typeof data.muted === "boolean") player.muted = data.muted;
+    if (typeof data.shuffle === "boolean") player.shuffle = data.shuffle;
+    if (typeof data.repeat === "boolean") player.repeat = data.repeat;
+  } catch (_) {}
+}
+
+function _persistPlayerStore(player) {
+  try {
+    if (!player.active || !player.tracks?.length) {
+      localStorage.removeItem(_playerStorageKey());
+      sessionStorage.removeItem(_playerStorageKey().replace(".v2.", ".v1."));
+      return;
+    }
+    const payload = JSON.stringify({
+      title: player.title,
+      url: player.url,
+      tracks: _normalizePlayerTracks(player.tracks),
+      current: player.current,
+      volume: player.volume,
+      muted: player.muted,
+      shuffle: player.shuffle,
+      repeat: player.repeat,
+    });
+    localStorage.setItem(_playerStorageKey(), payload);
+  } catch (_) {}
+}
+
 const IMMERSIVE_AVATAR_EVENT = "maya:toggle-immersive-avatar";
 
 function _formatDuration(ms) {
@@ -176,14 +334,14 @@ function _imagineTurnBodyHidden(turn) {
   const body = String(turn.text || "").trim();
   if (!body) return true;
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body)) return true;
-  return /^image ready\.?$/i.test(body);
+  return /^image ready\.?$/i.test(body) || /^arena ready/i.test(body);
 }
 
 function _imagineRemarkHint(turn) {
   if (!turn?.artifacts?.length) return null;
   if (turn._remarkStreaming) return null;
   const body = String(turn.text || "").trim();
-  if (!body || /^image ready\.?$/i.test(body)) {
+  if (!body || /^image ready\.?$/i.test(body) || /^arena ready/i.test(body)) {
     return { text: "remark skipped — check Settings → Imagine → Remark vision model", dim: true };
   }
   return null;
@@ -198,6 +356,52 @@ function _applyPendingTurnMeta(store, turn) {
   if (!turn.ttsModel && store._pendingTtsModel) {
     turn.ttsModel = store._pendingTtsModel;
     store._pendingTtsModel = null;
+  }
+  const corrId = turn.corrId;
+  if (corrId && store._toolsByCorr?.[corrId]?.length) {
+    turn.tools = store._toolsByCorr[corrId].map((t) => ({ ...t }));
+  }
+}
+
+function _trackToolEvent(store, ev) {
+  const corrId = _evCorrId(ev);
+  if (!corrId) return;
+  if (!store._toolsByCorr) store._toolsByCorr = {};
+  if (!store._toolsByCorr[corrId]) store._toolsByCorr[corrId] = [];
+
+  if (ev.type === "tool_start") {
+    store._toolsByCorr[corrId].push({
+      name: ev.tool,
+      args: ev.args || null,
+      state: "running",
+    });
+  } else if (ev.type === "tool_end") {
+    const entries = store._toolsByCorr[corrId];
+    let entry = null;
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      if (entries[i].name === ev.tool && entries[i].state === "running") {
+        entry = entries[i];
+        break;
+      }
+    }
+    if (entry) {
+      entry.state = "done";
+      entry.result = ev.result;
+    } else {
+      entries.push({ name: ev.tool, state: "done", result: ev.result });
+    }
+  } else if (ev.type === "tool_trace" && Array.isArray(ev.trace)) {
+    store._toolsByCorr[corrId] = ev.trace.map((t) => ({
+      name: t.tool,
+      args: t.args || null,
+      result: t.result,
+      state: "done",
+    }));
+  }
+
+  const idx = _findMayaTurnByCorr(store, corrId);
+  if (idx >= 0) {
+    store.turns[idx].tools = store._toolsByCorr[corrId].map((t) => ({ ...t }));
   }
 }
 
@@ -365,7 +569,7 @@ function _mergeAiChunk(turn, chunk, { final = false } = {}) {
     turn.text = _sanitizeMayaTurnText(piece);
     return true;
   }
-  if (!turn._streaming) return false;
+  if (!turn._streaming && !turn._remarkStreaming) return false;
   if (piece === cur) return false;
   if (!cur) {
     turn.text = piece;
@@ -768,6 +972,9 @@ const _IMAGINE_MODEL_LABELS = {
 
 function _imagineAckLabel(text) {
   const trimmed = String(text || "").trim();
+  if (/\bmode=arena\b/i.test(trimmed)) {
+    return "Z-Image Turbo vs Krea 2 Turbo";
+  }
   const modelMatch = trimmed.match(/\bmodel=([^\s]+)/i);
   const model = modelMatch?.[1]?.toLowerCase();
   return _IMAGINE_MODEL_LABELS[model] || "selected model";
@@ -782,6 +989,9 @@ function _longRunningCmdAckText(text) {
   if (!trimmed.startsWith("/")) return null;
   const name = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase();
   if (name === "imagine" || name === "img") {
+    if (/\bmode=arena\b/i.test(trimmed)) {
+      return "Running arena battle… Z-Image Turbo vs Krea 2 Turbo may take up to two minutes.";
+    }
     return `Generating image… ${_imagineAckLabel(text)} may take up to a minute while models load.`;
   }
   return _LONG_RUNNING_CMD_ACK[name] || null;
@@ -831,8 +1041,12 @@ function _clearCmdStallTimer(turn) {
   }
 }
 
-function _scheduleCmdStallHint(store, corrId) {
-  const stallMs = 180000;
+function _scheduleCmdStallHint(store, corrId, operatorText) {
+  const isArena = /\bmode=arena\b/i.test(String(operatorText || ""));
+  const stallMs = isArena ? 360000 : 180000;
+  const stallText = isArena
+    ? "Still running arena battle (two generations)… this can take up to five minutes."
+    : "Still generating… check gateway logs if this persists.";
   return setTimeout(() => {
     const idx = _findCmdAckTurn(store, corrId);
     if (idx < 0) return;
@@ -842,7 +1056,7 @@ function _scheduleCmdStallHint(store, corrId) {
       messageId: _nextMessageId(),
       corrId,
       role: "system",
-      text: "Still generating… check gateway logs if this persists.",
+      text: stallText,
       sentAt: Date.now(),
     });
     _persistConversation(store);
@@ -875,6 +1089,7 @@ function _upsertCmdMayaTurn(store, {
   jobId,
   ev,
 }) {
+  artifacts = _routePlaylistArtifacts(artifacts);
   if (cmdPhase === "remark") {
     const doneIdx = _findCmdDoneTurn(store, corrId, messageId);
     if (doneIdx >= 0) {
@@ -940,7 +1155,7 @@ function _upsertCmdMayaTurn(store, {
       _streaming: false,
     };
     if (operatorText) turn._cmdOperatorText = operatorText;
-    turn._cmdStallTimer = _scheduleCmdStallHint(store, corrId);
+    turn._cmdStallTimer = _scheduleCmdStallHint(store, corrId, operatorText);
     store.turns.push(turn);
     store._chatPendingAt = store._chatPendingAt || Date.now();
     store._expectingReply = true;
@@ -1151,8 +1366,97 @@ function _applyCmdResponse(store, data, operatorText) {
   _scrollTranscript();
 }
 
+function _appendDirectorNarration(store, ev) {
+  const text = String(ev.text || "").trim();
+  const corrId = _evCorrId(ev);
+  let turn = _findMayaTurnForEvent(store, ev);
+  if (!turn) {
+    const last = store.turns[store.turns.length - 1];
+    if (last && last.role === "maya" && (last._streaming || last._directorStreaming)) {
+      turn = last;
+    }
+  }
+  if (!turn) {
+    turn = {
+      messageId: ev.message_id || _nextMessageId(),
+      corrId,
+      role: "maya",
+      text: "",
+      sentAt: Date.now(),
+      _directorStreaming: true,
+      directorNarration: [],
+    };
+    store.turns.push(turn);
+  }
+  turn._directorStreaming = true;
+  if (!Array.isArray(turn.directorNarration)) turn.directorNarration = [];
+  if (text) {
+    turn.directorNarration.push(text);
+    const joined = turn.directorNarration.join("\n");
+    turn.text = joined;
+  }
+  if (ev.type === "image.director.score" && ev.score != null) {
+    turn.directorScore = ev.score;
+  }
+  if (ev.type === "image.director.versions" && Array.isArray(ev.versions)) {
+    turn.directorVersions = ev.versions;
+  }
+  if (ev.artifacts?.length) {
+    turn.artifacts = _routePlaylistArtifacts(ev.artifacts);
+    turn._directorStreaming = false;
+    _applyImagineTurnMeta(turn, { artifacts: turn.artifacts, ev });
+  }
+  store._chatPendingAt = Date.now();
+  _persistConversation(store);
+  _scrollTranscript();
+}
+
+function _directorVersionHint(turn) {
+  if (!turn?.directorVersions?.length) return null;
+  const lines = turn.directorVersions.map((v) => `v${v.id?.slice(0, 8)} score ${v.score ?? "?"}`);
+  return { text: lines.join(" · "), dim: true };
+}
+
 function _applyAgentEvent(store, ev) {
   if (!ev || !ev.type) return;
+  if (ev.type === "tool_start" || ev.type === "tool_end" || ev.type === "tool_trace") {
+    _trackToolEvent(store, ev);
+    _persistConversation(store);
+    return;
+  }
+  if (ev.type === "player.load" && ev.playlist) {
+    const player = _mayaPlayerStore();
+    if (player) {
+      player.load(ev.playlist);
+      player._scheduleCastSync?.();
+    }
+    return;
+  }
+  if (ev.type === "player.append" && (ev.tracks?.length || ev.playlist?.tracks?.length)) {
+    const player = _mayaPlayerStore();
+    if (player) {
+      player.append(ev);
+      player._scheduleCastSync?.();
+    }
+    return;
+  }
+  if (ev.type === "player.control") {
+    const player = _mayaPlayerStore();
+    if (player) player.control(ev.action, ev.index);
+    return;
+  }
+  if (ev.type === "system" && ev.text) {
+    store.turns.push({
+      messageId: ev.message_id || _nextMessageId(),
+      corrId: _evCorrId(ev),
+      role: "system",
+      text: ev.text,
+      sentAt: Date.now(),
+    });
+    _persistConversation(store);
+    _scrollTranscript();
+    return;
+  }
   if (ev.type === "delivery" && ev.cue) {
     _onDeliveryCue(store, ev.cue);
     _persistConversation(store);
@@ -1206,6 +1510,10 @@ function _applyAgentEvent(store, ev) {
       _attachCompletionMeta(store, ev);
     }
     _persistConversation(store);
+    return;
+  }
+  if (typeof ev.type === "string" && ev.type.startsWith("image.director.")) {
+    _appendDirectorNarration(store, ev);
     return;
   }
   if (ev.type === "audio_stop") {
@@ -1309,6 +1617,9 @@ function _applyAgentEvent(store, ev) {
     return;
   }
   if (ev.type === "ai" && (ev.text || ev.artifacts?.length)) {
+    if (ev.artifacts?.length) {
+      ev.artifacts = _routePlaylistArtifacts(ev.artifacts);
+    }
     const corrId = _evCorrId(ev);
     if (corrId && (ev.artifacts?.length || ev.text)) {
       _markSseHandledCorr(store, corrId);
@@ -1414,6 +1725,422 @@ function _applyAgentEvent(store, ev) {
 }
 
 document.addEventListener("alpine:init", () => {
+  Alpine.store("mayaPlayer", {
+    active: false,
+    title: "",
+    url: "",
+    tracks: [],
+    current: 0,
+    error: "",
+    playing: false,
+    buffering: false,
+    currentTime: 0,
+    duration: 0,
+    volume: 1,
+    muted: false,
+    queueOpen: false,
+    shuffle: false,
+    repeat: false,
+    casting: false,
+    castBusy: false,
+    castAvailable: false,
+    castChannel: "",
+    castError: "",
+    _castSyncTimer: null,
+    _metaTried: {},
+    get currentSrc() {
+      const tr = (this.tracks || [])[this.current];
+      if (!tr) return "";
+      if (tr.query) return _streamSrcForQuery(tr.query);
+      return tr.src || "";
+    },
+    get currentTrack() {
+      return (this.tracks || [])[this.current] || null;
+    },
+    get currentArt() {
+      return this.currentTrack?.art || "";
+    },
+    get subtitle() {
+      const tr = this.currentTrack;
+      if (tr?.artist) return tr.artist;
+      if (this.title) return this.title;
+      const n = (this.tracks || []).length;
+      return n ? `Track ${this.current + 1} of ${n}` : "";
+    },
+    get progress() {
+      return this.duration > 0 ? this.currentTime / this.duration : 0;
+    },
+    get accentColor() {
+      return this.currentTrack?.color || _PLAYER_ACCENT_PALETTE[this.current % _PLAYER_ACCENT_PALETTE.length];
+    },
+    get volumePct() {
+      const v = this.muted ? 0 : this.volume;
+      return `${v * 100}%`;
+    },
+    get volumeDisplay() {
+      return Math.round((this.muted ? 0 : this.volume) * 100);
+    },
+    get upNextCount() {
+      const n = (this.tracks || []).length;
+      if (!n) return 0;
+      return Math.max(0, n - this.current - 1);
+    },
+    get queueLabel() {
+      const n = this.tracks?.length || 0;
+      if (!n) return "Queue empty";
+      const up = this.upNextCount;
+      if (up > 0) return `Up next — ${up} track${up === 1 ? "" : "s"}`;
+      return "Now playing";
+    },
+    _audioEl() {
+      return document.getElementById("maya-player-audio");
+    },
+    _syncAudioElement() {
+      const el = this._audioEl();
+      const src = this.currentSrc;
+      if (!el || !src) return false;
+      const abs = new URL(src, window.location.origin).href;
+      if (el.src !== abs) el.src = src;
+      return true;
+    },
+    _applyVolume() {
+      const el = this._audioEl();
+      if (!el) return;
+      el.volume = Math.min(1, Math.max(0, this.volume));
+      el.muted = this.muted;
+    },
+    fmtTime(sec) {
+      const s = Math.max(0, Math.floor(Number(sec) || 0));
+      if (!isFinite(s)) return "0:00";
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return `${m}:${String(r).padStart(2, "0")}`;
+    },
+    load(artifact, { autoplay = true } = {}) {
+      if (!artifact?.tracks?.length) return;
+      this.active = true;
+      this.title = artifact.title || "Playlist";
+      this.url = artifact.url || "";
+      this.tracks = _normalizePlayerTracks(artifact.tracks);
+      const max = this.tracks.length - 1;
+      const start = Number.isFinite(Number(artifact.current))
+        ? Math.min(Math.max(0, Number(artifact.current)), max)
+        : 0;
+      this.current = start;
+      this.error = "";
+      this.currentTime = 0;
+      this.duration = 0;
+      _persistPlayerStore(this);
+      this._ensureArt(start);
+      if (!autoplay) return;
+      requestAnimationFrame(() => this.play(start));
+    },
+    append(ev) {
+      const incoming = _normalizePlayerTracks(ev.tracks || ev.playlist?.tracks || []);
+      if (!incoming.length && !ev.playlist?.tracks?.length) return;
+      if (ev.playlist?.tracks?.length) {
+        this.load(ev.playlist, { autoplay: false });
+        return;
+      }
+      if (!this.tracks?.length) {
+        this.load(
+          { title: ev.title || "Playlist", tracks: incoming },
+          { autoplay: false },
+        );
+        return;
+      }
+      const insertAt = ev.after_current ? this.current + 1 : this.tracks.length;
+      this.tracks = [
+        ...this.tracks.slice(0, insertAt),
+        ...incoming,
+        ...this.tracks.slice(insertAt),
+      ];
+      this.active = true;
+      if (Number.isFinite(Number(ev.playlist?.current))) {
+        this.current = Math.min(Math.max(0, Number(ev.playlist.current)), this.tracks.length - 1);
+      }
+      _persistPlayerStore(this);
+      for (let i = 0; i < incoming.length; i += 1) {
+        this._ensureArt(insertAt + i);
+      }
+    },
+    play(i) {
+      const tracks = this.tracks || [];
+      if (i < 0 || i >= tracks.length) return;
+      this.error = "";
+      this.current = i;
+      this.currentTime = 0;
+      this.duration = 0;
+      this.buffering = true;
+      _persistPlayerStore(this);
+      this._ensureArt(i);
+      this._ensureArt(i + 1);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!this._syncAudioElement()) return;
+          const el = this._audioEl();
+          try {
+            this._applyVolume();
+            el.load();
+            const p = el.play();
+            if (p && p.catch) p.catch(() => {});
+          } catch (_) {}
+          this._scheduleCastSync();
+        });
+      });
+    },
+    toggle() {
+      if (!this.active && this.tracks?.length) {
+        this.play(this.current);
+        return;
+      }
+      if (this.playing) this.pause();
+      else this.resume();
+    },
+    next() {
+      const tracks = this.tracks || [];
+      if (!tracks.length) return;
+      if (this.shuffle) {
+        let n = this.current;
+        if (tracks.length > 1) {
+          while (n === this.current) n = Math.floor(Math.random() * tracks.length);
+        }
+        this.play(n);
+        return;
+      }
+      if (this.current + 1 < tracks.length) this.play(this.current + 1);
+    },
+    prev() {
+      if (this.currentTime > 3) {
+        this.seekTo(0);
+        return;
+      }
+      const tracks = this.tracks || [];
+      if (!tracks.length) return;
+      if (this.shuffle) {
+        let n = this.current;
+        if (tracks.length > 1) {
+          while (n === this.current) n = Math.floor(Math.random() * tracks.length);
+        }
+        this.play(n);
+        return;
+      }
+      if (this.current > 0) this.play(this.current - 1);
+    },
+    onEnded() {
+      if (this.repeat) {
+        this.seekTo(0);
+        this.resume();
+        return;
+      }
+      this.next();
+    },
+    pause() {
+      const el = this._audioEl();
+      if (el) el.pause();
+    },
+    resume() {
+      const el = this._audioEl();
+      if (!el) return;
+      if (!this.active && this.tracks?.length) this.active = true;
+      this._applyVolume();
+      const p = el.play();
+      if (p && p.catch) p.catch(() => {});
+    },
+    seekTo(fraction) {
+      const el = this._audioEl();
+      const dur = this.duration || (el && el.duration) || 0;
+      if (!el || !dur || !isFinite(dur)) return;
+      const f = Math.min(1, Math.max(0, Number(fraction) || 0));
+      try {
+        el.currentTime = f * dur;
+        this.currentTime = el.currentTime;
+      } catch (_) {}
+    },
+    setVolume(v) {
+      this.volume = Math.min(1, Math.max(0, Number(v) || 0));
+      if (this.volume > 0) this.muted = false;
+      this._applyVolume();
+      _persistPlayerStore(this);
+    },
+    setVolumePercent(p) {
+      this.setVolume(Number(p) / 100);
+    },
+    toggleMute() {
+      this.muted = !this.muted;
+      this._applyVolume();
+      _persistPlayerStore(this);
+    },
+    toggleQueue() {
+      this.queueOpen = !this.queueOpen;
+    },
+    toggleShuffle() {
+      this.shuffle = !this.shuffle;
+      _persistPlayerStore(this);
+    },
+    toggleRepeat() {
+      this.repeat = !this.repeat;
+      _persistPlayerStore(this);
+    },
+    async refreshCastStatus() {
+      try {
+        const resp = await fetch("/api/media/cast", { credentials: "same-origin" });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        this.casting = !!data.casting;
+        this.castAvailable = !!data.available;
+        this.castChannel = data.channel || "";
+        if (!data.available && !this.casting) {
+          this.castError = data.reason || "";
+        } else if (this.casting) {
+          this.castError = "";
+        }
+      } catch (_) {}
+    },
+    async toggleCast() {
+      if (this.castBusy) return;
+      if (!this.casting && (!this.active || !this.tracks?.length)) {
+        this.castError = "Load a track before casting to Discord.";
+        return;
+      }
+      this.castBusy = true;
+      this.castError = "";
+      try {
+        const method = this.casting ? "DELETE" : "POST";
+        const resp = await fetch("/api/media/cast", { method, credentials: "same-origin" });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          const detail = data.detail;
+          this.castError =
+            (typeof detail === "string" ? detail : detail?.message) ||
+            data.reason ||
+            "Cast failed.";
+          return;
+        }
+        this.casting = !!data.casting;
+        this.castChannel = data.channel || "";
+        if (this.casting) this.castAvailable = true;
+      } catch (_) {
+        this.castError = "Couldn't reach the cast service.";
+      } finally {
+        this.castBusy = false;
+      }
+    },
+    _scheduleCastSync() {
+      if (!this.casting) return;
+      clearTimeout(this._castSyncTimer);
+      this._castSyncTimer = setTimeout(() => this._syncCastNow(), 450);
+    },
+    async _syncCastNow() {
+      if (!this.casting) return;
+      try {
+        await fetch("/api/media/cast/sync", {
+          method: "POST",
+          credentials: "same-origin",
+        });
+      } catch (_) {}
+    },
+    drawQueueMini(el, track, i) {
+      window.mayaWaveformUtils?.drawMini?.(el, track?.peaks, i === this.current, el.closest(".player-root"));
+    },
+    control(action, index) {
+      const act = String(action || "").toLowerCase();
+      if (act === "pause") this.pause();
+      else if (act === "resume") this.resume();
+      else if (act === "skip") this.next();
+      else if (act === "previous" || act === "back") this.prev();
+      else if (act === "clear") this.clear();
+      else if (act === "play" && index != null) this.play(Number(index));
+    },
+    onPlay() {
+      this.playing = true;
+      this.error = "";
+    },
+    onPause() {
+      this.playing = false;
+    },
+    onTime() {
+      const el = this._audioEl();
+      if (el) this.currentTime = el.currentTime || 0;
+    },
+    onMeta() {
+      const el = this._audioEl();
+      if (el && isFinite(el.duration)) this.duration = el.duration || 0;
+      this.buffering = false;
+    },
+    onWaiting() {
+      this.buffering = true;
+    },
+    onPlaying() {
+      this.buffering = false;
+      this.playing = true;
+      this.error = "";
+    },
+    onVolume() {
+      const el = this._audioEl();
+      if (!el) return;
+      this.volume = el.volume;
+      this.muted = el.muted;
+    },
+    onError() {
+      this.buffering = false;
+      this.playing = false;
+      this.error = "Couldn't play this track — it may be unavailable.";
+    },
+    async _ensureArt(i) {
+      const tracks = this.tracks || [];
+      const tr = tracks[i];
+      if (!tr || tr.art) return;
+      const q = tr.query;
+      if (!q || this._metaTried[q]) return;
+      this._metaTried[q] = true;
+      try {
+        const resp = await fetch(`/api/media/meta?q=${encodeURIComponent(q)}`, {
+          credentials: "same-origin",
+        });
+        if (!resp.ok) return;
+        const meta = await resp.json();
+        // The playlist may have been replaced mid-fetch; re-locate the track by query.
+        const cur = (this.tracks || []).find((t) => t.query === q);
+        if (!cur) return;
+        if (meta.thumbnail) cur.art = meta.thumbnail;
+        if (meta.artist && !cur.artist) cur.artist = meta.artist;
+        if (meta.duration != null && isFinite(Number(meta.duration)) && !this.duration) {
+          cur.duration = Number(meta.duration);
+        }
+        _persistPlayerStore(this);
+      } catch (_) {}
+    },
+    clear() {
+      if (this.casting) void this.toggleCast();
+      this.pause();
+      const el = this._audioEl();
+      if (el) {
+        el.removeAttribute("src");
+        try {
+          el.load();
+        } catch (_) {}
+      }
+      this.active = false;
+      this.title = "";
+      this.url = "";
+      this.tracks = [];
+      this.current = 0;
+      this.error = "";
+      this.playing = false;
+      this.buffering = false;
+      this.currentTime = 0;
+      this.duration = 0;
+      this.queueOpen = false;
+      this.shuffle = false;
+      this.repeat = false;
+      _persistPlayerStore(this);
+      void fetch("/api/media/player/clear", { method: "POST", credentials: "same-origin" }).catch(
+        () => {},
+      );
+    },
+  });
+
   Alpine.store("mayaConversation", {
     sessionOn: false,
     statusLabel: "idle",
@@ -1552,6 +2279,12 @@ document.addEventListener("alpine:init", () => {
       if (turn.workflowName) parts.push({ text: turn.workflowName, dim: true });
       if (turn.traceId) parts.push({ text: `trace ${turn.traceId}`, dim: true });
       if (turn.jobId) parts.push({ text: `job ${turn.jobId}`, dim: true });
+      if (turn.tools?.length) {
+        parts.push({
+          text: `tools ${turn.tools.map((t) => t.name).filter(Boolean).join(", ")}`,
+          dim: true,
+        });
+      }
       const remarkHint = _imagineRemarkHint(turn);
       if (remarkHint) parts.push(remarkHint);
       if (turn.messageId) parts.push({ text: turn.messageId, dim: !_isServerId(turn.messageId) });
@@ -1580,6 +2313,54 @@ document.addEventListener("alpine:init", () => {
       if (!this.detailed || !turn?.corrId || index <= 0) return false;
       const prev = this.turns[index - 1];
       return prev?.corrId === turn.corrId;
+    },
+
+    arenaSlotClass(artifact, slot) {
+      if (!artifact || artifact.state !== "resolved" || !artifact.winner) return "";
+      if (artifact.winner === "tie") return "";
+      return artifact.winner === slot ? "md-arena-slot-winner" : "md-arena-slot-loser";
+    },
+
+    arenaVoteLabel(artifact, choice) {
+      if (!artifact || artifact.state !== "resolved") return "";
+      const picked = String(artifact.choice || "").toLowerCase();
+      if (picked !== choice) return "";
+      if (choice === "tie") return "You called it a tie.";
+      const model = choice === "a" ? artifact.model_a : artifact.model_b;
+      return model ? `You picked ${choice.toUpperCase()} — ${model}` : `You picked ${choice.toUpperCase()}.`;
+    },
+
+    async voteArena(turn, artifact, choice) {
+      if (!artifact?.battle_id || artifact.state === "resolved" || artifact._voting) return;
+      artifact._voting = true;
+      try {
+        const resp = await fetch("/api/voice/imagine/arena/vote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ battle_id: artifact.battle_id, choice }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok) {
+          const msg = data.detail || data.error || `Vote failed (${resp.status})`;
+          turn.arenaVoteError = String(msg);
+          return;
+        }
+        Object.assign(artifact, {
+          state: "resolved",
+          choice: data.choice,
+          winner: data.winner,
+          model_a: data.model_a,
+          model_b: data.model_b,
+          rating_a: data.rating_a,
+          rating_b: data.rating_b,
+          _voting: false,
+        });
+        turn.arenaVoteError = "";
+        _persistConversation(this);
+      } catch (err) {
+        turn.arenaVoteError = String(err?.message || err);
+        artifact._voting = false;
+      }
     },
 
     handleAgentEvent(ev) {
@@ -1626,6 +2407,12 @@ document.addEventListener("alpine:init", () => {
     async ensureHydrated() {
       if (this._hydrated) return;
       this.restore();
+      _migrateLegacyPlaylists(this);
+      const player = _mayaPlayerStore();
+      if (player) {
+        _restorePlayerStore(player);
+        player.refreshCastStatus();
+      }
       await this.rehydrateAudio();
       await this.loadSettings();
       await this.syncFromServer();
@@ -1964,7 +2751,7 @@ document.addEventListener("alpine:init", () => {
 
     async newChat() {
       try {
-        const r = await fetch("/api/voice/agent/conversation/clear", { method: "POST" });
+        const r = await fetch("/api/voice/agent/conversation/clear?player=1", { method: "POST" });
         if (r.ok) {
           const data = await r.json();
           if (data.ok) this._clearedAt = Date.now();

@@ -1,0 +1,426 @@
+/**
+ * Music Player — Relative Color Blocking Token System
+ *
+ * Portable reference implementation. Not wired into Quartz build.
+ *
+ * Usage:
+ *   1. Apply a preset class to .player-root (preset-compact | preset-hero | preset-maya)
+ *   2. Set --accent-active on .player-root when the active track changes
+ *   3. Components consume --block-* tokens only — never raw track hex
+ */
+
+/* ------------------------------------------------------------------ */
+/* Base anchors (overridden by presets)                                */
+/* ------------------------------------------------------------------ */
+
+.player-root {
+  --player-bg: oklch(0.12 0.02 280);
+  --player-fg: oklch(0.91 0.02 280);
+  --player-muted: oklch(0.55 0.04 280);
+  --player-hue: 280;
+  --player-chroma: 0.02;
+
+  /* Runtime: set per active track */
+  --accent-active: #00d4a0;
+
+  /* Derived color blocks */
+  --block-surface-0: var(--player-bg);
+  --block-surface-1: oklch(from var(--player-bg) calc(l + 0.02) c h);
+  --block-surface-2: oklch(from var(--player-bg) calc(l + 0.04) c h);
+
+  --block-border-subtle: color-mix(in oklch, var(--player-fg) 6%, transparent);
+  --block-border-strong: color-mix(in oklch, var(--player-fg) 12%, transparent);
+
+  --block-muted-fg: var(--player-muted);
+  --block-muted-bg: color-mix(in oklch, var(--player-fg) 4%, var(--player-bg));
+
+  --block-accent: var(--accent-active);
+  --block-accent-fg: oklch(from var(--accent-active) 0.15 c h);
+  --block-accent-soft: color-mix(in oklch, var(--accent-active) 12%, transparent);
+  --block-accent-hover: color-mix(in oklch, var(--accent-active) 33%, transparent);
+  --block-accent-glow: color-mix(in oklch, var(--accent-active) 33%, transparent);
+  --block-accent-border: color-mix(in oklch, var(--accent-active) 27%, transparent);
+
+  --block-interactive-idle: var(--player-muted);
+  --block-interactive-hover: oklch(from var(--accent-active) 0.85 c h);
+
+  /* Page backdrop gradient (Compact variant) */
+  --block-page-gradient: linear-gradient(
+    135deg,
+    oklch(from var(--player-bg) calc(l - 0.02) c h) 0%,
+    oklch(from var(--player-bg) calc(l + 0.01) c h) 100%
+  );
+
+  color: var(--player-fg);
+  background: var(--player-bg);
+}
+
+/* ------------------------------------------------------------------ */
+/* Preset: Compact Strip (Figma Make / project-2)                      */
+/* ------------------------------------------------------------------ */
+
+.player-root.preset-compact {
+  --player-bg: oklch(0.12 0.02 280);
+  --player-fg: oklch(0.91 0.02 280);
+  --player-muted: oklch(0.55 0.04 280);
+  --player-hue: 280;
+  --player-chroma: 0.02;
+  --accent-active: #00d4a0;
+}
+
+/* shadcn bridge: map theme.css vars when co-located */
+.player-root.preset-compact.shadcn-bridge {
+  --player-bg: var(--background, oklch(0.12 0.02 280));
+  --player-fg: var(--foreground, oklch(0.91 0.02 280));
+  --player-muted: var(--muted-foreground, oklch(0.55 0.04 280));
+  --accent-active: var(--primary, #00d4a0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Preset: Hero Art (AI Studio / music-player-aistudio)                */
+/* ------------------------------------------------------------------ */
+
+.player-root.preset-hero {
+  --player-bg: oklch(0.08 0 0);
+  --player-fg: oklch(0.88 0 0);
+  --player-muted: oklch(0.45 0 0);
+  --player-hue: 0;
+  --player-chroma: 0;
+  --accent-active: #00d4a0;
+
+  --block-page-gradient: var(--player-bg);
+}
+
+/* ------------------------------------------------------------------ */
+/* Preset: Maya — bridge to Quartz custom.scss                         */
+/* ------------------------------------------------------------------ */
+
+.player-root.preset-maya {
+  --player-bg: var(--light, #1a1625);
+  --player-fg: var(--darkgray, #d4d1dc);
+  --player-muted: var(--gray, #7e7891);
+  --player-hue: 280;
+  --player-chroma: 0.03;
+  --accent-active: var(--secondary, #9b51e0);
+  --block-interactive-hover: var(--tertiary, #6cbfb5);
+}
+
+.player-root.preset-compact {
+  --block-groove-bg: color-mix(in oklch, var(--player-fg) 8%, var(--player-bg));
+}
+
+/* Vertical mixer volume */
+.player-volume-groove--vertical {
+  position: relative;
+  width: 1rem;
+  height: 4.5rem;
+  flex-shrink: 0;
+}
+
+.player-volume-groove--full {
+  flex: 1;
+  width: 1.25rem;
+  height: auto;
+  min-height: 3rem;
+}
+
+.player-volume-groove--full .player-volume-mixer--vertical {
+  height: 100%;
+  width: 1.25rem;
+}
+
+.player-btn-strip {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid var(--block-border-subtle);
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--block-surface-1);
+}
+
+.player-btn-strip-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: none;
+  border-right: 1px solid var(--block-border-subtle);
+  background: transparent;
+  color: var(--block-interactive-idle);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.player-btn-strip-item:last-child {
+  border-right: none;
+}
+
+.player-btn-strip-item:hover:not(:disabled) {
+  color: var(--block-interactive-hover);
+  background: color-mix(in oklch, var(--player-fg) 4%, transparent);
+}
+
+.player-btn-strip-item.is-active {
+  color: var(--block-accent);
+  background: var(--block-accent-soft);
+}
+
+.player-btn-strip-item--play {
+  width: 2.25rem;
+  background: var(--block-accent);
+  color: var(--block-accent-fg);
+}
+
+.player-btn-strip-item--play:hover:not(:disabled) {
+  background: var(--block-accent);
+  color: var(--block-accent-fg);
+  filter: brightness(1.08);
+}
+
+.player-btn-strip-item--play.is-playing {
+  box-shadow: 0 0 12px var(--block-accent-glow);
+}
+
+.player-btn-strip-solo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--block-border-subtle);
+  border-radius: 2px;
+  background: var(--block-surface-1);
+  color: var(--block-interactive-idle);
+  cursor: pointer;
+}
+
+.player-btn-strip-solo:hover {
+  color: var(--block-interactive-hover);
+}
+
+.player-btn-strip-solo.is-open,
+.player-btn-strip-solo.is-active {
+  color: var(--block-accent);
+  background: var(--block-accent-soft);
+  border-color: var(--block-accent-border);
+}
+
+.player-volume-groove--vertical .player-volume-groove-track {
+  position: absolute;
+  inset: 0;
+  width: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 100%;
+  background: var(--block-groove-bg, color-mix(in oklch, var(--player-fg) 8%, var(--player-bg)));
+  border-radius: 2px;
+  box-shadow: inset 0 2px 4px color-mix(in oklch, var(--player-bg) 80%, transparent);
+  border: 1px solid var(--block-border-subtle);
+}
+
+.player-volume-groove--vertical .player-volume-fill {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0.75rem;
+  height: 0;
+  background: var(--block-accent);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.player-volume-mixer--vertical {
+  -webkit-appearance: slider-vertical;
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  background: transparent;
+  width: 1rem;
+  height: 4.5rem;
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  outline: none;
+  margin: 0;
+  cursor: grab;
+}
+
+.player-volume-mixer--vertical::-webkit-slider-runnable-track {
+  background: transparent;
+  width: 0.75rem;
+}
+
+.player-volume-mixer--vertical::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 36px;
+  border-radius: 3px;
+  cursor: grab;
+  background-image:
+    linear-gradient(to right, transparent 45%, color-mix(in oklch, var(--player-fg) 55%, transparent) 45%, color-mix(in oklch, var(--player-fg) 55%, transparent) 55%, transparent 55%),
+    linear-gradient(to bottom, color-mix(in oklch, var(--player-fg) 90%, transparent), color-mix(in oklch, var(--player-fg) 45%, transparent));
+  border: 1px solid var(--block-border-strong);
+  box-shadow: 0 2px 4px color-mix(in oklch, var(--player-bg) 60%, transparent);
+}
+
+.player-volume-mixer--vertical::-moz-range-track {
+  background: transparent;
+  width: 0.75rem;
+  border: none;
+}
+
+.player-volume-mixer--vertical::-moz-range-thumb {
+  width: 16px;
+  height: 36px;
+  border-radius: 3px;
+  cursor: grab;
+  border: 1px solid var(--block-border-strong);
+}
+
+.player-volume-speaker {
+  width: 1rem;
+  height: 1rem;
+  color: var(--player-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.player-volume-speaker.is-active {
+  color: var(--block-accent);
+}
+
+.player-volume-pct {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.625rem;
+  color: var(--player-muted);
+  cursor: pointer;
+  padding: 0.125rem 0.25rem;
+  min-width: 2rem;
+  text-align: center;
+}
+
+.player-volume-pct:hover {
+  color: var(--player-fg);
+  background: var(--block-muted-bg);
+  border-radius: 2px;
+}
+
+.player-volume-pct-input {
+  width: 2.5rem;
+  text-align: center;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.625rem;
+  background: var(--block-surface-2);
+  color: var(--block-accent);
+  border: 1px solid var(--block-border-subtle);
+  border-radius: 2px;
+  padding: 0.125rem;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.player-volume-pct-input::-webkit-outer-spin-button,
+.player-volume-pct-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.player-volume-pct-input:focus {
+  outline: none;
+  border-color: var(--block-accent);
+}
+
+/* ------------------------------------------------------------------ */
+/* Component utility classes (reference patterns)                      */
+/* ------------------------------------------------------------------ */
+
+.player-shell {
+  background: var(--block-surface-1);
+  border: 1px solid var(--block-border-subtle);
+  box-shadow: 0 24px 80px color-mix(in oklch, var(--player-bg) 60%, transparent);
+}
+
+.player-divider {
+  height: 1px;
+  background: var(--block-border-subtle);
+}
+
+.player-btn-play {
+  background: var(--block-accent);
+  color: var(--block-accent-fg);
+}
+
+.player-btn-play.is-playing {
+  box-shadow: 0 0 16px var(--block-accent-glow);
+}
+
+.player-btn-ghost {
+  color: var(--block-interactive-idle);
+}
+
+.player-btn-ghost:hover {
+  color: var(--block-interactive-hover);
+}
+
+.player-btn-toggle.is-active {
+  color: var(--block-accent);
+}
+
+.player-queue-toggle.is-active {
+  color: var(--block-accent);
+  background: var(--block-accent-soft);
+  border: 1px solid var(--block-accent-border);
+}
+
+.player-queue-row.is-active {
+  background: var(--block-accent-soft);
+  border-left: 2px solid var(--block-accent);
+}
+
+.player-chip {
+  background: color-mix(in oklch, var(--player-fg) 6%, transparent);
+  color: var(--block-accent);
+}
+
+.player-waveform-tooltip {
+  background: var(--block-surface-2);
+  color: var(--player-fg);
+  border: 1px solid var(--block-border-strong);
+}
+
+.player-volume-track {
+  background: linear-gradient(
+    to right,
+    var(--block-accent) var(--volume-pct, 80%),
+    var(--block-muted-bg) var(--volume-pct, 80%)
+  );
+}
+
+/* Reference demo utilities (mayaWaveform.js) */
+.player-waveform-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 48px;
+  padding: 0.75rem 0;
+}
+
+.player-waveform-canvas {
+  display: block;
+  width: 100%;
+  height: 48px;
+  cursor: pointer;
+}
+
+.player-mini-waveform {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 32px;
+  height: 20px;
+  flex-shrink: 0;
+}

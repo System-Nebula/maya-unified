@@ -15,6 +15,9 @@
   let paused = false;
   let chunkCount = 0;
   const activeSources = new Set();
+  /** Serializes chunk scheduling — async scheduleChunk must not interleave nextStart. */
+  let scheduleChain = Promise.resolve();
+  let scheduleGen = 0;
 
   function ensureCtx() {
     if (!ctx) {
@@ -49,6 +52,8 @@
   }
 
   function stopAllSources() {
+    scheduleGen += 1;
+    scheduleChain = Promise.resolve();
     for (const src of activeSources) {
       try {
         src.stop();
@@ -71,9 +76,17 @@
     paused = false;
   }
 
-  async function scheduleChunk(pcm, sr) {
-    if (!pcm?.length || paused) return;
+  function scheduleChunk(pcm, sr) {
+    if (!pcm?.length || paused) return scheduleChain;
+    const gen = scheduleGen;
+    scheduleChain = scheduleChain.then(() => _scheduleChunkNow(pcm, sr, gen));
+    return scheduleChain;
+  }
+
+  async function _scheduleChunkNow(pcm, sr, gen) {
+    if (!pcm?.length || paused || gen !== scheduleGen) return;
     await unlock();
+    if (gen !== scheduleGen) return;
     const ac = ensureCtx();
     const rate = Math.max(8000, Number(sr) || 24000);
     const buf = ac.createBuffer(1, pcm.length, rate);

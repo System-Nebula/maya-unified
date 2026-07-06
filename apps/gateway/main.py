@@ -27,11 +27,16 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from apps.gateway.admin_routes import router as admin_router  # noqa: E402
 from apps.gateway.auth_routes import router as auth_router  # noqa: E402
 from apps.gateway.google_integrations_routes import router as google_integrations_router  # noqa: E402
+from apps.gateway.bandcamp_integrations_routes import router as bandcamp_integrations_router  # noqa: E402
 from apps.gateway.platform_auth_routes import router as platform_auth_router  # noqa: E402
 from apps.gateway.lifespan import lifespan  # noqa: E402
-from apps.gateway.settings_routes import router as settings_router  # noqa: E402
+from apps.gateway.settings_routes import router as settings_router
+from apps.gateway.imagine_routes import router as chat_imagine_router  # noqa: E402
+from apps.gateway.music_routes import router as media_router  # noqa: E402
+from apps.gateway.music_ontology_routes import router as music_ontology_router  # noqa: E402
 from apps.gateway.cmd_routes import router as cmd_router  # noqa: E402
 from apps.gateway.room_routes import router as room_router  # noqa: E402
+from apps.gateway.browser_capture_routes import router as browser_capture_router  # noqa: E402
 from apps.gateway.voice_routes import register_agent_routes  # noqa: E402
 from services.auth.deps import resolve_operator_from_token  # noqa: E402
 from services.auth.operator_store import any_operators_exist, get_db_session  # noqa: E402
@@ -149,11 +154,26 @@ async def _auth_guard(request: Request, call_next):
         return RedirectResponse(url="/setup")
     return RedirectResponse(url=f"/login?next={request.url.path}")
 
+
+@app.middleware("http")
+async def _revalidate_static_assets(request: Request, call_next):
+    """Force revalidation of dashboard/SDK assets (no cache-busting query strings).
+
+    `no-cache` = always revalidate; StaticFiles ETag/Last-Modified still yields cheap
+    304s when unchanged, so frontend edits load on a normal reload without a hard-refresh.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/dashboard/") or path.startswith("/sdk/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 # --- operator auth (dashboard) — mount before other /api/auth routes -------------
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(platform_auth_router)
 app.include_router(google_integrations_router)
+app.include_router(bandcamp_integrations_router)
 
 # --- voice SDK routes (settings/defaults, demo turn) -----------------------------
 try:
@@ -215,6 +235,10 @@ except Exception as exc:  # noqa: BLE001
     log.warning("imagine routes unavailable: %s", exc)
 
 app.include_router(settings_router)
+app.include_router(chat_imagine_router)
+app.include_router(media_router)
+app.include_router(music_ontology_router)
+app.include_router(browser_capture_router)
 app.include_router(room_router)
 app.include_router(cmd_router)
 register_agent_routes(app)

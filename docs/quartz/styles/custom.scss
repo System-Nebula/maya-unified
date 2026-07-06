@@ -38,3 +38,15 @@ a.internal:hover,
 a.external:hover {
   color: var(--tertiary);
 }
+
+/* Embedded player demo (design docs) */
+iframe.player-demo-embed {
+  display: block;
+  width: 100%;
+  max-width: 48rem;
+  height: 22rem;
+  margin: 1.5rem 0;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: #0b0b10;
+}

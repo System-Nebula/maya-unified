@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Chakra+Petch:wght@400;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Chakra+Petch:wght@400;600;700&family=DM+Mono:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/dashboard/css/themes/theme-base.css" />
     <link rel="stylesheet" href="/dashboard/css/themes/theme-unified.css" />
     <link rel="stylesheet" href="/dashboard/css/themes/theme-industrial.css" />
@@ -14,6 +14,8 @@
     <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-shell.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-dashboard.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-player-tokens.css" />
+    <link rel="stylesheet" href="/dashboard/css/maya-player.css" />
     <script type="importmap">
       {
         "imports": {
@@ -104,6 +106,391 @@
           </div>
 
           <div class="md-session">
+            <div class="md-player-sticky" x-show="$store.mayaPlayer.active" x-cloak>
+              <div
+                class="player-root preset-maya player-shell player-layout-auto md-player"
+                :style="{ '--accent-active': $store.mayaPlayer.accentColor }"
+              >
+                <audio
+                  id="maya-player-audio"
+                  class="mp-audio-engine"
+                  preload="none"
+                  :src="$store.mayaPlayer.currentSrc"
+                  @play="$store.mayaPlayer.onPlay()"
+                  @pause="$store.mayaPlayer.onPause()"
+                  @timeupdate="$store.mayaPlayer.onTime()"
+                  @loadedmetadata="$store.mayaPlayer.onMeta()"
+                  @durationchange="$store.mayaPlayer.onMeta()"
+                  @waiting="$store.mayaPlayer.onWaiting()"
+                  @playing="$store.mayaPlayer.onPlaying()"
+                  @volumechange="$store.mayaPlayer.onVolume()"
+                  @ended="$store.mayaPlayer.onEnded()"
+                  @error="$store.mayaPlayer.onError()"
+                ></audio>
+
+                <div
+                  class="mp-body"
+                  :class="trayOpen ? 'mp-body--volume-open' : ''"
+                  x-data="mayaVolumeControl()"
+                  @click.outside="trayOpen = false"
+                >
+                  <div class="mp-main">
+                <div class="mp-top">
+                  <div
+                    class="mp-art"
+                    :class="$store.mayaPlayer.currentArt ? '' : 'mp-art--empty'"
+                  >
+                    <template x-if="$store.mayaPlayer.currentArt">
+                      <img :src="$store.mayaPlayer.currentArt" alt="" loading="lazy" />
+                    </template>
+                    <template x-if="!$store.mayaPlayer.currentArt">
+                      <span class="mp-art-glyph">♪</span>
+                    </template>
+                  </div>
+
+                  <div class="mp-details">
+                    <div class="mp-meta-row">
+                      <span
+                        class="mp-genre"
+                        x-show="$store.mayaPlayer.currentTrack?.genre"
+                        x-text="$store.mayaPlayer.currentTrack?.genre"
+                      ></span>
+                      <span
+                        class="mp-title"
+                        x-text="$store.mayaPlayer.currentTrack?.title || 'Nothing playing'"
+                      ></span>
+                      <span class="mp-artist" x-text="$store.mayaPlayer.subtitle"></span>
+                      <div
+                        class="mp-chips"
+                        x-show="$store.mayaPlayer.currentTrack?.bpm || $store.mayaPlayer.currentTrack?.key"
+                      >
+                        <span
+                          class="mp-chip mp-chip--accent"
+                          x-show="$store.mayaPlayer.currentTrack?.bpm"
+                          x-text="$store.mayaPlayer.currentTrack?.bpm + ' BPM'"
+                        ></span>
+                        <span
+                          class="mp-chip mp-chip--muted"
+                          x-show="$store.mayaPlayer.currentTrack?.key"
+                          x-text="$store.mayaPlayer.currentTrack?.key"
+                        ></span>
+                      </div>
+                    </div>
+
+                    <div class="mp-hero-header">
+                      <div class="mp-hero-title-row">
+                        <div class="mp-hero-title-line">
+                          <span
+                            class="mp-hero-artist"
+                            x-text="$store.mayaPlayer.currentTrack?.artist || $store.mayaPlayer.title || ''"
+                          ></span>
+                          <span class="mp-hero-sep">—</span>
+                          <span
+                            class="mp-hero-title"
+                            x-text="$store.mayaPlayer.currentTrack?.title || 'Nothing playing'"
+                          ></span>
+                        </div>
+                        <div class="mp-time-hero">
+                          <span
+                            class="mp-time-current"
+                            x-text="$store.mayaPlayer.fmtTime($store.mayaPlayer.currentTime)"
+                          ></span>
+                          <span class="mp-time-slash">/</span>
+                          <span
+                            class="mp-time-remain"
+                            x-text="$store.mayaPlayer.duration ? $store.mayaPlayer.fmtTime($store.mayaPlayer.duration) : '--:--'"
+                          ></span>
+                        </div>
+                      </div>
+                      <div
+                        class="mp-meta-pipe"
+                        x-show="$store.mayaPlayer.currentTrack?.genre || $store.mayaPlayer.currentTrack?.bpm || $store.mayaPlayer.currentTrack?.key"
+                      >
+                        <span
+                          class="mp-meta-pipe-accent"
+                          x-show="$store.mayaPlayer.currentTrack?.genre"
+                          x-text="'Genre: ' + ($store.mayaPlayer.currentTrack?.genre || '')"
+                        ></span>
+                        <span
+                          class="mp-meta-pipe-sep"
+                          x-show="$store.mayaPlayer.currentTrack?.genre && $store.mayaPlayer.currentTrack?.bpm"
+                        >|</span>
+                        <span
+                          x-show="$store.mayaPlayer.currentTrack?.bpm"
+                          x-text="($store.mayaPlayer.currentTrack?.bpm || '') + ' BPM'"
+                        ></span>
+                        <span
+                          class="mp-meta-pipe-sep"
+                          x-show="$store.mayaPlayer.currentTrack?.bpm && $store.mayaPlayer.currentTrack?.key"
+                        >|</span>
+                        <span
+                          x-show="$store.mayaPlayer.currentTrack?.key"
+                          x-text="$store.mayaPlayer.currentTrack?.key"
+                        ></span>
+                      </div>
+                    </div>
+
+                    <div
+                      class="mp-wave-col player-waveform-wrap"
+                      x-data="mayaWaveform()"
+                      x-init="init()"
+                      @destroy="destroy()"
+                      @mouseleave="hoverProgress = null"
+                    >
+                      <canvas
+                        x-ref="canvas"
+                        class="player-waveform-canvas"
+                        @click="onClick($event)"
+                        @mousemove="onMouseMove($event)"
+                      ></canvas>
+                      <div
+                        class="mp-wave-tooltip player-waveform-tooltip"
+                        x-show="hoverProgress !== null && $store.mayaPlayer.duration > 0"
+                        :style="{ left: (Math.min(Math.max(hoverProgress * 100, 5), 90)) + '%' }"
+                        x-text="$store.mayaPlayer.fmtTime(hoverProgress * $store.mayaPlayer.duration)"
+                      ></div>
+                    </div>
+                  </div>
+
+                  <div class="mp-time-compact">
+                    <span
+                      class="mp-time-current"
+                      x-text="$store.mayaPlayer.fmtTime($store.mayaPlayer.currentTime)"
+                    ></span>
+                    <span
+                      class="mp-time-remain"
+                      x-text="'−' + $store.mayaPlayer.fmtTime($store.mayaPlayer.remaining)"
+                    ></span>
+                  </div>
+                </div>
+
+                <div class="player-divider"></div>
+
+                <div class="mp-controls">
+                  <div class="player-btn-strip">
+                    <button
+                      type="button"
+                      class="player-btn-strip-item"
+                      :class="$store.mayaPlayer.shuffle ? 'is-active' : ''"
+                      title="Shuffle"
+                      @click="$store.mayaPlayer.toggleShuffle()"
+                    >
+                      <svg class="mp-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m18 14 4 4-4 4" />
+                        <path d="m18 2 4 4-4 4" />
+                        <path d="M2 18h1.397a5 5 0 0 0 4.096-2.13l4.013-7.014a5 5 0 0 1 4.096-2.13H18" />
+                        <path d="M2 6h1.972a5 5 0 0 1 4.6 3.046" />
+                        <path d="M22 18h-1.984a5 5 0 0 1-4.6-3.046" />
+                      </svg>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="player-btn-strip-item"
+                      title="Previous"
+                      @click="$store.mayaPlayer.prev()"
+                    >
+                      <svg class="mp-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <rect x="5" y="5" width="2.5" height="14" rx="0.5" />
+                        <polygon points="19 20 9 12 19 4" />
+                      </svg>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="player-btn-strip-item player-btn-strip-item--play player-btn-play"
+                      :class="$store.mayaPlayer.playing ? 'is-playing' : ''"
+                      title="Play / pause"
+                      @click="$store.mayaPlayer.toggle()"
+                    >
+                      <span class="mp-spinner" x-show="$store.mayaPlayer.buffering"></span>
+                      <svg x-show="!$store.mayaPlayer.buffering && !$store.mayaPlayer.playing" class="mp-icon mp-icon--play" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <polygon points="8 6 18 12 8 18" />
+                      </svg>
+                      <svg x-show="!$store.mayaPlayer.buffering && $store.mayaPlayer.playing" class="mp-icon mp-icon--play" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <rect x="7" y="5" width="3.5" height="14" rx="0.5" />
+                        <rect x="13.5" y="5" width="3.5" height="14" rx="0.5" />
+                      </svg>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="player-btn-strip-item"
+                      title="Next"
+                      @click="$store.mayaPlayer.next()"
+                    >
+                      <svg class="mp-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <polygon points="5 4 15 12 5 20" />
+                        <rect x="16.5" y="5" width="2.5" height="14" rx="0.5" />
+                      </svg>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="player-btn-strip-item"
+                      :class="$store.mayaPlayer.repeat ? 'is-active' : ''"
+                      title="Repeat"
+                      @click="$store.mayaPlayer.toggleRepeat()"
+                    >
+                      <svg class="mp-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m17 2 4 4-4 4" />
+                        <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
+                        <path d="m7 22-4-4 4-4" />
+                        <path d="M21 13v1a4 4 0 0 1-4 4H3" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div class="mp-controls-spacer"></div>
+
+                  <button
+                    type="button"
+                    class="mp-volume-btn player-btn-strip-solo"
+                    :class="trayOpen ? 'is-open is-active' : ''"
+                    :title="'Volume — ' + volume + '%'"
+                    @click="toggleTray()"
+                    :aria-expanded="trayOpen"
+                  >
+                    <svg
+                      class="mp-icon mp-icon--volume player-volume-speaker"
+                      :class="!isMuted && volume > 0 ? 'is-active' : ''"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      stroke-width="1.5"
+                      aria-hidden="true"
+                    >
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M11 5L6 9H2v6h4l5 4V5z"></path>
+                      <path x-show="isMuted || volume === 0" stroke-linecap="round" stroke-linejoin="round" d="M19 9l-6 6m0-6l6 6"></path>
+                      <path x-show="!isMuted && volume > 0" stroke-linecap="round" stroke-linejoin="round" d="M15.54 8.46a5 5 0 010 7.07"></path>
+                      <path x-show="!isMuted && volume > 50" stroke-linecap="round" stroke-linejoin="round" d="M19.07 4.93a10 10 0 010 14.14"></path>
+                    </svg>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="mp-cast-btn player-btn-strip-solo"
+                    :class="{
+                      'is-active': $store.mayaPlayer.casting,
+                      'is-busy': $store.mayaPlayer.castBusy,
+                    }"
+                    :disabled="$store.mayaPlayer.castBusy || !$store.mayaPlayer.active"
+                    :title="$store.mayaPlayer.casting
+                      ? ('Casting to Discord' + ($store.mayaPlayer.castChannel ? ' — ' + $store.mayaPlayer.castChannel : '') + ' (click to stop)')
+                      : 'Cast to Discord voice channel'"
+                    @click="$store.mayaPlayer.toggleCast()"
+                  >
+                    <svg class="mp-icon mp-icon--cast" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M2 16.1A5 9 0 0 1 9.9 4" />
+                      <path d="M13.3 15H17a2 2 0 0 0 2-2V9" />
+                      <path d="M16.6 6H22" />
+                      <path d="M19 2v4" />
+                    </svg>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="mp-queue-btn player-btn-strip-solo"
+                    :class="$store.mayaPlayer.queueOpen ? 'is-open player-queue-toggle is-active' : ''"
+                    :title="'Show queue (' + ($store.mayaPlayer.tracks?.length || 0) + ' tracks)'"
+                    @click="$store.mayaPlayer.toggleQueue()"
+                  >
+                    <svg class="mp-icon mp-icon--queue" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12M8.25 17.25h6" />
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h.008v.008H3.75V6.75Zm0 5.25h.008v.008H3.75v-.008Zm0 5.25h.008v.008H3.75v-.008Z" />
+                    </svg>
+                  </button>
+                </div>
+                  </div>
+
+                  <div class="mp-volume-rail" x-show="trayOpen" x-cloak @click.stop>
+                    <div class="player-volume-groove player-volume-groove--vertical player-volume-groove--full">
+                      <div class="player-volume-groove-track"></div>
+                      <div class="player-volume-fill" :style="{ height: volume + '%' }"></div>
+                      <input
+                        type="range"
+                        class="player-volume-mixer player-volume-mixer--vertical"
+                        min="0"
+                        max="100"
+                        step="1"
+                        :value="volume"
+                        @input="setVolumePercent($event.target.value)"
+                        aria-label="Volume"
+                      />
+                    </div>
+                    <div class="mp-volume-rail-foot">
+                      <button
+                        type="button"
+                        class="mp-volume-mute-btn"
+                        @click="toggleMute()"
+                        title="Mute / unmute"
+                      >
+                        <span x-text="isMuted ? 'Unmute' : 'Mute'"></span>
+                      </button>
+                      <span
+                        x-show="!isEditing"
+                        class="player-volume-pct"
+                        @click="startEditing()"
+                        title="Click to manually enter volume"
+                      ><span x-text="volume"></span>%</span>
+                      <input
+                        x-show="isEditing"
+                        x-ref="volInput"
+                        type="number"
+                        class="player-volume-pct-input"
+                        min="0"
+                        max="100"
+                        :value="volume"
+                        @input="setVolumePercent($event.target.value)"
+                        @blur="finishEditing()"
+                        @keydown.enter="finishEditing()"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <p class="mp-error" x-show="$store.mayaPlayer.error && !$store.mayaPlayer.playing" x-text="$store.mayaPlayer.error"></p>
+
+                <div class="mp-queue" x-show="$store.mayaPlayer.queueOpen" x-cloak>
+                  <div class="mp-queue-head">
+                    <span x-text="$store.mayaPlayer.queueLabel"></span>
+                    <button
+                      type="button"
+                      class="mp-queue-clear"
+                      title="Clear playlist"
+                      @click="$store.mayaPlayer.clear()"
+                    >Clear</button>
+                  </div>
+                  <template x-for="(tr, i) in ($store.mayaPlayer.tracks || [])" :key="i">
+                    <div
+                      class="mp-queue-row player-queue-row"
+                      :class="$store.mayaPlayer.current === i ? 'is-active' : ''"
+                      @click="$store.mayaPlayer.play(i)"
+                    >
+                      <div
+                        class="player-mini-waveform"
+                        x-init="$nextTick(() => $store.mayaPlayer.drawQueueMini($el, tr, i))"
+                      ></div>
+                      <div class="mp-queue-title-wrap">
+                        <span class="mp-queue-title" x-text="tr.title || ('Track ' + (i + 1))"></span>
+                        <span class="mp-queue-artist" x-text="tr.artist || ''"></span>
+                      </div>
+                      <span class="mp-queue-meta" x-show="tr.bpm" x-text="tr.bpm"></span>
+                      <span
+                        class="mp-queue-meta"
+                        x-text="tr.duration ? $store.mayaPlayer.fmtTime(tr.duration) : ''"
+                      ></span>
+                      <div class="mp-eq" x-show="$store.mayaPlayer.current === i && $store.mayaPlayer.playing">
+                        <span style="height: 60%"></span>
+                        <span style="height: 100%"></span>
+                        <span style="height: 40%"></span>
+                        <span style="height: 80%"></span>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </div>
             <div class="md-log md-scroll" :class="{ 'md-log--detailed': $store.mayaConversation.detailed }">
               <template x-for="(t, i) in $store.mayaConversation.turns" :key="t.messageId">
                 <div
@@ -138,15 +525,69 @@
                     x-text="t.detail"
                   ></p>
                   <div class="md-turn-artifacts" x-show="t.artifacts && t.artifacts.length">
-                    <template x-for="a in (t.artifacts || [])" :key="a.job_id || a.url">
+                    <template x-for="a in (t.artifacts || [])" :key="a.battle_id || a.job_id || a.url">
+                      <div class="md-turn-artifact">
                       <img
                         x-show="a.type === 'image' && a.url"
                         :src="a.url"
                         :alt="a.job_id || 'Generated image'"
                         loading="lazy"
                       />
+                      <div
+                        x-show="a.type === 'arena'"
+                        class="md-arena-card"
+                        :class="'md-arena-' + (a.state || 'voting')"
+                      >
+                        <div class="md-arena-head">
+                          <span class="md-arena-prompt" x-text="a.prompt || ''"></span>
+                          <span class="md-arena-pill" x-show="a.state === 'voting'">your vote</span>
+                          <span class="md-arena-pill md-arena-pill-done" x-show="a.state === 'resolved'">resolved</span>
+                        </div>
+                        <div class="md-arena-matchup">
+                          <div class="md-arena-slot" :class="$store.mayaConversation.arenaSlotClass(a, 'a')">
+                            <div class="md-arena-frame">
+                              <img x-show="a.image_a" :src="a.image_a" alt="Candidate A" loading="lazy" />
+                              <span class="md-arena-label">A</span>
+                            </div>
+                          </div>
+                          <div class="md-arena-slot" :class="$store.mayaConversation.arenaSlotClass(a, 'b')">
+                            <div class="md-arena-frame">
+                              <img x-show="a.image_b" :src="a.image_b" alt="Candidate B" loading="lazy" />
+                              <span class="md-arena-label">B</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="md-arena-reveals" x-show="a.state === 'resolved'">
+                          <div class="md-arena-reveal">
+                            <strong x-text="a.model_a || 'A'"></strong>
+                            <span class="md-turn-meta-part--dim" x-show="a.rating_a != null" x-text="' · ' + a.rating_a"></span>
+                          </div>
+                          <div class="md-arena-reveal">
+                            <strong x-text="a.model_b || 'B'"></strong>
+                            <span class="md-turn-meta-part--dim" x-show="a.rating_b != null" x-text="' · ' + a.rating_b"></span>
+                          </div>
+                        </div>
+                        <div class="md-arena-vote" x-show="a.state === 'voting'">
+                          <button type="button" class="md-arena-vote-btn" :disabled="a._voting" @click="$store.mayaConversation.voteArena(t, a, 'a')">A is better</button>
+                          <button type="button" class="md-arena-vote-btn md-arena-vote-tie" :disabled="a._voting" @click="$store.mayaConversation.voteArena(t, a, 'tie')">Tie</button>
+                          <button type="button" class="md-arena-vote-btn" :disabled="a._voting" @click="$store.mayaConversation.voteArena(t, a, 'b')">B is better</button>
+                        </div>
+                        <p class="md-arena-result" x-show="a.state === 'resolved'" x-text="$store.mayaConversation.arenaVoteLabel(a, a.choice) || (a.winner === 'tie' ? 'Tie.' : (a.winner ? 'Winner: ' + a.winner.toUpperCase() + '.' : 'Battle resolved.'))"></p>
+                        <p class="md-turn-audio-error" x-show="t.arenaVoteError" x-text="t.arenaVoteError"></p>
+                      </div>
+                      </div>
                     </template>
                   </div>
+                  <p
+                    class="md-turn-cmd-detail"
+                    x-show="t.directorScore != null"
+                    x-text="`Director score: ${Number(t.directorScore).toFixed(2)}`"
+                  ></p>
+                  <p
+                    class="md-turn-cmd-detail md-turn-meta-part--dim"
+                    x-show="t.directorVersions && t.directorVersions.length"
+                    x-text="(t.directorVersions || []).map(v => `v${(v.id || '').slice(0, 8)} ${v.score != null ? Number(v.score).toFixed(2) : '?'}`).join(' · ')"
+                  ></p>
                   <p class="md-turn-audio-error" x-show="t.audioError" x-text="t.audioError"></p>
                   <div
                     class="md-turn-footer"
@@ -517,7 +958,7 @@
                     <template x-for="(line, i) in toolLog" :key="i">
                       <li x-text="line"></li>
                     </template>
-                    <li class="md-empty" x-show="!toolLog.length">Tool calls appear during voice turns</li>
+                    <li class="md-empty" x-show="!toolLog.length">Tool calls appear during voice or chat turns</li>
                   </ul>
                 </div>
               </div>
@@ -647,6 +1088,7 @@
     <script defer src="/dashboard/vendor/eq-ui.js"></script>
     <script defer src="/dashboard/js/mayaVisionCapture.js"></script>
     <script defer src="/dashboard/js/mayaWebLLM.js"></script>
+    <script defer src="/dashboard/js/mayaWaveform.js"></script>
     <script defer src="/dashboard/js/mayaConversation.js"></script>
     <script defer src="/dashboard/js/mayaCmdPalette.js"></script>
     <script defer src="/dashboard/js/mayaShell.js"></script>
