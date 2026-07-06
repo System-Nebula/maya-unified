@@ -77,8 +77,22 @@
                 <ul class="md-mem-list">
                   <template x-for="(text, i) in userEntries" :key="'u'+i">
                     <li>
-                      <span x-text="text"></span>
-                      <button type="button" class="md-mem-del" @click="removeEntry('user', text)" title="Remove">×</button>
+                      <template x-if="curatedEditing && curatedEditing.target === 'user' && curatedEditing.oldText === text">
+                        <div class="md-mem-edit">
+                          <textarea class="mv-input md-mem-textarea" rows="2" x-model="curatedEditing.content"></textarea>
+                          <div class="md-mem-edit-actions">
+                            <button type="button" class="mv-btn mv-btn-primary" @click="saveCuratedEdit()">Save</button>
+                            <button type="button" class="mv-btn" @click="cancelCuratedEdit()">Cancel</button>
+                          </div>
+                        </div>
+                      </template>
+                      <template x-if="!(curatedEditing && curatedEditing.target === 'user' && curatedEditing.oldText === text)">
+                        <span x-text="text"></span>
+                        <div class="md-mem-actions">
+                          <button type="button" class="md-mem-edit-btn" @click="startCuratedEdit('user', text)" title="Edit">✎</button>
+                          <button type="button" class="md-mem-del" @click="removeEntry('user', text)" title="Remove">×</button>
+                        </div>
+                      </template>
                     </li>
                   </template>
                   <li class="md-empty" x-show="!userEntries.length">No entries yet</li>
@@ -97,8 +111,22 @@
                 <ul class="md-mem-list">
                   <template x-for="(text, i) in memEntries" :key="'m'+i">
                     <li>
-                      <span x-text="text"></span>
-                      <button type="button" class="md-mem-del" @click="removeEntry('memory', text)" title="Remove">×</button>
+                      <template x-if="curatedEditing && curatedEditing.target === 'memory' && curatedEditing.oldText === text">
+                        <div class="md-mem-edit">
+                          <textarea class="mv-input md-mem-textarea" rows="2" x-model="curatedEditing.content"></textarea>
+                          <div class="md-mem-edit-actions">
+                            <button type="button" class="mv-btn mv-btn-primary" @click="saveCuratedEdit()">Save</button>
+                            <button type="button" class="mv-btn" @click="cancelCuratedEdit()">Cancel</button>
+                          </div>
+                        </div>
+                      </template>
+                      <template x-if="!(curatedEditing && curatedEditing.target === 'memory' && curatedEditing.oldText === text)">
+                        <span x-text="text"></span>
+                        <div class="md-mem-actions">
+                          <button type="button" class="md-mem-edit-btn" @click="startCuratedEdit('memory', text)" title="Edit">✎</button>
+                          <button type="button" class="md-mem-del" @click="removeEntry('memory', text)" title="Remove">×</button>
+                        </div>
+                      </template>
                     </li>
                   </template>
                   <li class="md-empty" x-show="!memEntries.length">No entries yet</li>
@@ -109,12 +137,49 @@
                 </div>
               </div>
 
-              <div class="md-memory-card">
-                <div class="md-memory-card-head"><h3>Semantic memory</h3></div>
-                <p class="mv-desc" style="margin:0" x-text="cognitive.total ? (cognitive.total + ' stored · ' + (cognitive.model || 'embeddings') + (cognitive.loaded ? ' · loaded' : ' · lazy')) : 'No semantic memories yet'"></p>
+              <div class="md-memory-card md-memory-card-wide">
+                <div class="md-memory-card-head">
+                  <h3>Semantic memory</h3>
+                  <span class="mv-mono" style="font-size:11px;color:var(--mv-muted)" x-text="cogPageLabel"></span>
+                </div>
+                <p class="mv-desc" style="margin:0 0 8px" x-text="cognitive.total ? (cognitive.total + ' stored · ' + (cognitive.model || 'embeddings')) : 'No semantic memories yet'"></p>
+                <ul class="md-mem-list">
+                  <template x-for="entry in cogEntries" :key="'c'+entry.id">
+                    <li>
+                      <template x-if="cogEditingId === entry.id">
+                        <div class="md-mem-edit">
+                          <textarea class="mv-input md-mem-textarea" rows="2" x-model="cogEditContent"></textarea>
+                          <input class="mv-input" type="number" min="0" max="1" step="0.1" x-model="cogEditImportance" style="max-width:80px;margin-top:6px" title="Importance" />
+                          <div class="md-mem-edit-actions">
+                            <button type="button" class="mv-btn mv-btn-primary" @click="saveCogEdit()">Save</button>
+                            <button type="button" class="mv-btn" @click="cancelCogEdit()">Cancel</button>
+                          </div>
+                        </div>
+                      </template>
+                      <template x-if="cogEditingId !== entry.id">
+                        <span x-text="entry.content"></span>
+                        <span class="mv-mono" style="font-size:10px;color:var(--mv-muted);margin-left:6px" x-text="'· ' + Number(entry.importance).toFixed(2)"></span>
+                        <div class="md-mem-actions">
+                          <button type="button" class="md-mem-edit-btn" @click="startCogEdit(entry)" title="Edit">✎</button>
+                          <button type="button" class="md-mem-del" @click="deleteCog(entry.id)" title="Delete">×</button>
+                        </div>
+                      </template>
+                    </li>
+                  </template>
+                  <li class="md-empty" x-show="!cogEntries.length">No semantic memories yet</li>
+                </ul>
+                <div class="md-mem-add">
+                  <input class="mv-input" x-model="cogAdd" placeholder="Add a semantic memory…" @keydown.enter.prevent="addCognitive()" />
+                  <input class="mv-input" type="number" min="0" max="1" step="0.1" x-model="cogAddImportance" style="max-width:70px" title="Importance" />
+                  <button type="button" class="mv-btn mv-btn-primary" @click="addCognitive()">Add</button>
+                </div>
+                <div class="md-db-pager" x-show="cogTotal > cogLimit">
+                  <button type="button" class="mv-btn" @click="cogPrev()" :disabled="!cogHasPrev">Previous</button>
+                  <button type="button" class="mv-btn" @click="cogNext()" :disabled="!cogHasNext">Next</button>
+                </div>
               </div>
 
-              <div class="md-memory-card">
+              <div class="md-memory-card md-memory-card-wide">
                 <div class="md-memory-card-head"><h3>Skills</h3></div>
                 <ul class="md-mem-list md-skill-list">
                   <template x-for="s in skills" :key="s.name">
@@ -125,7 +190,28 @@
                   </template>
                   <li class="md-empty" x-show="!skills.length">No skills yet</li>
                 </ul>
-                <pre class="md-skill-detail" x-show="skillDetail" x-text="skillDetail"></pre>
+                <template x-if="skillDetailName">
+                  <div class="md-skill-editor">
+                    <p class="mv-mono" style="font-size:12px;margin:8px 0 4px" x-text="skillDetailName"></p>
+                    <template x-if="skillEditing">
+                      <textarea class="mv-input md-skill-textarea" rows="8" x-model="skillDetail"></textarea>
+                    </template>
+                    <template x-if="!skillEditing">
+                      <pre class="md-skill-detail" x-text="skillDetail"></pre>
+                    </template>
+                    <div class="md-mem-edit-actions">
+                      <button type="button" class="mv-btn" x-show="!skillEditing" @click="startSkillEdit()">Edit</button>
+                      <button type="button" class="mv-btn mv-btn-primary" x-show="skillEditing" @click="saveSkill()">Save</button>
+                      <button type="button" class="mv-btn" x-show="skillEditing" @click="cancelSkillEdit()">Cancel</button>
+                      <button type="button" class="mv-btn" @click="deleteSkill(skillDetailName)">Delete</button>
+                    </div>
+                  </div>
+                </template>
+                <div class="md-mem-add" style="margin-top:10px;flex-direction:column;align-items:stretch">
+                  <input class="mv-input" x-model="skillNewName" placeholder="New skill name (slug)…" />
+                  <textarea class="mv-input md-skill-textarea" rows="4" x-model="skillNewContent" placeholder="Markdown steps — first line is the short description…"></textarea>
+                  <button type="button" class="mv-btn mv-btn-primary" style="align-self:flex-start" @click="saveSkill()">Create skill</button>
+                </div>
               </div>
             </div>
 
@@ -200,6 +286,9 @@
                         <td x-text="row.session || row.scope"></td>
                         <td x-text="row.role || row.imp"></td>
                         <td class="md-db-content" x-text="row.content"></td>
+                        <td x-show="db === 'cognitive'">
+                          <button type="button" class="md-mem-del" @click="adminDeleteCog(row.id)" title="Delete">×</button>
+                        </td>
                       </tr>
                     </template>
                     <tr x-show="!dbRows.length">

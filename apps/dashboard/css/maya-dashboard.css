@@ -1165,6 +1165,34 @@
   border-radius: 6px;
 }
 .md-mem-list li span { flex: 1; word-break: break-word; }
+.md-mem-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.md-mem-edit-btn {
+  background: none;
+  border: none;
+  color: var(--mv-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+.md-mem-edit-btn:hover { color: var(--mv-accent); }
+.md-mem-edit { flex: 1; width: 100%; }
+.md-mem-textarea,
+.md-skill-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 48px;
+}
+.md-mem-edit-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.md-memory-card-wide { grid-column: 1 / -1; }
+.md-skill-editor { margin-top: 8px; }
 .md-mem-del {
   border: none;
   background: transparent;

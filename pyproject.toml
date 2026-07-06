@@ -17,8 +17,8 @@ dependencies = [
     "rapidfuzz>=3.6",
     "feedparser>=6.0",
     "langgraph>=0.2",
-    "torch==2.5.1",
-    "torchaudio==2.5.1",
+    "torch==2.7.0",
+    "torchaudio==2.7.0",
     "faster-qwen3-tts",
     "faster-whisper",
     "sounddevice",
@@ -81,13 +81,13 @@ exclude = [
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu124" }
-torchaudio = { index = "pytorch-cu124" }
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
 maya-contracts = { workspace = true }
 arena-core = { workspace = true }
 fal-client = { workspace = true }

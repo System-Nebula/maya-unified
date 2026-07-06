@@ -307,6 +307,36 @@ class Hub:
             return {"ok": False, "error": "agent not ready"}
         return self.agent.read_skill(name)
 
+    def memory_cognitive_list(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        scope: str = "",
+    ) -> dict:
+        if not self.ready or self.agent is None:
+            return {"ok": True, "total": 0, "entries": []}
+        return self.agent.list_cognitive_memories(limit, offset, scope)
+
+    def memory_cognitive_edit(self, data: dict) -> dict:
+        if not self.ready or self.agent is None:
+            return {"ok": False, "error": "agent not ready"}
+        return self.agent.edit_cognitive_memory(
+            action=str(data.get("action", "")),
+            memory_id=int(data.get("id") or data.get("memory_id") or 0),
+            content=str(data.get("content", "")),
+            importance=float(data.get("importance", 0.5)),
+            scope=str(data.get("scope", "global")),
+        )
+
+    def memory_skill_edit(self, data: dict) -> dict:
+        if not self.ready or self.agent is None:
+            return {"ok": False, "error": "agent not ready"}
+        return self.agent.edit_skill(
+            action=str(data.get("action", "")),
+            name=str(data.get("name", "")),
+            content=str(data.get("content", "")),
+        )
+
     def tools_status(self) -> dict:
         if not self.ready or self.agent is None:
             return {"ok": True, "enabled": False, "tools": [], "mcp": {"servers": {}}}

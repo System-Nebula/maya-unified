@@ -1,4 +1,4 @@
-/** Memory explorer — curated facts, DB browse, session search (qwen3 parity). */
+/** Memory explorer — curated facts, semantic DB, skills, session search. */
 document.addEventListener("alpine:init", () => {
   Alpine.data("mayaMemoryPanel", () => ({
     loading: true,
@@ -10,12 +10,25 @@ document.addEventListener("alpine:init", () => {
     memUsage: "",
     pending: [],
     cognitive: { total: 0, model: "", loaded: false },
+    cogEntries: [],
+    cogTotal: 0,
+    cogOffset: 0,
+    cogLimit: 20,
+    cogAdd: "",
+    cogAddImportance: 0.6,
+    cogEditingId: null,
+    cogEditContent: "",
+    cogEditImportance: 0.5,
     skills: [],
     skillDetail: "",
     skillDetailName: "",
+    skillEditing: false,
+    skillNewName: "",
+    skillNewContent: "",
     sessions: [],
     userAdd: "",
     memAdd: "",
+    curatedEditing: null,
     searchQuery: "",
     searchResults: [],
     db: "state",
@@ -35,6 +48,19 @@ document.addEventListener("alpine:init", () => {
 
     get agentReady() {
       return Alpine.store("mayaShell")?.ready || false;
+    },
+
+    get cogPageLabel() {
+      const end = Math.min(this.cogTotal, this.cogOffset + this.cogEntries.length);
+      return this.cogTotal ? `${this.cogOffset + 1}–${end} of ${this.cogTotal}` : "0 rows";
+    },
+
+    get cogHasPrev() {
+      return this.cogOffset > 0;
+    },
+
+    get cogHasNext() {
+      return this.cogOffset + this.cogLimit < this.cogTotal;
     },
 
     async init() {
@@ -74,7 +100,9 @@ document.addEventListener("alpine:init", () => {
     },
 
     onEvent(ev) {
-      if (ev.type === "memory_updated" || ev.type === "memory_pending") this.refresh();
+      if (ev.type === "memory_updated" || ev.type === "memory_pending" || ev.type === "skill_updated") {
+        this.refresh();
+      }
       if (ev.type === "ready" && ev.value) this.refresh();
     },
 
@@ -102,10 +130,43 @@ document.addEventListener("alpine:init", () => {
         this.skills = d.skills || [];
         this.sessions = d.sessions || [];
         if (!this.enabled) return;
+        await this.loadCognitive(false);
         if (this.isAdmin) await this.exploreDb(false);
       } catch (e) {
         this.error = String(e.message || e);
       }
+    },
+
+    startCuratedEdit(target, text) {
+      this.curatedEditing = { target, oldText: text, content: text };
+    },
+
+    cancelCuratedEdit() {
+      this.curatedEditing = null;
+    },
+
+    async saveCuratedEdit() {
+      const ed = this.curatedEditing;
+      if (!ed) return;
+      const content = (ed.content || "").trim();
+      if (!content) return;
+      const r = await this.api("/memory-edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "replace",
+          target: ed.target,
+          old_text: ed.oldText,
+          content,
+        }),
+      });
+      const d = await r.json();
+      if (!d.ok) {
+        this.error = d.error || "Could not save entry";
+        return;
+      }
+      this.curatedEditing = null;
+      await this.refresh();
     },
 
     async addEntry(target) {
@@ -158,14 +219,147 @@ document.addEventListener("alpine:init", () => {
       return `[${p.target || "memory"}/${p.action || "add"}] ${p.content || p.old_text || ""}`;
     },
 
+    async loadCognitive(resetOffset) {
+      if (resetOffset) this.cogOffset = 0;
+      try {
+        const params = new URLSearchParams({
+          limit: String(this.cogLimit),
+          offset: String(this.cogOffset),
+        });
+        const r = await this.api("/memory-cognitive?" + params);
+        const d = await r.json();
+        if (!d.ok && d.error) return;
+        this.cogEntries = d.entries || [];
+        this.cogTotal = d.total || 0;
+      } catch (_) {}
+    },
+
+    cogPrev() {
+      this.cogOffset = Math.max(0, this.cogOffset - this.cogLimit);
+      this.loadCognitive(false);
+    },
+
+    cogNext() {
+      if (this.cogOffset + this.cogLimit < this.cogTotal) {
+        this.cogOffset += this.cogLimit;
+        this.loadCognitive(false);
+      }
+    },
+
+    startCogEdit(entry) {
+      this.cogEditingId = entry.id;
+      this.cogEditContent = entry.content || "";
+      this.cogEditImportance = entry.importance ?? 0.5;
+    },
+
+    cancelCogEdit() {
+      this.cogEditingId = null;
+    },
+
+    async saveCogEdit() {
+      if (!this.cogEditingId) return;
+      const r = await this.api("/memory-cognitive-edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update",
+          id: this.cogEditingId,
+          content: this.cogEditContent.trim(),
+          importance: Number(this.cogEditImportance),
+        }),
+      });
+      const d = await r.json();
+      if (!d.ok) {
+        this.error = d.error || "Could not update semantic memory";
+        return;
+      }
+      this.cogEditingId = null;
+      await this.refresh();
+    },
+
+    async deleteCog(id) {
+      await this.api("/memory-cognitive-edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", id }),
+      });
+      await this.refresh();
+    },
+
+    async addCognitive() {
+      const content = this.cogAdd.trim();
+      if (!content) return;
+      const r = await this.api("/memory-cognitive-edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "add",
+          content,
+          importance: Number(this.cogAddImportance),
+        }),
+      });
+      const d = await r.json();
+      if (!d.ok) {
+        this.error = d.error || "Could not add semantic memory";
+        return;
+      }
+      this.cogAdd = "";
+      await this.refresh();
+    },
+
     async loadSkill(name) {
       this.skillDetailName = name;
       this.skillDetail = "";
+      this.skillEditing = false;
       try {
         const r = await this.api("/memory-skill?name=" + encodeURIComponent(name));
         const d = await r.json();
         if (d.ok) this.skillDetail = d.content || "";
       } catch (_) {}
+    },
+
+    startSkillEdit() {
+      this.skillEditing = true;
+    },
+
+    cancelSkillEdit() {
+      this.skillEditing = false;
+    },
+
+    async saveSkill() {
+      const creating = !!this.skillNewName.trim();
+      const name = (creating ? this.skillNewName : this.skillDetailName).trim();
+      const content = (creating ? this.skillNewContent : this.skillDetail).trim();
+      if (!name || !content) return;
+      const r = await this.api("/memory-skill-edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "write", name, content }),
+      });
+      const d = await r.json();
+      if (!d.ok) {
+        this.error = d.error || "Could not save skill";
+        return;
+      }
+      this.skillEditing = false;
+      this.skillNewName = "";
+      this.skillNewContent = "";
+      await this.refresh();
+      if (name) await this.loadSkill(name);
+    },
+
+    async deleteSkill(name) {
+      const n = (name || this.skillDetailName).trim();
+      if (!n) return;
+      await this.api("/memory-skill-edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", name: n }),
+      });
+      this.skillDetail = "";
+      this.skillDetailName = "";
+      this.skillEditing = false;
+      await this.refresh();
     },
 
     async runSearch() {
@@ -217,13 +411,15 @@ document.addEventListener("alpine:init", () => {
             content: m.content,
           }));
         } else {
-          this.dbColumns = ["id", "time", "scope", "imp", "content"];
+          this.dbColumns = ["id", "time", "scope", "imp", "content", "actions"];
           this.dbRows = (data.entries || []).map((e) => ({
             id: e.id,
             time: this.formatTs(e.ts),
             scope: e.scope,
             imp: Number(e.importance).toFixed(2),
             content: e.content + (e.superseded ? " (superseded)" : ""),
+            rawContent: e.content,
+            importance: e.importance,
           }));
         }
         this.dbTotal = data.total || 0;
@@ -232,6 +428,11 @@ document.addEventListener("alpine:init", () => {
           ? `${this.dbOffset + 1}–${end} of ${this.dbTotal}`
           : "0 rows";
       } catch (_) {}
+    },
+
+    async adminDeleteCog(id) {
+      await this.deleteCog(id);
+      await this.exploreDb(false);
     },
 
     dbPrev() {

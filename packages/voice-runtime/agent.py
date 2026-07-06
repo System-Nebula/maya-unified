@@ -3675,6 +3675,68 @@ class VoiceAgent:
         self._session_prefix = self.memory.system_suffix()
         return {"ok": bool(res.get("success")), **res}
 
+    def rebind_memory(self, data_dir: str) -> None:
+        if self.memory is None:
+            return
+        self.memory.rebind(data_dir)
+        self._session_prefix = self.memory.system_suffix()
+
+    def list_cognitive_memories(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        scope: str = "",
+    ) -> dict:
+        if self.memory is None or self.memory.cognitive is None:
+            return {"ok": True, "total": 0, "entries": []}
+        data = self.memory.cognitive.list_entries(limit, offset, scope or None)
+        return {"ok": True, **data}
+
+    def edit_cognitive_memory(
+        self,
+        action: str,
+        memory_id: int = 0,
+        content: str = "",
+        importance: float = 0.5,
+        scope: str = "global",
+    ) -> dict:
+        if self.memory is None or self.memory.cognitive is None:
+            return {"ok": False, "error": "cognitive memory disabled"}
+        action = (action or "").lower()
+        if action == "delete":
+            if not memory_id:
+                return {"ok": False, "error": "id required"}
+            res = self.memory.cognitive.forget("", memory_id=int(memory_id))
+        elif action == "update":
+            if not memory_id:
+                return {"ok": False, "error": "id required"}
+            res = self.memory.cognitive.update(
+                int(memory_id),
+                content=content,
+                importance=importance,
+            )
+        elif action == "add":
+            res = self.memory.cognitive.store(content, importance=importance, scope=scope or "global")
+        else:
+            return {"ok": False, "error": "action must be add, update, or delete"}
+        if res.get("success"):
+            self._emit(type="memory_updated", target="cognitive")
+        return {"ok": bool(res.get("success")), **res}
+
+    def edit_skill(self, action: str, name: str, content: str = "") -> dict:
+        if self.memory is None:
+            return {"ok": False, "error": "memory disabled"}
+        action = (action or "").lower()
+        if action == "delete":
+            res = self.memory.skills.delete(name)
+        elif action == "write":
+            res = self.memory.skills.write(name, content)
+            if res.get("success"):
+                self._session_prefix = self.memory.system_suffix()
+        else:
+            return {"ok": False, "error": "action must be write or delete"}
+        return {"ok": bool(res.get("success")), **res}
+
     def set_write_approval(self, enabled: bool) -> None:
         """Toggle whether memory writes are staged for approval vs applied freely."""
         CONFIG.memory.write_approval = bool(enabled)

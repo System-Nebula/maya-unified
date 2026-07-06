@@ -1,6 +1,10 @@
 /** Alpine panel — in-browser VRM avatar with TTS lip-sync + pop-out window. */
 import { createVrmBus } from "/dashboard/js/mayaVrmBus.js";
 import { DEFAULT_VRM_LOCAL } from "/dashboard/js/mayaVrmEngine.js";
+import {
+  applyVrmBackgroundAll,
+  DEFAULT_VRM_BACKGROUND,
+} from "/dashboard/js/mayaVrmBackground.js";
 
 const POPOUT_NAME = "maya-vrm-popout";
 const POPOUT_FEATURES = "popup,width=420,height=560,left=120,top=80,resizable=yes";
@@ -57,6 +61,8 @@ document.addEventListener("alpine:init", () => {
     idleVariants: [],
     idleVariantMinS: 10,
     idleVariantMaxS: 28,
+    backgroundPreset: DEFAULT_VRM_BACKGROUND,
+    backgroundImage: "",
     loading: false,
     loadError: "",
     speaking: false,
@@ -149,6 +155,13 @@ document.addEventListener("alpine:init", () => {
       return document.querySelector("[data-maya-vrm-canvas='sidebar']");
     },
 
+    _applyBackground() {
+      applyVrmBackgroundAll(this.$el, {
+        preset: this.backgroundPreset,
+        image: this.backgroundImage,
+      });
+    },
+
     _persistImmersive() {
       try {
         sessionStorage.setItem(_immersiveStorageKey(), this.immersive ? "1" : "0");
@@ -180,6 +193,7 @@ document.addEventListener("alpine:init", () => {
       await this.$nextTick();
       await this.loadSettings();
       this._restoreImmersive();
+      this._applyBackground();
       this._syncToStore();
       await this.$nextTick();
       this._unsub = window.mayaAgentEvents?.subscribe((ev) => this.onAgentEvent(ev));
@@ -236,7 +250,10 @@ document.addEventListener("alpine:init", () => {
         this.idleVariants = Array.isArray(vrm.idle_variants) ? [...vrm.idle_variants] : [];
         this.idleVariantMinS = Number(vrm.idle_variant_min_s ?? 10);
         this.idleVariantMaxS = Number(vrm.idle_variant_max_s ?? 28);
+        this.backgroundPreset = vrm.background_preset || DEFAULT_VRM_BACKGROUND;
+        this.backgroundImage = vrm.background_image || "";
         this.modelLabel = this.model ? this.model.replace(/^.*[/\\]/, "") : DEFAULT_VRM_LOCAL;
+        this._applyBackground();
         this._syncToStore();
       } catch (_) {}
     },
@@ -317,6 +334,7 @@ document.addEventListener("alpine:init", () => {
       this._persistImmersive();
       this._syncToStore();
       await this.$nextTick();
+      this._applyBackground();
       if (this.enabled && !this.poppedOut) {
         await this.bootViewer();
       }
@@ -474,7 +492,10 @@ document.addEventListener("alpine:init", () => {
         }
         if (v.idle_variant_min_s != null) this.idleVariantMinS = Number(v.idle_variant_min_s);
         if (v.idle_variant_max_s != null) this.idleVariantMaxS = Number(v.idle_variant_max_s);
+        if (v.background_preset != null) this.backgroundPreset = v.background_preset || DEFAULT_VRM_BACKGROUND;
+        if (v.background_image != null) this.backgroundImage = v.background_image || "";
         this.modelLabel = (this.model || DEFAULT_VRM_LOCAL).replace(/^.*[/\\]/, "");
+        this._applyBackground();
         if (!this.poppedOut) {
           this._engine?.setMouthGain(this.mouthGain);
           this._engine?.setMouthSmoothing(this.mouthSmoothing);

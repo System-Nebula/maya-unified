@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from services.llm.api_keys import resolve_reasoning_api_key
 from services.settings.catalog import fetch_openai_models
 from services.settings.store import apply_to_config
 
@@ -126,6 +127,7 @@ def get_cached_llm_health(
     reasoning: dict[str, Any],
     *,
     run_probe: bool | None = None,
+    operator_id: str | None = None,
 ) -> dict[str, Any]:
     """Health for status polls — models-only when possible, cached probe otherwise."""
     key = _health_cache_key(reasoning)
@@ -137,7 +139,7 @@ def get_cached_llm_health(
     if run_probe is None:
         run_probe = not _supports_models_list(reasoning)
 
-    result = check_llm_health(reasoning, run_probe=run_probe)
+    result = check_llm_health(reasoning, run_probe=run_probe, operator_id=operator_id)
     if llm_ready_from_health(result):
         _health_cache[key] = (now, dict(result))
     return result
@@ -147,7 +149,12 @@ def invalidate_llm_health_cache() -> None:
     _health_cache.clear()
 
 
-def check_llm_health(reasoning: dict[str, Any], *, run_probe: bool = True) -> dict[str, Any]:
+def check_llm_health(
+    reasoning: dict[str, Any],
+    *,
+    run_probe: bool = True,
+    operator_id: str | None = None,
+) -> dict[str, Any]:
     """Validate the reasoning LLM profile via /models listing and a tiny completion."""
     provider = str(reasoning.get("provider", "lm_studio")).lower()
     model = _resolved_model(reasoning)
@@ -180,7 +187,7 @@ def check_llm_health(reasoning: dict[str, Any], *, run_probe: bool = True) -> di
             _span_event(sp, "models_check.started")
             models = fetch_openai_models(
                 str(reasoning.get("base_url", "")),
-                str(reasoning.get("api_key", "")),
+                resolve_reasoning_api_key(reasoning, operator_id=operator_id),
                 timeout=3.0,
             )
             duration_ms = int((time.monotonic() - started) * 1000)
@@ -224,7 +231,7 @@ def check_llm_health(reasoning: dict[str, Any], *, run_probe: bool = True) -> di
             )
         return result
 
-    apply_to_config({"reasoning": reasoning})
+    apply_to_config({"reasoning": reasoning}, operator_id=operator_id)
     from services.llm.provider import create_llm_client
 
     probe_status = "error"
@@ -246,7 +253,7 @@ def check_llm_health(reasoning: dict[str, Any], *, run_probe: bool = True) -> di
             },
         ) as sp:
             _span_event(sp, "test.started")
-            client = create_llm_client()
+            client = create_llm_client(operator_id=operator_id)
             resp = client.complete(
                 [{"role": "user", "content": "Hi"}],
                 max_tokens=PROBE_MAX_TOKENS,

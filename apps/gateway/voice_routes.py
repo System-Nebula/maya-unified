@@ -13,7 +13,7 @@ import time as _time
 from fastapi import Body, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from services.paths import VOICE_RUNTIME, animations_dir, vrm_dir, voices_dir
+from services.paths import VOICE_RUNTIME, animations_dir, vrm_backgrounds_dir, vrm_dir, voices_dir
 from services.auth.scope import scoped_operator_id
 from services.voice.hub import hub
 
@@ -26,8 +26,11 @@ from server import (  # noqa: E402
 
 VOICES_DIR = str(voices_dir()) if VOICE_RUNTIME.is_dir() else "voices"
 VRM_DIR = str(vrm_dir())
+VRM_BG_DIR = str(vrm_backgrounds_dir())
 ANIM_DIR = str(animations_dir())
 VRM_EXTS = {".vrm"}
+VRM_BG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_VRM_BG_BYTES = 15 * 1024 * 1024
 ANIM_EXTS = {".fbx", ".vrma"}
 DEFAULT_VRM = "Yuki.vrm"
 MAX_VOICE_UPLOAD_BYTES = 30 * 1024 * 1024
@@ -93,6 +96,39 @@ def _list_vrm_models() -> list[str]:
     return sorted(
         f for f in os.listdir(VRM_DIR) if f.lower().endswith(".vrm") and os.path.isfile(os.path.join(VRM_DIR, f))
     )
+
+
+def _safe_vrm_bg_path(name: str) -> str | None:
+    base = os.path.basename((name or "").strip())
+    ext = os.path.splitext(base)[1].lower()
+    if ext not in VRM_BG_EXTS:
+        return None
+    path = os.path.join(VRM_BG_DIR, base)
+    if not os.path.isfile(path):
+        return None
+    real = os.path.realpath(path)
+    root = os.path.realpath(VRM_BG_DIR)
+    if not real.startswith(root + os.sep) and real != root:
+        return None
+    return real
+
+
+def _list_vrm_backgrounds() -> list[str]:
+    os.makedirs(VRM_BG_DIR, exist_ok=True)
+    return sorted(
+        f
+        for f in os.listdir(VRM_BG_DIR)
+        if os.path.splitext(f)[1].lower() in VRM_BG_EXTS and os.path.isfile(os.path.join(VRM_BG_DIR, f))
+    )
+
+
+def _vrm_bg_media_type(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    if ext in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if ext == ".webp":
+        return "image/webp"
+    return "image/png"
 
 
 def _safe_anim_path(name: str) -> str | None:
@@ -560,6 +596,32 @@ def register_agent_routes(app) -> None:
             hub.apply_operator_context(oid)
         return hub.read_skill(name)
 
+    @app.get(f"{prefix}/memory-cognitive")
+    def memory_cognitive(
+        request: Request,
+        limit: int = 50,
+        offset: int = 0,
+        scope: str = "",
+    ) -> dict:
+        oid = _operator_id(request)
+        if oid:
+            hub.apply_operator_context(oid)
+        return hub.memory_cognitive_list(limit, offset, scope)
+
+    @app.post(f"{prefix}/memory-cognitive-edit")
+    def memory_cognitive_edit(request: Request, data: dict = Body(...)) -> dict:
+        oid = _operator_id(request)
+        if oid:
+            hub.apply_operator_context(oid)
+        return hub.memory_cognitive_edit(data or {})
+
+    @app.post(f"{prefix}/memory-skill-edit")
+    def memory_skill_edit(request: Request, data: dict = Body(...)) -> dict:
+        oid = _operator_id(request)
+        if oid:
+            hub.apply_operator_context(oid)
+        return hub.memory_skill_edit(data or {})
+
     @app.get(f"{prefix}/tools-status")
     def tools_status() -> dict:
         return hub.tools_status()
@@ -681,6 +743,50 @@ def register_agent_routes(app) -> None:
             fh.write(data)
         fname = os.path.basename(dest)
         return {"ok": True, "file": fname, "models": _list_vrm_models()}
+
+    @app.get(f"{prefix}/vrm/backgrounds")
+    def list_vrm_backgrounds() -> dict:
+        return {"ok": True, "backgrounds": _list_vrm_backgrounds()}
+
+    @app.get(f"{prefix}/vrm/background/file")
+    def vrm_background_file(name: str = "") -> FileResponse:
+        path = _safe_vrm_bg_path(name)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Background image not found")
+        return FileResponse(
+            path,
+            media_type=_vrm_bg_media_type(path),
+            filename=os.path.basename(path),
+        )
+
+    @app.post(f"{prefix}/upload-vrm-background")
+    async def upload_vrm_background(
+        file: UploadFile = File(...),
+        name: str = Form(""),
+    ) -> dict:
+        os.makedirs(VRM_BG_DIR, exist_ok=True)
+        ext = os.path.splitext(file.filename or "")[1].lower()
+        if ext not in VRM_BG_EXTS:
+            return {
+                "ok": False,
+                "error": f"Unsupported file type: {ext or '(none)'} — use .jpg, .png, or .webp",
+            }
+        raw_name = (name or "").strip() or os.path.splitext(os.path.basename(file.filename or "background"))[0]
+        stem = re.sub(r"[^\w.\-]+", "_", raw_name).strip("._") or "background"
+        dest_name = f"{stem}{ext}"
+        dest = os.path.join(VRM_BG_DIR, dest_name)
+        if os.path.isfile(dest):
+            dest_name = f"{stem}_{int(_time.time())}{ext}"
+            dest = os.path.join(VRM_BG_DIR, dest_name)
+        data = await file.read()
+        if not data:
+            return {"ok": False, "error": "empty file"}
+        if len(data) > MAX_VRM_BG_BYTES:
+            return {"ok": False, "error": "File too large (max 15 MB)"}
+        with open(dest, "wb") as fh:
+            fh.write(data)
+        fname = os.path.basename(dest)
+        return {"ok": True, "file": fname, "backgrounds": _list_vrm_backgrounds()}
 
     @app.get(f"{prefix}/animations")
     def list_animations() -> dict:

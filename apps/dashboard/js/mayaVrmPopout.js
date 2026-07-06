@@ -4,10 +4,15 @@
  */
 import { MayaVrmEngine, resolveVrmUrl } from "/dashboard/js/mayaVrmEngine.js";
 import { createVrmBus } from "/dashboard/js/mayaVrmBus.js";
+import {
+  applyVrmBackground,
+  DEFAULT_VRM_BACKGROUND,
+} from "/dashboard/js/mayaVrmBackground.js";
 
 const POPOUT_KEY = "maya.vrm.popout";
 
 const canvas = document.getElementById("vp-canvas");
+const stageEl = document.getElementById("vp-stage");
 const loadingEl = document.getElementById("vp-loading");
 const errorEl = document.getElementById("vp-error");
 const dragBar = document.getElementById("vp-drag");
@@ -27,9 +32,17 @@ async function loadSettings() {
   return data.settings?.vrm || {};
 }
 
+function applyBackground(vrm) {
+  applyVrmBackground(stageEl, {
+    preset: vrm.background_preset || DEFAULT_VRM_BACKGROUND,
+    image: vrm.background_image || "",
+  });
+}
+
 async function boot() {
   try {
     const vrm = await loadSettings();
+    applyBackground(vrm);
     engine = new MayaVrmEngine(canvas, {
       mouthGain: Number(vrm.mouth_gain ?? 6),
       mouthSmoothing: Number(vrm.mouth_smoothing ?? 0.5),
@@ -72,6 +85,7 @@ bus.on((msg) => {
   }
   if (msg.type === "settings" && msg.vrm) {
     const v = msg.vrm;
+    applyBackground(v);
     if (v.mouth_gain != null) engine.setMouthGain(v.mouth_gain);
     if (v.mouth_smoothing != null) engine.setMouthSmoothing(v.mouth_smoothing);
     if (v.lip_sync_mode != null) engine.setLipSyncMode(v.lip_sync_mode);

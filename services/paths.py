@@ -24,6 +24,13 @@ def vrm_dir() -> Path:
     return path
 
 
+def vrm_backgrounds_dir() -> Path:
+    """Directory for custom VRM scene background images."""
+    path = vrm_dir() / "backgrounds"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def animations_dir() -> Path:
     """Directory for FBX / VRMA idle and gesture clips."""
     path = DATA_DIR / "animations"

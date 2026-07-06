@@ -68,6 +68,19 @@ class SkillStore:
             self._emit(type="skill_updated", name=_slug(name))
         return {"success": True, "name": _slug(name)}
 
+    def delete(self, name: str) -> dict:
+        path = self._path(name)
+        if not os.path.isfile(path):
+            return {"success": False, "error": "skill not found"}
+        try:
+            os.unlink(path)
+        except OSError as exc:
+            return {"success": False, "error": str(exc)}
+        slug = _slug(name)
+        if self._emit is not None:
+            self._emit(type="skill_updated", name=slug, action="delete")
+        return {"success": True, "name": slug}
+
     def render_index(self) -> str:
         skills = self.list()
         if not skills:

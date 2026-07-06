@@ -30,6 +30,7 @@ document.addEventListener("alpine:init", () => {
     imagineHealthTesting: false,
     voiceUploadName: "",
     vrmUploadName: "",
+    vrmBgUploadName: "",
     voiceUploadBusy: false,
     llmModelsLoading: false,
     llmModelsHint: "",
@@ -54,6 +55,7 @@ document.addEventListener("alpine:init", () => {
       eq_presets: [],
       voices: [],
       vrm_models: [],
+      vrm_backgrounds: [],
       animations: [],
       barge_modes: ["smart", "instant", "off"],
       delivery_modes: ["full", "hybrid", "off"],
@@ -113,6 +115,7 @@ document.addEventListener("alpine:init", () => {
         mouth_gain: 6, mouth_smoothing: 0.5, look_at_camera: true, camera_distance: 1.8,
         idle_enabled: true, idle_animation: "Idle.fbx", idle_variants: [],
         idle_variant_min_s: 10, idle_variant_max_s: 28,
+        background_preset: "default", background_image: "",
       },
       imagine: { enabled: false, comfyui_url: "http://127.0.0.1:3030", default_model: "zit", remark_enabled: true, remark_vision_model: "openrouter/minimax/minimax-m3", director_enabled: true, director_max_iterations: 3, director_multi_critic: true, critique_vision_model: "" },
       discord: {
@@ -324,9 +327,33 @@ document.addEventListener("alpine:init", () => {
       }
     },
 
+
+    isLitellmSdk() {
+      const r = this.s.reasoning || {};
+      if (r.provider !== "litellm") return false;
+      return (r.litellm?.mode || "sdk") !== "proxy";
+    },
+
+    usesLmStudioCatalog() {
+      const r = this.s.reasoning || {};
+      if (r.provider === "webllm") return false;
+      if (r.provider === "lm_studio") return true;
+      return r.provider === "litellm" && (r.litellm?.mode || "sdk") === "proxy";
+    },
+
+    normalizeReasoning() {
+      const r = this.s.reasoning;
+      if (!r) return;
+      if (!r.litellm) r.litellm = { mode: "sdk", model: "gemini/gemini-2.0-flash" };
+      if (r.provider === "litellm") {
+        const mode = r.litellm.mode || "sdk";
+        const lm = (r.litellm.model || "").trim();
+        if (mode === "sdk" && lm) r.model = lm;
+      }
+    },
+
     _llmCatalogUrl() {
-      const provider = this.s.reasoning?.provider || "lm_studio";
-      if (provider === "webllm") return "";
+      if (!this.usesLmStudioCatalog()) return "";
       const base = (this.s.reasoning?.base_url || "").trim();
       if (!base) return "";
       const params = new URLSearchParams({ llm: "1", base_url: base });
@@ -336,9 +363,14 @@ document.addEventListener("alpine:init", () => {
     },
 
     async refreshLlmModels() {
-      const provider = this.s.reasoning?.provider || "lm_studio";
-      if (provider === "webllm") {
+      if (this.s.reasoning?.provider === "webllm") {
         this.llmModelsHint = "";
+        return;
+      }
+      if (this.isLitellmSdk()) {
+        const lm = this.s.reasoning?.litellm?.model || "";
+        this.llmModelsHint = lm ? `LiteLLM SDK — ${lm}` : "Pick a LiteLLM model";
+        this.llmModelsLoading = false;
         return;
       }
       const url = this._llmCatalogUrl();
@@ -488,6 +520,7 @@ document.addEventListener("alpine:init", () => {
           const data = await settingsR.json();
           this.s = this.deepMerge(this.s, data.settings || {});
           this.normalizeWebLLM();
+          this.normalizeReasoning();
           this.normalizeDiscordGuildId();
           this.ensureVoiceModelOptions();
         }
@@ -534,6 +567,7 @@ document.addEventListener("alpine:init", () => {
           this.ensureVoiceModelOptions();
         }
         await this.loadVrmModels();
+        await this.loadVrmBackgrounds();
         await this.loadAnimations();
         if (this.s.reasoning?.provider !== "webllm") {
           await this.refreshLlmModels();
@@ -570,9 +604,24 @@ document.addEventListener("alpine:init", () => {
       }
     },
 
+    onLitellmChange() {
+      this.s.reasoning.provider = "litellm";
+      this.normalizeReasoning();
+      this.save();
+      if (this.isLitellmSdk()) {
+        this.llmModelsHint = this.s.reasoning?.litellm?.model
+          ? `LiteLLM SDK — ${this.s.reasoning.litellm.model}`
+          : "Pick a LiteLLM model";
+      } else {
+        this.refreshLlmModels();
+      }
+      this.testConnection();
+    },
+
     async onProviderChange() {
       const leavingWebLLM = this.s.reasoning?.provider !== "webllm";
       this.normalizeWebLLM();
+      if (this.s.reasoning?.provider === "litellm") this.normalizeReasoning();
       if (leavingWebLLM && window.mayaWebLLMBridge?.unload) {
         await window.mayaWebLLMBridge.unload();
       }
@@ -743,6 +792,7 @@ document.addEventListener("alpine:init", () => {
       this._saveTimer = null;
       this.saved = false;
       this.error = "";
+      this.normalizeReasoning();
       this.normalizeDiscordGuildId();
       try {
         const r = await fetch("/api/voice/settings", {
@@ -751,6 +801,17 @@ document.addEventListener("alpine:init", () => {
           body: JSON.stringify({ settings: this.s }),
         });
         if (!r.ok) throw new Error("Save failed");
+        const data = await r.json();
+        if (data.settings) {
+          const typedKey = (this.s.reasoning?.api_key || "").trim();
+          const hadTypedKey = typedKey && typedKey !== "lm-studio" && typedKey !== "local-model";
+          this.s = this.deepMerge(this.s, data.settings);
+          this.normalizeReasoning();
+          if (hadTypedKey && this.s.reasoning) {
+            this.s.reasoning.api_key_configured = true;
+            this.s.reasoning.api_key = "lm-studio";
+          }
+        }
         this.saved = true;
         setTimeout(() => { this.saved = false; }, 2500);
       } catch (e) {
@@ -854,6 +915,15 @@ document.addEventListener("alpine:init", () => {
       } catch (_) {}
     },
 
+    async loadVrmBackgrounds() {
+      try {
+        const r = await fetch("/api/voice/agent/vrm/backgrounds");
+        if (!r.ok) return;
+        const data = await r.json();
+        this.catalog.vrm_backgrounds = data.backgrounds || [];
+      } catch (_) {}
+    },
+
     async loadAnimations() {
       try {
         const r = await fetch("/api/voice/agent/animations");
@@ -890,6 +960,38 @@ document.addEventListener("alpine:init", () => {
           await this._saveNow();
         }
         this.vrmUploadName = "";
+      } catch (e) {
+        this.error = String(e.message || e);
+      }
+      ev.target.value = "";
+    },
+
+    async uploadVrmBackground(ev) {
+      const file = ev.target?.files?.[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append("file", file);
+      const label = (this.vrmBgUploadName || "").trim();
+      if (label) fd.append("name", label);
+      this.error = "";
+      try {
+        const r = await fetch("/api/voice/agent/upload-vrm-background", {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+        });
+        const data = await r.json();
+        if (!data.ok) {
+          this.error = data.error || "Background upload failed";
+          return;
+        }
+        this.catalog.vrm_backgrounds = data.backgrounds || this.catalog.vrm_backgrounds;
+        if (data.file) {
+          this.s.vrm.background_preset = "custom";
+          this.s.vrm.background_image = data.file;
+          await this._saveNow();
+        }
+        this.vrmBgUploadName = "";
       } catch (e) {
         this.error = String(e.message || e);
       }

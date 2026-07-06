@@ -10,13 +10,29 @@ from typing import Iterator
 from config import CONFIG, LLMConfig
 from llm import AUTO_INSTRUCT_GUIDE, LLMResponse, ToolCall, ToolsUnsupported, sanitize_llm_output
 
+from services.llm.api_keys import is_placeholder_api_key, resolve_reasoning_api_key
+
 _CONTROL_TOKEN_RE = re.compile(r"\s*/no[-_]think\b", re.I)
 _PLACEHOLDER_API_KEYS = frozenset({"", "lm-studio", "vllm-local", "local-model"})
 
 
 def _effective_api_key(api_key: str | None) -> str | None:
     key = (api_key or "").strip()
-    if key.lower() in _PLACEHOLDER_API_KEYS:
+    if is_placeholder_api_key(key):
+        try:
+            from services.settings.store import load_effective_settings
+            from services.voice.hub import hub
+
+            oid = getattr(hub, "_active_operator_id", None)
+            settings = load_effective_settings(str(oid) if oid else None)
+            resolved = resolve_reasoning_api_key(
+                settings.get("reasoning", {}),
+                operator_id=str(oid) if oid else None,
+            )
+            if not is_placeholder_api_key(resolved):
+                return resolved
+        except Exception:  # noqa: BLE001
+            pass
         return None
     return key or None
 
@@ -51,8 +67,25 @@ class LiteLLMAdapter:
           system = f"{system} {self.cfg.no_think_token}".strip()
       return system
 
+  def _effective_model(self) -> str:
+      """Resolve at call time so operator settings apply without full agent reload."""
+      try:
+          from services.llm.provider import _reasoning_settings
+          from services.voice.hub import hub
+
+          oid = getattr(hub, "_active_operator_id", None)
+          reasoning = _reasoning_settings(operator_id=str(oid) if oid else None)
+          if str(reasoning.get("provider", "")).lower() == "litellm":
+              litellm_cfg = reasoning.get("litellm") or {}
+              model = str(litellm_cfg.get("model") or reasoning.get("model") or "").strip()
+              if model:
+                  return model
+      except Exception:  # noqa: BLE001
+          pass
+      return self.litellm_model or self.cfg.model
+
   def _completion_kwargs(self, messages: list[dict], *, stream: bool, max_tokens: int | None, model: str | None):
-      resolved_model = model or self.litellm_model
+      resolved_model = model or self._effective_model()
       kwargs = dict(
           model=resolved_model,
           messages=messages,

@@ -346,6 +346,10 @@ class VoiceHub(Hub):
     # ----- Operator / room context ------------------------------------------
 
     def apply_operator_context(self, operator_id: str) -> None:
+        from services.operator_voice.memory_migration import (
+            copy_global_memory_to_operator,
+            seed_operator_skills_from_examples,
+        )
         from services.operator_voice.paths import (
             load_operator_personalities_file,
             seed_operator_dirs,
@@ -354,6 +358,8 @@ class VoiceHub(Hub):
         oid = str(operator_id)
         operator_changed = oid != (self._active_operator_id or "")
         seed_operator_dirs(operator_id)
+        copy_global_memory_to_operator(oid)
+        seed_operator_skills_from_examples(oid)
         data_dir = op_data_dir(operator_id)
         os.environ["VA_DATA_DIR"] = str(data_dir)
         settings = load_effective_settings(operator_id)
@@ -362,6 +368,9 @@ class VoiceHub(Hub):
             from config import CONFIG
 
             self.agent.playback.set_output_sink(CONFIG.audio.output_sink)
+            swap_agent_llm(self.agent, operator_id=oid)
+            if self.agent.memory is not None:
+                self.agent.rebind_memory(str(data_dir.resolve()))
         self._active_operator_id = oid
         self._active_room_id = None
         if self.ready and self.agent is not None:
@@ -441,7 +450,7 @@ class VoiceHub(Hub):
                 settings = load_effective_settings(oid)
             else:
                 settings = load_effective_settings(None)
-                apply_to_config(settings, operator_id=None)
+                apply_to_config(settings, operator_id=oid)
                 os.environ["VA_DATA_DIR"] = str(DATA_DIR)
             from services.discord.unified_bot import apply_discord_env
 
@@ -451,7 +460,7 @@ class VoiceHub(Hub):
 
             self.broadcast({"type": "status", "value": "loading"})
             agent = VoiceAgent(mode="vad", on_event=self._agent_event)
-            swap_agent_llm(agent)
+            swap_agent_llm(agent, operator_id=oid)
             self.agent = agent
             from services.discord.patch_agent import patch_voice_agent
 
@@ -492,7 +501,15 @@ class VoiceHub(Hub):
         self.broadcast(event, operator_id=op, room_id=room)
 
     def apply_settings_patch(self, patch: dict, operator_id: str | None = None) -> dict:
+        from services.llm.api_keys import is_placeholder_api_key
         from services.operator_voice import context as op_ctx
+
+        reasoning_patch = patch.get("reasoning") if isinstance(patch, dict) else {}
+        api_key_supplied = (
+            isinstance(reasoning_patch, dict)
+            and "api_key" in reasoning_patch
+            and not is_placeholder_api_key(str(reasoning_patch.get("api_key") or ""))
+        )
 
         if operator_id:
             self.apply_operator_context(operator_id)
@@ -500,8 +517,8 @@ class VoiceHub(Hub):
             merged = op_ctx.save_settings(operator_id, patch if isinstance(patch, dict) else {})
         else:
             previous = load_global_settings()
-            merged = save_global_settings(patch if isinstance(patch, dict) else {})
-        if merged == previous:
+            merged = save_global_settings(patch if isinstance(patch, dict) else {}, operator_id=None)
+        if merged == previous and not api_key_supplied:
             return merged
 
         if operator_id:
@@ -538,7 +555,7 @@ class VoiceHub(Hub):
 
             self.agent.playback.set_output_sink(CONFIG.audio.output_sink)
             if _section_changed(previous, merged, "reasoning"):
-                swap_agent_llm(self.agent)
+                swap_agent_llm(self.agent, operator_id=operator_id)
             if _section_changed(previous, merged, "voice"):
                 self._apply_voice_settings_hot_swap(merged)
             live = _build_live_diff(previous, merged)
@@ -652,7 +669,10 @@ class VoiceHub(Hub):
                 "imagine_health": imagine_health,
                 "services": services_snapshot(),
             }
-        health = get_cached_llm_health(reasoning if isinstance(reasoning, dict) else {})
+        health = get_cached_llm_health(
+            reasoning if isinstance(reasoning, dict) else {},
+            operator_id=operator_id,
+        )
         caps = build_agent_capabilities(
             self.ready,
             health,
@@ -812,15 +832,15 @@ class VoiceHub(Hub):
             }
         if operator_id:
             self.apply_operator_context(operator_id)
-        apply_to_config({"reasoning": reasoning})
-        health = get_cached_llm_health(reasoning, run_probe=True)
+        apply_to_config({"reasoning": reasoning}, operator_id=operator_id)
+        health = get_cached_llm_health(reasoning, run_probe=True, operator_id=operator_id)
         if not llm_ready_from_health(health):
             return {"ok": False, "error": health.get("detail") or "LLM unavailable"}
         try:
             corr_id = new_corr_id()
             user_message_id = new_message_id()
             reply_message_id = new_message_id()
-            client = create_llm_client()
+            client = create_llm_client(operator_id=operator_id)
             with span(
                 "chat.corr",
                 corr_id=corr_id,
@@ -1258,6 +1278,12 @@ class VoiceHub(Hub):
                     idle_event=idle_event,
                 ):
                     self.broadcast(idle_event, operator_id=operator_id)
+                if reply and self.agent.memory is not None:
+                    try:
+                        self.agent.memory.log_turn(text, reply)
+                        self.agent.memory.schedule_review(text, reply)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("chat memory review failed: %s", exc)
                 log.info(
                     "chat turn complete mode=enriched corr_id=%s user_message_id=%s reply_message_id=%s completion_id=%s",
                     corr_id,

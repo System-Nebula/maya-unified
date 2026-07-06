@@ -128,6 +128,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "idle_variants": [],
         "idle_variant_min_s": 10,
         "idle_variant_max_s": 28,
+        "background_preset": "default",
+        "background_image": "",
     },
     "delivery": {
         "tts_mode": "clone",

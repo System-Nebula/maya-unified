@@ -11,6 +11,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Optional
@@ -31,30 +32,42 @@ class MemoryManager:
         self.cfg = CONFIG.memory
         self.llm = llm
         self._emit = emit
-        data_dir = self.cfg.resolve_data_dir()
-
         self._pending: dict[str, dict] = {}
         self._pending_lock = threading.Lock()
+        self._bound_data_dir: str | None = None
+        self._turn_scope = MemoryScope()
+        self._bind_stores(self.cfg.resolve_data_dir())
 
+    def _bind_stores(self, data_dir: str) -> None:
+        data_dir = os.path.abspath(data_dir)
         self.curated = CuratedMemory(
             data_dir,
             memory_char_limit=self.cfg.memory_char_limit,
             user_char_limit=self.cfg.user_char_limit,
             write_approval=self.cfg.write_approval,
             stager=self._stage,
-            emit=emit,
+            emit=self._emit,
         )
         self.sessions = SessionStore(data_dir)
-        self.skills = SkillStore(data_dir, emit=emit)
+        self.skills = SkillStore(data_dir, emit=self._emit)
         self.cognitive: Optional[CognitiveMemory] = None
         if self.cfg.cognitive_enabled:
-            self.cognitive = CognitiveMemory(data_dir, self.cfg.embed_model, emit=emit)
-
+            self.cognitive = CognitiveMemory(data_dir, self.cfg.embed_model, emit=self._emit)
         self.review = ReviewEngine(
-            llm, self.curated, self.cognitive, self.skills,
-            enabled=CONFIG.review.enabled, model=CONFIG.review.model, emit=emit,
+            self.llm, self.curated, self.cognitive, self.skills,
+            enabled=CONFIG.review.enabled, model=CONFIG.review.model, emit=self._emit,
         )
-        self._turn_scope = MemoryScope()
+        self._bound_data_dir = data_dir
+
+    def rebind(self, data_dir: str) -> None:
+        """Point all memory stores at a new data directory (per-operator hot-swap)."""
+        data_dir = os.path.abspath(data_dir)
+        if self._bound_data_dir == data_dir:
+            return
+        self.cfg.data_dir = data_dir
+        with self._pending_lock:
+            self._pending.clear()
+        self._bind_stores(data_dir)
 
     def set_turn_scope(self, scope: MemoryScope) -> None:
         self._turn_scope = scope

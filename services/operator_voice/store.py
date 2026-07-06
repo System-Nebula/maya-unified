@@ -43,9 +43,18 @@ async def get_or_create_settings(session: AsyncSession, operator_id: str | uuid.
 async def save_settings(
     session: AsyncSession, operator_id: str | uuid.UUID, patch: dict[str, Any]
 ) -> dict[str, Any]:
+    from services.llm.api_keys import apply_reasoning_api_key_patch, stash_reasoning_api_key
+    from services.settings.reasoning_normalize import normalize_reasoning
+    from services.settings.store import _redact_reasoning_api_key
+
     oid = uuid.UUID(str(operator_id))
+    apply_reasoning_api_key_patch(patch, operator_id=str(operator_id))
     current = await get_or_create_settings(session, oid)
     merged = deep_merge(current, patch if isinstance(patch, dict) else {})
+    reasoning = merged.get("reasoning") or {}
+    stash_reasoning_api_key(str(reasoning.get("api_key") or ""), operator_id=str(operator_id))
+    _redact_reasoning_api_key(merged)
+    merged["reasoning"] = normalize_reasoning(merged.get("reasoning") or {})
     row = await session.get(OperatorVoiceSettings, oid)
     if row is None:
         row = OperatorVoiceSettings(operator_id=oid, settings=merged)

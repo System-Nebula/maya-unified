@@ -13,6 +13,7 @@ import wave
 import numpy as np
 
 from config import CONFIG, STTConfig
+from cuda_compat import resolve_torch_device
 
 
 def _write_temp_wav(audio_int16: np.ndarray, sample_rate: int) -> str:
@@ -33,7 +34,7 @@ class WhisperSTT:
         self.cfg = cfg or CONFIG.stt
         from faster_whisper import WhisperModel
 
-        device = "cuda" if self.cfg.device.startswith("cuda") else self.cfg.device
+        device = resolve_torch_device(self.cfg.device, label="STT")
         compute_type = self.cfg.whisper_compute_type
         if device == "cpu" and compute_type == "float16":
             compute_type = "int8"  # float16 is not supported on CPU

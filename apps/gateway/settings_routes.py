@@ -13,6 +13,8 @@ from services.settings.catalog import (
     WEBLLM_MODELS,
     fetch_openai_models,
 )
+from services.llm.api_keys import resolve_reasoning_api_key
+from services.settings.reasoning_normalize import is_litellm_sdk
 from services.settings.store import load_effective_settings
 from services.voice.hub import hub
 
@@ -66,8 +68,8 @@ def settings_catalog(
     settings = load_effective_settings(oid or None)
     reasoning = settings.get("reasoning", {})
     llm_base = (base_url or "").strip() or str(reasoning.get("base_url", ""))
-    llm_key = (api_key or "").strip() or str(reasoning.get("api_key", ""))
-    if llm:
+    llm_key = (api_key or "").strip() or resolve_reasoning_api_key(reasoning, operator_id=oid or None)
+    if llm and not is_litellm_sdk(reasoning):
         catalog["llm_models"] = fetch_openai_models(llm_base, llm_key)
     else:
         catalog["llm_models"] = []
@@ -105,7 +107,7 @@ def llm_health(request: Request) -> dict:
     settings = load_effective_settings(oid or None)
     reasoning = settings.get("reasoning", {})
     invalidate_llm_health_cache()
-    health = check_llm_health(reasoning if isinstance(reasoning, dict) else {})
+    health = check_llm_health(reasoning if isinstance(reasoning, dict) else {}, operator_id=oid or None)
     return {"ok": True, "health": health}
 
 

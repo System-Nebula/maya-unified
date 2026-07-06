@@ -4,24 +4,46 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from services.settings.store import load_settings
-
 if TYPE_CHECKING:
     from llm import LLMClient
 
 
-def get_provider_name() -> str:
-    return str(load_settings().get("reasoning", {}).get("provider", "lm_studio"))
+def _resolve_operator_id(operator_id: str | None = None) -> str | None:
+    if operator_id:
+        return str(operator_id)
+    try:
+        from services.voice.hub import hub
+
+        oid = getattr(hub, "_active_operator_id", None)
+        return str(oid) if oid else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
-def is_webllm_provider() -> bool:
-    return str(load_settings().get("reasoning", {}).get("provider", "")).lower() == "webllm"
+def _reasoning_settings(*, operator_id: str | None = None) -> dict:
+    """Effective reasoning profile — operator settings override global file."""
+    from services.settings.store import load_effective_settings
+
+    settings = load_effective_settings(_resolve_operator_id(operator_id))
+    reasoning = settings.get("reasoning")
+    return dict(reasoning) if isinstance(reasoning, dict) else {}
 
 
-def create_llm_client():
+def get_provider_name(*, operator_id: str | None = None) -> str:
+    return str(_reasoning_settings(operator_id=operator_id).get("provider", "lm_studio"))
+
+
+def is_webllm_provider(*, operator_id: str | None = None) -> bool:
+    return get_provider_name(operator_id=operator_id).lower() == "webllm"
+
+
+def create_llm_client(*, operator_id: str | None = None):
     """Return an LLMClient-compatible object for VoiceAgent."""
-    settings = load_settings()
-    reasoning = settings.get("reasoning", {})
+    from services.settings.store import apply_to_config
+
+    reasoning = _reasoning_settings(operator_id=operator_id)
+    oid = _resolve_operator_id(operator_id)
+    apply_to_config({"reasoning": reasoning}, operator_id=oid)
     provider = str(reasoning.get("provider", "lm_studio"))
 
     if provider == "webllm":
@@ -46,9 +68,9 @@ def create_llm_client():
     return LLMClient()
 
 
-def swap_agent_llm(agent) -> None:
+def swap_agent_llm(agent, *, operator_id: str | None = None) -> None:
     """Replace agent.llm after settings change."""
-    agent.llm = create_llm_client()
+    agent.llm = create_llm_client(operator_id=operator_id)
     if getattr(agent, "memory", None) is not None and hasattr(agent.memory, "llm"):
         agent.memory.llm = agent.llm
     tool_loop = getattr(agent, "tool_loop", None)

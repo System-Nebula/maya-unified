@@ -512,6 +512,61 @@
               </div>
             </div>
 
+            <div class="ms-subhead">
+              <h3 class="ms-subtitle">Scene background</h3>
+              <p class="mv-desc">Behind the avatar on Conversation and in the pop-out window.</p>
+            </div>
+            <div class="mv-card">
+              <div class="mv-list-row">
+                <div class="lhs">
+                  <div class="mv-row-label">Background preset</div>
+                  <div class="mv-row-sub">Gradient or transparent — or pick Custom for an uploaded image</div>
+                </div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.vrm.background_preset" @change="save()">
+                    <option value="default">Studio dark</option>
+                    <option value="soft">Soft grey</option>
+                    <option value="blue">Cool blue</option>
+                    <option value="sunset">Sunset</option>
+                    <option value="neon">Neon purple</option>
+                    <option value="mint">Mint</option>
+                    <option value="transparent">Transparent</option>
+                    <option value="custom">Custom image</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row" x-show="s.vrm.background_preset === 'custom'">
+                <div class="lhs">
+                  <div class="mv-row-label">Custom image</div>
+                  <div class="mv-row-sub">Uploaded backgrounds in data/vrm/backgrounds/</div>
+                </div>
+                <div class="rhs">
+                  <select class="mv-select" x-model="s.vrm.background_image" @change="save()">
+                    <option value="">Select image…</option>
+                    <template x-for="b in catalog.vrm_backgrounds" :key="b">
+                      <option :value="b" x-text="b"></option>
+                    </template>
+                  </select>
+                </div>
+              </div>
+              <div class="mv-list-row">
+                <div class="lhs">
+                  <div class="mv-row-label">Upload background</div>
+                  <div class="mv-row-sub">.jpg, .png, or .webp — max 15 MB</div>
+                </div>
+                <div class="rhs ms-vrm-upload">
+                  <input
+                    type="text"
+                    class="mv-input"
+                    x-model="vrmBgUploadName"
+                    placeholder="Display name (optional)"
+                    style="margin-bottom:8px"
+                  />
+                  <input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" @change="uploadVrmBackground($event)" />
+                </div>
+              </div>
+            </div>
+
             <div class="ms-subhead" style="margin-top:24px">
               <h3 class="ms-subtitle">VTube Studio</h3>
               <p class="mv-desc">VTube Studio lip-sync and emotion hotkeys. VTube Studio must be running with the plugin API enabled.</p>
@@ -639,14 +694,14 @@
                   </select>
                 </div>
               </div>
-              <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
-                <div class="lhs"><div class="mv-row-label">Base URL</div><div class="mv-row-sub">Models auto-load from LM Studio when this changes</div></div>
+              <div class="mv-list-row" x-show="s.reasoning.provider === 'lm_studio' || (s.reasoning.provider === 'litellm' && s.reasoning.litellm?.mode === 'proxy')">
+                <div class="lhs"><div class="mv-row-label">Base URL</div><div class="mv-row-sub">OpenAI-compatible endpoint (LM Studio or LiteLLM proxy)</div></div>
                 <div class="rhs"><input class="mv-input" style="width:300px" x-model="s.reasoning.base_url" @input="onReasoningUrlInput()" @change="save()" placeholder="http://localhost:1234/v1" /></div>
               </div>
               <div class="mv-list-row" x-show="s.reasoning.provider === 'litellm'">
                 <div class="lhs"><div class="mv-row-label">LiteLLM mode</div></div>
                 <div class="rhs">
-                  <select class="mv-select" x-model="s.reasoning.litellm.mode" @change="save()">
+                  <select class="mv-select" x-model="s.reasoning.litellm.mode" @change="onLitellmChange()">
                     <option value="sdk">SDK</option>
                     <option value="proxy">Proxy</option>
                   </select>
@@ -655,12 +710,12 @@
               <div class="mv-list-row" x-show="s.reasoning.provider === 'litellm'">
                 <div class="lhs"><div class="mv-row-label">LiteLLM model</div></div>
                 <div class="rhs">
-                  <select class="mv-select" style="min-width:280px" x-model="s.reasoning.litellm.model" @change="save()">
+                  <select class="mv-select" style="min-width:280px" x-model="s.reasoning.litellm.model" @change="onLitellmChange()">
                     <template x-for="m in catalog.litellm_models" :key="m.id"><option :value="m.id" x-text="m.label"></option></template>
                   </select>
                 </div>
               </div>
-              <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
+              <div class="mv-list-row" x-show="s.reasoning.provider === 'lm_studio' || (s.reasoning.provider === 'litellm' && s.reasoning.litellm?.mode === 'proxy')">
                 <div class="lhs"><div class="mv-row-label">Model</div>
                   <div class="mv-row-sub" x-show="llmModelsLoading">Loading models…</div>
                   <div class="mv-row-sub" x-show="!llmModelsLoading && llmModelsHint" x-text="llmModelsHint"></div></div>
@@ -671,8 +726,16 @@
                 </div>
               </div>
               <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
-                <div class="lhs"><div class="mv-row-label">API key</div></div>
-                <div class="rhs"><input class="mv-input" type="password" style="width:200px" x-model="s.reasoning.api_key" @input="onApiKeyInput()" @change="save()" /></div>
+                <div class="lhs">
+                  <div class="mv-row-label">API key</div>
+                  <div class="mv-row-sub" x-show="s.reasoning.provider === 'litellm' && s.reasoning.litellm?.mode === 'sdk'">
+                    Saved locally when you click Save (not written to git). Re-enter after clearing the field.
+                  </div>
+                  <div class="mv-row-sub" x-show="s.reasoning.api_key_configured">
+                    API key saved — field shows a placeholder for security
+                  </div>
+                </div>
+                <div class="rhs"><input class="mv-input" type="password" style="width:200px" x-model="s.reasoning.api_key" @input="onApiKeyInput()" @change="save()" placeholder="Provider API key" /></div>
               </div>
               <div class="mv-list-row" x-show="s.reasoning.provider !== 'webllm'">
                 <div class="lhs">
@@ -826,7 +889,7 @@
             <div class="ms-panel-head">
               <p class="mv-eyebrow">Agent</p>
               <h2 class="mv-title">Memory</h2>
-              <p class="mv-desc">Session recall, semantic memory, and write approval. Data lives in <span class="mv-mono">maya-unified/data/</span> (migrated from qwen3 on first start). Restart after toggling.</p>
+              <p class="mv-desc">Session recall, semantic memory, and write approval. Data lives in <span class="mv-mono">maya-unified/data/operators/{your-id}/</span> per account. The agent reloads automatically when you save changes here.</p>
             </div>
             <div class="mv-card">
               <div class="mv-list-row">

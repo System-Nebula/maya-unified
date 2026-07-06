@@ -33,9 +33,12 @@ def _sync_operator_files_from_data(
     personalities: dict,
 ) -> None:
     """Write operator workspace files without nesting asyncio.run inside the gateway loop."""
+    from services.operator_voice.memory_migration import copy_global_memory_to_operator
+
     sync_settings_file(operator_id, settings)
     sync_personalities_file(operator_id, active, personalities)
     seed_operator_dirs(operator_id)
+    copy_global_memory_to_operator(str(operator_id))
 
 __all__ = [
     "ensure_operator_seeded",

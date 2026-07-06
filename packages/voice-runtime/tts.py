@@ -23,6 +23,7 @@ import numpy as np
 from config import CONFIG, TTSConfig
 
 from ref_text import clear_voice_prompt_cache, sync_clone_ref_text
+from cuda_compat import resolve_torch_device
 
 log = logging.getLogger("voice-agent.tts")
 
@@ -157,9 +158,10 @@ class Qwen3TTS:
         from faster_qwen3_tts import FasterQwen3TTS
 
         print(f"[tts] loading {self.model_id} (mode={self.mode})...")
+        device = resolve_torch_device(self.cfg.device, label="TTS")
         self.model = FasterQwen3TTS.from_pretrained(
             self.model_id,
-            device=self.cfg.device,
+            device=device,
             dtype=_resolve_dtype(self.cfg.dtype),
             attn_implementation="sdpa",
             max_seq_len=2048,

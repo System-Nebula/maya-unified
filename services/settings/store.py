@@ -10,8 +10,13 @@ from typing import Any
 from services.paths import DATA_DIR, ROOT, VOICE_RUNTIME, agent_data_dir, resolve_voice_ref, resolve_runtime_file
 from services.imagine.settings import migrate_imagine_settings
 from services.settings.schema import DEFAULT_SETTINGS, deep_merge
-
-_PLACEHOLDER_API_KEYS = frozenset({"", "lm-studio", "vllm-local", "local-model"})
+from services.settings.reasoning_normalize import normalize_reasoning
+from services.llm.api_keys import (
+    apply_reasoning_api_key_patch,
+    is_placeholder_api_key,
+    resolve_reasoning_api_key,
+    stash_reasoning_api_key,
+)
 
 
 def _normalize_discord_settings(disc: dict[str, Any]) -> dict[str, Any]:
@@ -52,6 +57,7 @@ def load_settings() -> dict[str, Any]:
                 webllm = dict(reasoning.get("webllm") or {})
                 webllm["enabled"] = True
                 merged["reasoning"] = {**reasoning, "webllm": webllm}
+            merged["reasoning"] = normalize_reasoning(merged.get("reasoning", {}))
             return migrate_imagine_settings(merged)
     except (OSError, TypeError, ValueError):
         pass
@@ -59,18 +65,20 @@ def load_settings() -> dict[str, Any]:
 
 
 def _redact_reasoning_api_key(settings: dict[str, Any]) -> None:
-    """Never persist real provider keys to settings.json — keep them in .env only."""
+    """Never persist real provider keys to settings.json — keep them in .env or runtime stash."""
     reasoning = settings.get("reasoning")
     if not isinstance(reasoning, dict):
         return
     key = str(reasoning.get("api_key") or "").strip()
-    if not key or key.lower() in _PLACEHOLDER_API_KEYS:
+    if is_placeholder_api_key(key):
         return
-    if key.startswith("sk-"):
-        reasoning["api_key"] = "lm-studio"
+    # Mark that a key was configured without writing the secret to disk.
+    reasoning["api_key"] = "lm-studio"
+    reasoning["api_key_configured"] = True
 
 
-def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
+def save_settings(patch: dict[str, Any], *, operator_id: str | None = None) -> dict[str, Any]:
+    apply_reasoning_api_key_patch(patch, operator_id=operator_id)
     current = load_settings()
     merged = deep_merge(current, patch)
     reasoning = merged.get("reasoning", {})
@@ -78,9 +86,11 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
         webllm = dict(reasoning.get("webllm") or {})
         webllm["enabled"] = True
         merged["reasoning"] = {**reasoning, "webllm": webllm}
+    stash_reasoning_api_key(str(reasoning.get("api_key") or ""), operator_id=operator_id)
     _redact_reasoning_api_key(merged)
     if isinstance(merged.get("discord"), dict):
         merged["discord"] = _normalize_discord_settings(dict(merged["discord"]))
+    merged["reasoning"] = normalize_reasoning(merged.get("reasoning", {}))
     merged = migrate_imagine_settings(merged)
     with open(_path(), "w", encoding="utf-8") as fh:
         json.dump(merged, fh, indent=2, ensure_ascii=False)
@@ -108,8 +118,7 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
             CONFIG.llm.base_url = str(r["base_url"])
         if r.get("model"):
             CONFIG.llm.model = str(r["model"])
-    if r.get("api_key") is not None:
-        CONFIG.llm.api_key = str(r["api_key"])
+    CONFIG.llm.api_key = resolve_reasoning_api_key(r, operator_id=operator_id)
     if r.get("temperature") is not None:
         CONFIG.llm.temperature = float(r["temperature"])
     if r.get("max_tokens") is not None:
@@ -288,14 +297,19 @@ def _apply_reasoning_env(reasoning: dict[str, Any], *, provider: str, litellm_mo
     if litellm_model:
         litellm_cfg = dict(reasoning.get("litellm") or {})
         litellm_cfg["model"] = litellm_model
-        reasoning["model"] = litellm_model
         reasoning["litellm"] = litellm_cfg
+        if provider == "litellm" or litellm_mode == "sdk":
+            reasoning["provider"] = provider or "litellm"
+            reasoning["model"] = litellm_model
     if base_url:
         reasoning["base_url"] = base_url
     if model and not litellm_model:
         reasoning["model"] = model
     if api_key:
-        reasoning["api_key"] = api_key
+        existing = str(reasoning.get("api_key") or "").strip()
+        configured = bool(reasoning.get("api_key_configured"))
+        if not configured and is_placeholder_api_key(existing):
+            reasoning["api_key"] = api_key
 
 
 def _overlay_env_vars(settings: dict[str, Any]) -> None:
@@ -309,7 +323,8 @@ def _overlay_env_vars(settings: dict[str, Any]) -> None:
     base_url = os.environ.get("VA_LLM_BASE_URL", "").strip()
     model = os.environ.get("VA_LLM_MODEL", "").strip()
     api_key = (
-        os.environ.get("OPENROUTER_API_KEY", "").strip()
+        os.environ.get("GEMINI_API_KEY", "").strip()
+        or os.environ.get("OPENROUTER_API_KEY", "").strip()
         or os.environ.get("VA_LLM_API_KEY", "").strip()
     )
     _apply_reasoning_env(
@@ -383,6 +398,8 @@ def _overlay_env_file(settings: dict[str, Any], env_path) -> None:
             model = val
         elif key == "OPENROUTER_API_KEY" and val:
             api_key = val
+        elif key == "GEMINI_API_KEY" and val:
+            api_key = val
         elif key == "VA_LLM_API_KEY" and val and not api_key:
             api_key = val
         elif key == "VA_DISCORD_TOKEN" and val:
@@ -411,6 +428,7 @@ def seed_env_defaults() -> dict[str, Any]:
     _overlay_env_vars(settings)
     if isinstance(settings.get("discord"), dict):
         settings["discord"] = _normalize_discord_settings(dict(settings["discord"]))
+    settings["reasoning"] = normalize_reasoning(settings.get("reasoning", {}))
     return settings
 
 

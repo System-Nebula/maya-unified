@@ -189,6 +189,37 @@ class CognitiveMemory:
         scored.sort(key=lambda m: m["score"], reverse=True)
         return scored[:limit]
 
+    def update(
+        self,
+        memory_id: int,
+        content: Optional[str] = None,
+        importance: Optional[float] = None,
+    ) -> dict:
+        with self._lock:
+            row = self._conn().execute(
+                "SELECT id, content, importance FROM memories WHERE id=?",
+                (int(memory_id),),
+            ).fetchone()
+        if row is None:
+            return {"success": False, "error": "not found"}
+        new_content = content if content is not None else row["content"]
+        new_importance = row["importance"] if importance is None else max(0.0, min(1.0, float(importance)))
+        ok, cleaned = sanitize(str(new_content))
+        if not ok:
+            return {"success": False, "error": cleaned}
+        vec = self._embed(cleaned)
+        if vec is None:
+            return {"success": False, "error": "embeddings unavailable"}
+        with self._lock:
+            self._conn().execute(
+                "UPDATE memories SET content=?, importance=?, embedding=?, ts=? WHERE id=?",
+                (cleaned, new_importance, self._pack(vec), time.time(), int(memory_id)),
+            )
+            self._conn().commit()
+        if self._emit is not None:
+            self._emit(type="memory_updated", target="cognitive", action="update", id=int(memory_id))
+        return {"success": True, "id": int(memory_id)}
+
     def forget(self, query: str, memory_id: Optional[int] = None) -> dict:
         with self._lock:
             conn = self._conn()
