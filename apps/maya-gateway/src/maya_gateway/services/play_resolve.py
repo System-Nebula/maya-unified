@@ -221,6 +221,10 @@ def resolve(
     Pass an explicit ``discogs`` client to override the process default (the
     test suite injects a stub so unit tests don't touch the network).
     """
+    # NOTE: ontology-first resolution lives at the route level
+    # (maya_gateway.services.ontology_resolve.resolve_with_ontology); this
+    # function stays a pure, offline demo-catalog resolver so its unit tests
+    # never touch the network.
     artist, title = _parse_artist_title(req.query)
     candidates = list(catalog)
 

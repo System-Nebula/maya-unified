@@ -51,9 +51,12 @@ from maya_contracts.arena import (
 from maya_contracts.music import (
     DiscogsRef,
     MatchedVia,
+    OntologyRef,
     PlayResolveRequest,
     PlayResolveResponse,
+    SourceRefModel,
     TrackInfo,
+    TrackMetadata,
     VideoRef,
 )
 from maya_contracts.notifications import (
@@ -174,8 +177,20 @@ from maya_contracts.voice import (
     VoiceTurnRequest,
     VoiceTurnResponse,
 )
+from maya_contracts.browser_capture import (
+    BrowserCaptureGraphEvent,
+    CaptureAsset,
+    CaptureEvent,
+    CaptureManifest,
+    StoredAssetDescriptor,
+)
 
 __all__ = [
+    "BrowserCaptureGraphEvent",
+    "CaptureAsset",
+    "CaptureEvent",
+    "CaptureManifest",
+    "StoredAssetDescriptor",
     "AcquisitionRequest",
     "AcquisitionResult",
     "AcquisitionStatus",
@@ -226,6 +241,9 @@ __all__ = [
     "StatsResponse",
     "VoteRequest",
     "DiscogsRef",
+    "OntologyRef",
+    "SourceRefModel",
+    "TrackMetadata",
     "MatchedVia",
     "PlayResolveRequest",
     "PlayResolveResponse",

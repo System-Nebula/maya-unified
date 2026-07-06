@@ -49,6 +49,41 @@ class DiscogsRef(StrictModel):
     year: Optional[int] = None
 
 
+class SourceRefModel(StrictModel):
+    """One external id in one source schema (``wd``/``yt``/``discogs``/…).
+
+    Wire-format twin of ``maya_graph.music.primitives.SourceRef`` — no source
+    schema is privileged; wikidata QIDs are just ``schema="wd"`` refs.
+    """
+
+    schema_id: str
+    external_id: str
+    url: Optional[str] = None
+    confidence: float = 1.0
+
+
+class OntologyRef(StrictModel):
+    """Pointer back into the music ontology for a resolved track."""
+
+    work_key: Optional[str] = None  # canonical_work domain_id ("wd:Q…" | "fp:…")
+    work_node_id: Optional[str] = None
+    recording_node_id: Optional[str] = None
+    confidence: Optional[float] = None
+
+
+class TrackMetadata(StrictModel):
+    """Normalized lookup result from the music ontology (no playback URLs
+    required — identity + cross-source refs for the agent/dashboard)."""
+
+    title: str
+    artist: Optional[str] = None
+    work_key: Optional[str] = None
+    aliases: list[str] = []
+    source_refs: list[SourceRefModel] = []
+    confidence: float = 0.0
+    matched_via: MatchedVia = "ontology"
+
+
 class TrackInfo(StrictModel):
     """A resolved playable track. Public-safe metadata only."""
 
@@ -72,6 +107,11 @@ class TrackInfo(StrictModel):
     videos: list[VideoRef] = []
     # Pointer back into the ontology graph (Discogs master/release pair).
     discogs: Optional[DiscogsRef] = None
+    # Pointer into the music ontology (canonical work/recording), when the
+    # resolver matched via the graph tier.
+    ontology: Optional[OntologyRef] = None
+    # Cross-source identity refs (schema-prefixed; wikidata is one of many).
+    source_refs: list[SourceRefModel] = []
 
 
 class PlayResolveResponse(StrictModel):

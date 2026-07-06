@@ -10,15 +10,15 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from maya_contracts import PlayResolveRequest, PlayResolveResponse
 
-from maya_gateway.services.play_resolve import resolve
+from maya_gateway.services.ontology_resolve import resolve_with_ontology
 
 router = APIRouter(prefix="/api/music", tags=["music"])
 
 
 @router.post("/play/resolve", response_model=PlayResolveResponse)
 async def play_resolve(req: PlayResolveRequest) -> PlayResolveResponse:
-    """Resolve a free-text query to a playable track (demo catalog in v1)."""
-    return resolve(req)
+    """Resolve a free-text query to a playable track (ontology → demo catalog)."""
+    return await resolve_with_ontology(req)
 
 
 @router.get("/state/{zone}/stream")

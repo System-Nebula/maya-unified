@@ -51,6 +51,15 @@ from maya_db.models.feeds import (
     VideoSimilarity,
     VideoTag,
 )
+from maya_db.models.music import (
+    MusicArtist,
+    MusicGenre,
+    MusicPlatformLink,
+    MusicRelease,
+    MusicReleaseTrack,
+    MusicTrack,
+    MusicTrackArtist,
+)
 from maya_db.models.registry import EvalRun, ModelRelease
 from maya_db.models.research import (
     BrowserHistoryEmbedding,
@@ -59,8 +68,11 @@ from maya_db.models.research import (
     ResearchSource,
     ResearchTopicEmbedding,
 )
+from maya_db.models.capture import BrowserCaptureOutbox, Capture
 
 __all__ = [
+    "BrowserCaptureOutbox",
+    "Capture",
     "GoogleConnection",
     "OAuthPkceState",
     "OperatorGoogleIdentity",
@@ -93,6 +105,13 @@ __all__ = [
     "IntelItem",
     "KnowledgeItem",
     "ModelRelease",
+    "MusicArtist",
+    "MusicGenre",
+    "MusicPlatformLink",
+    "MusicRelease",
+    "MusicReleaseTrack",
+    "MusicTrack",
+    "MusicTrackArtist",
     "Notification",
     "OperatorPreferences",
     "OperatorSourceToken",
@@ -109,4 +128,6 @@ __all__ = [
     "ResearchSentiment",
     "ResearchSource",
     "ResearchTopicEmbedding",
+    "BrowserCaptureOutbox",
+    "Capture",
 ]

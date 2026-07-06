@@ -212,11 +212,32 @@ def enqueue_download(
     try:
         result = client.transfers.enqueue(username, payload)
         # The API returns a dict or list; extract an ID if possible
+        transfer_id: str | None = None
         if isinstance(result, dict):
-            return str(result.get("id", ""))
-        if isinstance(result, list) and result:
-            return str(result[0].get("id", "")) if isinstance(result[0], dict) else str(result[0])
-        return str(result) if result else None
+            transfer_id = str(result.get("id", "")) or None
+        elif isinstance(result, list) and result:
+            transfer_id = str(result[0].get("id", "")) if isinstance(result[0], dict) else str(result[0])
+        else:
+            transfer_id = str(result) if result else None
+
+        if transfer_id:
+            hints = _parse_filename_hints(filename)
+            try:
+                from services.async_bridge import schedule_coro
+                from services.music.ontology import ingest_slskd_file
+
+                schedule_coro(
+                    ingest_slskd_file(
+                        username=username,
+                        filename=filename,
+                        artist_hint=hints.get("artist_hint"),
+                        title_hint=hints.get("title_hint"),
+                        attrs={"size": size, "quality_tier": str(hints)},
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return transfer_id
     except Exception as exc:
         return None
 
