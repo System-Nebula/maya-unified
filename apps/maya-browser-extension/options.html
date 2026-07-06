@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Maya Browser Companion — Options</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 520px;
+        margin: 24px auto;
+        padding: 0 16px;
+      }
+      label {
+        display: block;
+        margin-top: 16px;
+        font-weight: 600;
+      }
+      input {
+        width: 100%;
+        margin-top: 4px;
+        padding: 8px;
+        box-sizing: border-box;
+      }
+      button {
+        margin-top: 20px;
+        padding: 10px 16px;
+      }
+      #saved {
+        color: green;
+        margin-top: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Maya Browser Companion</h1>
+    <p>Configure gateway URL and capture token (must match <code>MAYA_BROWSER_CAPTURE_TOKEN</code> on the server).</p>
+    <label for="gatewayUrl">Gateway URL</label>
+    <input id="gatewayUrl" type="url" placeholder="http://localhost:8090" />
+    <label for="captureToken">Capture token</label>
+    <input id="captureToken" type="password" autocomplete="off" />
+    <label for="captureType">Default capture type</label>
+    <input id="captureType" type="text" placeholder="article" />
+    <button id="save">Save</button>
+    <p id="saved"></p>
+    <script src="options.js"></script>
+  </body>
+</html>

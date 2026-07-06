@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Maya</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 12px;
+        background: #111;
+        color: #eee;
+      }
+      button {
+        display: block;
+        width: 100%;
+        margin: 8px 0;
+        padding: 10px;
+        border: none;
+        border-radius: 6px;
+        background: #0a84ff;
+        color: #fff;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #333;
+      }
+      #status {
+        margin-top: 12px;
+        font-size: 12px;
+        color: #aaa;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Maya</h2>
+    <button id="save">Save</button>
+    <button id="research" class="secondary">Research</button>
+    <button id="capture" class="secondary">Capture screenshot</button>
+    <p id="status">Ready.</p>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
