@@ -34,6 +34,7 @@ document.addEventListener("alpine:init", () => {
     llmProvider: "",
     llmHealth: null,
     imagineHealth: null,
+    imagineEnabled: false,
     capabilities: {
       text_chat: false,
       text_chat_enriched: false,
@@ -236,6 +237,7 @@ document.addEventListener("alpine:init", () => {
         this.s.llmModel = d.llm_model || "";
         this.s.llmProvider = d.llm_provider || "";
         this.s.llmHealth = d.llm_health || null;
+        this.s.imagineEnabled = !!d.imagine_enabled;
         this.s.imagineHealth = d.imagine_health || null;
         if (d.capabilities && typeof d.capabilities === "object") {
           this.s.capabilities = { ...this.s.capabilities, ...d.capabilities };

@@ -277,6 +277,7 @@
   border: 2px solid color-mix(in oklch, var(--block-accent-fg) 45%, transparent);
   border-top-color: var(--block-accent-fg);
   animation: mp-spin 0.7s linear infinite;
+  flex-shrink: 0;
 }
 
 @keyframes mp-spin {
@@ -532,28 +533,35 @@
 
   .player-layout-auto .mp-hero-title-line {
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    overflow: hidden;
+  }
+
+  .player-layout-auto .mp-hero-sep {
+    display: none;
+  }
+
+  .player-layout-auto .mp-hero-artist {
+    color: var(--block-muted-fg);
+    font-size: 0.6875rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-family: "JetBrains Mono", var(--mv-mono), ui-monospace, monospace;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .player-layout-auto .mp-hero-artist {
-    color: var(--block-muted-fg);
-    font-size: 1rem;
-    letter-spacing: 0.02em;
-  }
-
-  .player-layout-auto .mp-hero-sep {
-    color: color-mix(in oklch, var(--player-fg) 20%, transparent);
-    font-weight: 300;
-    margin: 0 0.75rem;
-  }
-
   .player-layout-auto .mp-hero-title {
-    font-size: 1.875rem;
+    font-size: 1.625rem;
     font-weight: 700;
     letter-spacing: -0.02em;
     color: var(--player-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .player-layout-auto .mp-time-hero {
@@ -566,7 +574,7 @@
   .player-layout-auto .mp-time-hero .mp-time-current {
     font-size: 1rem;
     font-weight: 600;
-    color: var(--block-accent);
+    color: var(--player-fg);
   }
 
   .player-layout-auto .mp-time-hero .mp-time-slash {
@@ -616,16 +624,16 @@
   }
 
   .player-layout-auto .player-btn-strip-item--play {
-    width: 3rem;
-    height: 3rem;
-    border-radius: 999px;
+    width: 3.25rem;
+    height: 2.25rem;
+    border-radius: 0;
   }
 
   .player-layout-auto .mp-btn-play {
-    width: 3rem;
-    height: 3rem;
-    border-radius: 999px;
-    margin: 0 0.5rem;
+    width: 3.25rem;
+    height: 2.25rem;
+    border-radius: 0;
+    margin: 0;
   }
 
   .player-layout-auto .mp-range {
@@ -728,4 +736,196 @@
   font-family: inherit;
   letter-spacing: normal;
   text-transform: none;
+}
+
+.mp-meta-row .mp-artist {
+  font-family: "JetBrains Mono", var(--mv-mono), ui-monospace, monospace;
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  order: 1;
+}
+
+.mp-meta-row .mp-title {
+  order: 2;
+  font-weight: 700;
+}
+
+.mp-meta-row .mp-genre {
+  order: 0;
+}
+
+.mp-meta-row .mp-chips {
+  order: 3;
+}
+
+.mp-volume-inline {
+  display: none;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 8rem;
+  max-width: 14rem;
+}
+
+.mp-volume-inline-label {
+  font-family: "JetBrains Mono", var(--mv-mono), ui-monospace, monospace;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--block-muted-fg);
+  flex-shrink: 0;
+}
+
+.mp-volume-inline-pct {
+  width: 2rem;
+  font-family: "JetBrains Mono", var(--mv-mono), ui-monospace, monospace;
+  font-size: 0.625rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--block-muted-fg);
+  flex-shrink: 0;
+}
+
+[data-maya-theme="brutalist"] .mp-volume-inline,
+[data-maya-theme="brutalist-dark"] .mp-volume-inline {
+  display: flex;
+}
+
+[data-maya-theme="brutalist"] .mp-volume-rail,
+[data-maya-theme="brutalist-dark"] .mp-volume-rail {
+  display: none !important;
+}
+
+[data-maya-theme="brutalist"] .mp-volume-btn.player-btn-strip-solo,
+[data-maya-theme="brutalist-dark"] .mp-volume-btn.player-btn-strip-solo {
+  display: none;
+}
+
+[data-maya-theme="brutalist"] .mp-queue-row.is-active,
+[data-maya-theme="brutalist-dark"] .mp-queue-row.is-active {
+  background: var(--player-fg) !important;
+  color: var(--player-bg) !important;
+  border-left-color: var(--player-fg) !important;
+}
+
+[data-maya-theme="brutalist"] .mp-queue-row.is-active .mp-queue-artist,
+[data-maya-theme="brutalist"] .mp-queue-row.is-active .mp-queue-meta,
+[data-maya-theme="brutalist-dark"] .mp-queue-row.is-active .mp-queue-artist,
+[data-maya-theme="brutalist-dark"] .mp-queue-row.is-active .mp-queue-meta {
+  color: inherit;
+  opacity: 0.75;
+}
+
+[data-maya-theme="brutalist-dark"] .mp-queue-row.is-active {
+  background: #ecf0f1 !important;
+  color: #0a0a0a !important;
+}
+
+.mp-ingest {
+  border-bottom: 1px solid var(--block-border-subtle);
+  background: var(--block-surface-2);
+}
+
+.mp-ingest-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  border: none;
+  background: transparent;
+  color: var(--block-muted-fg);
+  font-family: "JetBrains Mono", var(--mv-mono), ui-monospace, monospace;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: crosshair;
+}
+
+.mp-ingest-toggle:hover {
+  color: var(--player-fg);
+}
+
+.mp-ingest-body {
+  padding: 0.75rem 1rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.mp-ingest-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.mp-ingest-input {
+  flex: 1;
+  min-width: 10rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--block-border-subtle);
+  border-radius: 0;
+  background: var(--block-surface-0);
+  color: var(--player-fg);
+  font-family: "JetBrains Mono", var(--mv-mono), ui-monospace, monospace;
+  font-size: 0.6875rem;
+}
+
+.mp-ingest-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--block-border-subtle);
+  border-radius: 0;
+  background: var(--block-surface-1);
+  color: var(--player-fg);
+  font-family: "JetBrains Mono", var(--mv-mono), ui-monospace, monospace;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: crosshair;
+}
+
+.mp-ingest-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mp-ingest-status {
+  margin: 0;
+  font-family: "JetBrains Mono", var(--mv-mono), ui-monospace, monospace;
+  font-size: 0.625rem;
+  color: var(--block-muted-fg);
+  letter-spacing: 0.06em;
+}
+
+.mp-ingest-saved {
+  display: flex;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.mp-footer-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  padding: 0.375rem 1rem;
+  border-top: 1px solid var(--block-border-subtle);
+  background: var(--block-surface-0);
+  font-family: "JetBrains Mono", var(--mv-mono), ui-monospace, monospace;
+  font-size: 0.5625rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--block-muted-fg);
+}
+
+.mp-footer-status strong {
+  color: var(--player-fg);
+  font-weight: 600;
 }

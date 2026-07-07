@@ -44,6 +44,29 @@ function _queryFromStreamSrc(src) {
 
 const _PLAYER_ACCENT_PALETTE = ["#00d4a0", "#7b6fff", "#ff6b35", "#e040fb", "#00b4e6", "#ffcc00"];
 
+const _PLAYER_THEME_ACCENTS = {
+  brutalist: "#0a0a0a",
+  "brutalist-dark": "#f39c12",
+};
+
+function _playerThemeId() {
+  return document.documentElement.dataset.mayaTheme || "";
+}
+
+function _isBrutalistPlayerTheme() {
+  const id = _playerThemeId();
+  return id === "brutalist" || id === "brutalist-dark";
+}
+
+function _playerThemeAccent() {
+  return _PLAYER_THEME_ACCENTS[_playerThemeId()] || null;
+}
+
+function _trackAccentColor(index) {
+  if (_isBrutalistPlayerTheme()) return _playerThemeAccent();
+  return _PLAYER_ACCENT_PALETTE[index % _PLAYER_ACCENT_PALETTE.length];
+}
+
 function _trackSeed(str) {
   let h = 0;
   for (const c of String(str || "")) h = (h * 31 + c.charCodeAt(0)) >>> 0;
@@ -77,7 +100,9 @@ function _normalizePlayerTrack(tr, index) {
     title,
     query,
     src: query ? _streamSrcForQuery(query) : String(tr?.src || ""),
-    color: String(tr?.color || "").trim() || _PLAYER_ACCENT_PALETTE[index % _PLAYER_ACCENT_PALETTE.length],
+    color: _isBrutalistPlayerTheme()
+      ? _playerThemeAccent()
+      : String(tr?.color || "").trim() || _PLAYER_ACCENT_PALETTE[index % _PLAYER_ACCENT_PALETTE.length],
     peaks: Array.isArray(tr?.peaks) && tr.peaks.length ? tr.peaks : _generatePlayerPeaks(_trackSeed(query || title), 200),
   };
   const art = String(tr?.art || "").trim();
@@ -154,6 +179,8 @@ function _restorePlayerStore(player) {
     if (typeof data.muted === "boolean") player.muted = data.muted;
     if (typeof data.shuffle === "boolean") player.shuffle = data.shuffle;
     if (typeof data.repeat === "boolean") player.repeat = data.repeat;
+    if (typeof data.radioMode === "boolean") player.radioMode = data.radioMode;
+    if (typeof data.radioPrompt === "string") player.radioPrompt = data.radioPrompt;
   } catch (_) {}
 }
 
@@ -173,6 +200,8 @@ function _persistPlayerStore(player) {
       muted: player.muted,
       shuffle: player.shuffle,
       repeat: player.repeat,
+      radioMode: player.radioMode,
+      radioPrompt: player.radioPrompt,
     });
     localStorage.setItem(_playerStorageKey(), payload);
   } catch (_) {}
@@ -363,8 +392,18 @@ function _applyPendingTurnMeta(store, turn) {
   }
 }
 
+function _activeToolCorrId(store, ev) {
+  const fromEv = _evCorrId(ev);
+  if (fromEv) return fromEv;
+  for (let i = store.turns.length - 1; i >= 0; i -= 1) {
+    const t = store.turns[i];
+    if (t?.corrId) return t.corrId;
+  }
+  return null;
+}
+
 function _trackToolEvent(store, ev) {
-  const corrId = _evCorrId(ev);
+  const corrId = _activeToolCorrId(store, ev);
   if (!corrId) return;
   if (!store._toolsByCorr) store._toolsByCorr = {};
   if (!store._toolsByCorr[corrId]) store._toolsByCorr[corrId] = [];
@@ -1445,6 +1484,16 @@ function _applyAgentEvent(store, ev) {
     if (player) player.control(ev.action, ev.index);
     return;
   }
+  if (ev.type === "player.radio") {
+    const player = _mayaPlayerStore();
+    if (player) {
+      player.radioMode = !!ev.enabled;
+      if (ev.prompt != null) player.radioPrompt = String(ev.prompt || "");
+      if (player.radioMode) player.repeat = false;
+      _persistPlayerStore(player);
+    }
+    return;
+  }
   if (ev.type === "system" && ev.text) {
     store.turns.push({
       messageId: ev.message_id || _nextMessageId(),
@@ -1741,6 +1790,14 @@ document.addEventListener("alpine:init", () => {
     queueOpen: false,
     shuffle: false,
     repeat: false,
+    radioMode: false,
+    radioPrompt: "",
+    ingestOpen: false,
+    ingestBusy: false,
+    ingestStatus: "",
+    ingestUrl: "",
+    ingestPrompt: "",
+    savedPlaylists: [],
     casting: false,
     castBusy: false,
     castAvailable: false,
@@ -1771,7 +1828,15 @@ document.addEventListener("alpine:init", () => {
       return this.duration > 0 ? this.currentTime / this.duration : 0;
     },
     get accentColor() {
-      return this.currentTrack?.color || _PLAYER_ACCENT_PALETTE[this.current % _PLAYER_ACCENT_PALETTE.length];
+      const themed = _playerThemeAccent();
+      if (themed) return themed;
+      return (
+        this.currentTrack?.color ||
+        _PLAYER_ACCENT_PALETTE[this.current % _PLAYER_ACCENT_PALETTE.length]
+      );
+    },
+    get isBrutalistTheme() {
+      return _isBrutalistPlayerTheme();
     },
     get volumePct() {
       const v = this.muted ? 0 : this.volume;
@@ -1811,10 +1876,188 @@ document.addEventListener("alpine:init", () => {
     },
     fmtTime(sec) {
       const s = Math.max(0, Math.floor(Number(sec) || 0));
-      if (!isFinite(s)) return "0:00";
+      if (!isFinite(s)) return _isBrutalistPlayerTheme() ? "000:00" : "0:00";
       const m = Math.floor(s / 60);
       const r = s % 60;
+      if (_isBrutalistPlayerTheme()) {
+        return `${String(m).padStart(3, "0")}:${String(r).padStart(2, "0")}`;
+      }
       return `${m}:${String(r).padStart(2, "0")}`;
+    },
+    _playedLabels() {
+      return (this.tracks || []).map((t) => `${t.artist || ""} — ${t.title || ""}`.trim());
+    },
+    async _consumePlayerSse(url, body, onEvent) {
+      const resp = await fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify(body || {}),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || err.error || `Request failed (${resp.status})`);
+      }
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error("Streaming not supported");
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() || "";
+        for (const part of parts) {
+          let ev = "message";
+          let data = "";
+          for (const line of part.split("\n")) {
+            if (line.startsWith("event:")) ev = line.slice(6).trim();
+            else if (line.startsWith("data:")) data += line.slice(5).trim();
+          }
+          if (!data) continue;
+          try {
+            onEvent(ev, JSON.parse(data));
+          } catch (_) {
+            onEvent(ev, data);
+          }
+        }
+      }
+    },
+    async resolveIngestUrl(url) {
+      const q = String(url || "").trim();
+      if (!q) return;
+      this.ingestBusy = true;
+      this.ingestStatus = "Resolving…";
+      try {
+        const resp = await fetch("/api/media/resolve", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || "Resolve failed");
+        this.load(data, { autoplay: true });
+        this.ingestStatus = `Loaded ${data.tracks?.length || 0} track(s)`;
+      } catch (e) {
+        this.ingestStatus = String(e.message || e);
+      } finally {
+        this.ingestBusy = false;
+      }
+    },
+    async generateSmartPlaylist(prompt) {
+      const text = String(prompt || "").trim();
+      if (!text) return;
+      this.ingestBusy = true;
+      this.ingestStatus = "Planning playlist…";
+      const tracks = [];
+      let meta = { title: "Smart Playlist" };
+      try {
+        await this._consumePlayerSse("/api/media/smart-playlist/stream", { prompt: text }, (ev, data) => {
+          if (ev === "status") this.ingestStatus = data.message || this.ingestStatus;
+          if (ev === "meta") meta = { title: data.name || meta.title, rationale: data.rationale };
+          if (ev === "track") tracks.push(data);
+        });
+        if (!tracks.length) throw new Error("No tracks returned");
+        this.load({ title: meta.title, tracks, url: text }, { autoplay: true });
+        this.ingestStatus = meta.rationale || `Loaded ${tracks.length} tracks`;
+      } catch (e) {
+        this.ingestStatus = String(e.message || e);
+      } finally {
+        this.ingestBusy = false;
+      }
+    },
+    async refreshSavedPlaylists() {
+      try {
+        const resp = await fetch("/api/media/playlists", { credentials: "same-origin" });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        this.savedPlaylists = Array.isArray(data.items) ? data.items : [];
+      } catch (_) {}
+    },
+    async saveCurrentPlaylist(name) {
+      const label = String(name || this.title || "Playlist").trim();
+      if (!label || !this.tracks?.length) return;
+      this.ingestBusy = true;
+      try {
+        const resp = await fetch("/api/media/playlists", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: label, tracks: this.tracks }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || "Save failed");
+        await this.refreshSavedPlaylists();
+        this.ingestStatus = `Saved as ${data.name || label}`;
+      } catch (e) {
+        this.ingestStatus = String(e.message || e);
+      } finally {
+        this.ingestBusy = false;
+      }
+    },
+    async loadSavedPlaylist(id) {
+      if (!id) return;
+      this.ingestBusy = true;
+      this.ingestStatus = "Loading playlist…";
+      try {
+        const resp = await fetch(`/api/media/playlists/${encodeURIComponent(id)}`, {
+          credentials: "same-origin",
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || "Load failed");
+        this.load(
+          { title: data.name || "Playlist", tracks: data.tracks || [], url: data.id },
+          { autoplay: true },
+        );
+        this.ingestStatus = `Loaded ${data.tracks?.length || 0} tracks`;
+      } catch (e) {
+        this.ingestStatus = String(e.message || e);
+      } finally {
+        this.ingestBusy = false;
+      }
+    },
+    toggleIngest() {
+      this.ingestOpen = !this.ingestOpen;
+      if (this.ingestOpen) void this.refreshSavedPlaylists();
+    },
+    toggleRadio() {
+      if (this.radioMode) {
+        this.radioMode = false;
+        this.radioPrompt = "";
+        _persistPlayerStore(this);
+        return;
+      }
+      const prompt = String(this.radioPrompt || this.title || "").trim();
+      if (!prompt) {
+        this.ingestStatus = "Set a radio vibe in ingest or load a playlist first.";
+        this.ingestOpen = true;
+        return;
+      }
+      this.radioMode = true;
+      this.repeat = false;
+      this.radioPrompt = prompt;
+      _persistPlayerStore(this);
+    },
+    async _radioRefill() {
+      const prompt = String(this.radioPrompt || this.title || "").trim();
+      if (!prompt) return;
+      this.ingestStatus = "Radio — fetching next segment…";
+      const tracks = [];
+      try {
+        await this._consumePlayerSse(
+          "/api/media/radio/stream",
+          { prompt, exclude: this._playedLabels() },
+          (ev, data) => {
+            if (ev === "status") this.ingestStatus = data.message || this.ingestStatus;
+            if (ev === "track") tracks.push(data);
+          },
+        );
+        if (tracks.length) this.append({ tracks, after_current: false });
+      } catch (e) {
+        this.ingestStatus = String(e.message || e);
+      }
     },
     load(artifact, { autoplay = true } = {}) {
       if (!artifact?.tracks?.length) return;
@@ -1928,9 +2171,20 @@ document.addEventListener("alpine:init", () => {
       if (this.current > 0) this.play(this.current - 1);
     },
     onEnded() {
-      if (this.repeat) {
+      if (this.repeat && !this.radioMode) {
         this.seekTo(0);
         this.resume();
+        return;
+      }
+      const tracks = this.tracks || [];
+      if (this.current + 1 < tracks.length) {
+        this.next();
+        return;
+      }
+      if (this.radioMode) {
+        void this._radioRefill().then(() => {
+          if (this.current + 1 < (this.tracks || []).length) this.next();
+        });
         return;
       }
       this.next();
@@ -1979,6 +2233,7 @@ document.addEventListener("alpine:init", () => {
       _persistPlayerStore(this);
     },
     toggleRepeat() {
+      if (this.radioMode) return;
       this.repeat = !this.repeat;
       _persistPlayerStore(this);
     },
@@ -2134,6 +2389,8 @@ document.addEventListener("alpine:init", () => {
       this.queueOpen = false;
       this.shuffle = false;
       this.repeat = false;
+      this.radioMode = false;
+      this.radioPrompt = "";
       _persistPlayerStore(this);
       void fetch("/api/media/player/clear", { method: "POST", credentials: "same-origin" }).catch(
         () => {},

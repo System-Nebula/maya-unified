@@ -216,7 +216,7 @@
   letter-spacing: 0.04em;
 }
 .md-arena-pill-done {
-  background: color-mix(in srgb, #10b981 20%, transparent);
+  background: color-mix(in srgb, var(--mv-success, #2ecc71) 20%, transparent);
 }
 .md-arena-matchup {
   display: grid;
@@ -252,8 +252,8 @@
   color: #f0f0f0;
 }
 .md-arena-slot-winner .md-arena-frame {
-  border-color: #10b981;
-  box-shadow: 0 0 0 1px #10b981;
+  border-color: var(--mv-success-soft, #16a085);
+  box-shadow: 0 0 0 1px var(--mv-success-soft, #16a085);
 }
 .md-arena-slot-loser {
   opacity: 0.55;
@@ -1078,8 +1078,8 @@
   flex-shrink: 0;
   margin-top: 4px;
 }
-.md-tool-dot.on { background: #30d158; }
-.md-tool-dot.off { background: #ff453a; }
+.md-tool-dot.on { background: var(--mv-success, #2ecc71); }
+.md-tool-dot.off { background: var(--mv-danger, #e74c3c); }
 .md-tool-log {
   max-height: min(220px, 40vh);
   overflow-y: auto;

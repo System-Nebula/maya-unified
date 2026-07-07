@@ -9,6 +9,8 @@
     <link rel="stylesheet" href="/dashboard/css/themes/theme-base.css" />
     <link rel="stylesheet" href="/dashboard/css/themes/theme-unified.css" />
     <link rel="stylesheet" href="/dashboard/css/themes/theme-industrial.css" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-brutalist.css" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-brutalist-dark.css" />
     <script src="/dashboard/js/mayaTheme.js"></script>
     <title>Admin — Workspaces — Maya Unified</title>
     <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
@@ -125,7 +127,7 @@
                   <td class="mv-mono" style="font-size:11px;" x-text="p.slug"></td>
                   <td>
                     <span x-show="p.flagged" style="color:#ff9f0a;font-size:11px;">flagged</span>
-                    <span x-show="personalities.active === p.slug" style="color:#30d158;font-size:11px;margin-left:6px;">active</span>
+                    <span x-show="personalities.active === p.slug" style="color:var(--mv-success,#2ecc71);font-size:11px;margin-left:6px;">active</span>
                   </td>
                   <td style="text-align:right;white-space:nowrap;">
                     <button class="mv-btn" style="font-size:11px;padding:3px 10px;" @click="toggleFlag(p.slug, !p.flagged)"

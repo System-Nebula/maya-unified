@@ -81,6 +81,29 @@
   background: #080608;
 }
 
+[data-maya-theme="brutalist"] .mv-root {
+  --mv-bg: #d0d0d0;
+  --mv-sidebar: #c4c4c4;
+  --mv-surface: #d0d0d0;
+  --mv-input: #b8b8b8;
+  --mv-input-hover: #c4c4c4;
+  --mv-text: #0a0a0a;
+  --mv-muted: #3a3a3a;
+  --mv-faint: #6a6a6a;
+  --mv-border: #0a0a0a;
+  --mv-border-strong: #0a0a0a;
+  --mv-accent: #0a0a0a;
+  --mv-accent-tint: #c4c4c4;
+  --mv-r-ctl: 0;
+  --mv-r-panel: 0;
+  --mv-font: "JetBrains Mono", "Courier New", ui-monospace, monospace;
+  --mv-mono: var(--mv-font);
+}
+
+[data-maya-theme="brutalist"] body {
+  background: #b8b8b8;
+}
+
 .mv-root * { box-sizing: border-box; }
 
 /* ---- Window / two-pane shell ---------------------------------------------- */

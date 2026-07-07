@@ -120,6 +120,86 @@ def build_dashboard_player_tools(*, emit: Callable[..., None] | None = None) -> 
             "query": query,
         }
 
+    def generate_playlist(args: dict) -> dict[str, Any]:
+        prompt = str(args.get("prompt") or args.get("query") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt required"}
+        if args.get("sync"):
+            from services.dashboard.player import broadcast_player_load, remember_player_load
+            from services.dashboard.smart_playlist import plan_smart_playlist_blocking
+
+            artifact = plan_smart_playlist_blocking(prompt, operator_id=_operator_id())
+            if emit is not None:
+                emit(type="player.load", playlist=artifact)
+                remember_player_load(artifact, operator_id=_operator_id())
+            else:
+                broadcast_player_load(artifact, operator_id=_operator_id())
+            tracks = artifact.get("tracks") or []
+            title = artifact.get("title") or prompt
+            total = len(tracks)
+            noun = "track" if total == 1 else "tracks"
+            return {
+                "ok": True,
+                "message": f"Built playlist “{title}” with {total} {noun}.",
+                "title": title,
+                "tracks": total,
+            }
+
+        from services.dashboard.resolve import schedule_smart_playlist
+
+        schedule_smart_playlist(prompt, operator_id=_operator_id(), emit=emit)
+        return {
+            "ok": True,
+            "message": f"Building a playlist for “{prompt}”…",
+            "pending": True,
+            "prompt": prompt,
+        }
+
+    def start_radio(args: dict) -> dict[str, Any]:
+        prompt = str(args.get("prompt") or args.get("vibe") or args.get("query") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt required"}
+        if args.get("sync"):
+            from services.dashboard.player import broadcast_player_load, remember_player_load
+            from services.dashboard.resolve import _broadcast_player_radio
+            from services.dashboard.smart_playlist import plan_smart_playlist_blocking
+
+            artifact = plan_smart_playlist_blocking(prompt, operator_id=_operator_id())
+            if emit is not None:
+                emit(type="player.load", playlist=artifact)
+                remember_player_load(artifact, operator_id=_operator_id())
+                emit(type="player.radio", enabled=True, prompt=prompt)
+            else:
+                broadcast_player_load(artifact, operator_id=_operator_id())
+                _broadcast_player_radio(
+                    enabled=True,
+                    prompt=prompt,
+                    operator_id=_operator_id(),
+                )
+            tracks = artifact.get("tracks") or []
+            title = artifact.get("title") or prompt
+            return {
+                "ok": True,
+                "message": f"Radio on — “{title}” with {len(tracks)} tracks to start.",
+                "title": title,
+                "tracks": len(tracks),
+            }
+
+        from services.dashboard.resolve import schedule_smart_playlist
+
+        schedule_smart_playlist(
+            prompt,
+            operator_id=_operator_id(),
+            emit=emit,
+            enable_radio=True,
+        )
+        return {
+            "ok": True,
+            "message": f"Starting radio for “{prompt}”…",
+            "pending": True,
+            "prompt": prompt,
+        }
+
     return [
         ToolSpec(
             name="dashboard_play_music",
@@ -214,6 +294,46 @@ def build_dashboard_player_tools(*, emit: Callable[..., None] | None = None) -> 
                 _emit_control("clear"),
                 {"ok": True, "action": "clear", "message": "Paused and cleared the playlist."},
             )[1],
+            group="dashboard",
+        ),
+        ToolSpec(
+            name="dashboard_generate_playlist",
+            description=(
+                "Generate a curated multi-track playlist in the dashboard browser player using "
+                "the LLM DJ. Use when the user asks for a playlist, mix, vibe, genre block, or "
+                "mood-based set — not a single song. Pass a natural-language prompt."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Playlist vibe, genre, era, or scene in plain language.",
+                    },
+                },
+                "required": ["prompt"],
+            },
+            handler=generate_playlist,
+            group="dashboard",
+        ),
+        ToolSpec(
+            name="dashboard_start_radio",
+            description=(
+                "Start infinite radio mode in the dashboard player: LLM builds an initial "
+                "playlist and auto-refills when the queue runs out. Use for radio, endless mix, "
+                "or keep-this-vibe-going requests."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Radio vibe, genre, or scene to keep playing.",
+                    },
+                },
+                "required": ["prompt"],
+            },
+            handler=start_radio,
             group="dashboard",
         ),
     ]

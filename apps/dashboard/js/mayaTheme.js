@@ -6,6 +6,16 @@
   const THEMES = {
     unified: { id: "unified", label: "Maya Unified", description: "Default operator portal" },
     industrial: { id: "industrial", label: "Industrial", description: "Stealth terminal aesthetic" },
+    brutalist: {
+      id: "brutalist",
+      label: "Brutalist",
+      description: "Concrete mono transport — album-art player aesthetic",
+    },
+    "brutalist-dark": {
+      id: "brutalist-dark",
+      label: "Brutalist Dark",
+      description: "Black concrete mono — white rules, amber signal",
+    },
   };
 
   function migrateThemeId(id) {

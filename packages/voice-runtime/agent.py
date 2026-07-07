@@ -503,6 +503,7 @@ class VoiceAgent:
         self._pending_channel_post: Optional[dict[str, str]] = None
         self._pending_channel_reply: Optional[dict[str, str]] = None
         self._last_discord_intent: Optional[dict[str, str]] = None
+        self._turn_corr_id: str | None = None
 
         os.makedirs(CONFIG.audio.output_dir, exist_ok=True)
 
@@ -1509,6 +1510,15 @@ class VoiceAgent:
                 ),
                 fail=f"I couldn't queue {q_query}.",
             )
+
+        try:
+            from services.discord.channel_resolver import execute_discord_join
+
+            joined = execute_discord_join(self, original, original)
+            if joined is not None:
+                return joined
+        except ImportError:
+            pass
         return None
 
     @staticmethod
@@ -2511,6 +2521,10 @@ class VoiceAgent:
             return str(result.get("message") or f"Playing {result.get('title', 'that')}.")
         if name == "dashboard_queue_music":
             return str(result.get("message") or "Added to the queue.")
+        if name == "dashboard_generate_playlist":
+            return str(result.get("message") or f"Built playlist “{result.get('title', 'that')}”.")
+        if name == "dashboard_start_radio":
+            return str(result.get("message") or "Radio is on.")
         return "Done."
 
     def _messages_with_animation_hint(
@@ -2748,6 +2762,9 @@ class VoiceAgent:
     # ----- events -----------------------------------------------------------
 
     def _emit(self, **event) -> None:
+        corr = self._turn_corr_id
+        if corr and event.get("type") in ("tool_start", "tool_end", "tool_trace"):
+            event = {**event, "corr_id": corr}
         if self.on_event is not None:
             try:
                 self.on_event(event)
@@ -3110,6 +3127,7 @@ class VoiceAgent:
             log.info("interpreted: %r -> %r", raw_text, user_text)
         display_text = user_text or "[unclear audio]"
         log.info("user: %s", display_text)
+        self._turn_corr_id = corr_id
         self._emit(type="user", text=display_text, corr_id=corr_id, message_id=user_message_id)
         self.playback.stop()
         self.playback.begin_turn()
@@ -3199,6 +3217,7 @@ class VoiceAgent:
             log.exception("turn failed: %s", exc)
             self._emit(type="error", text=str(exc))
         finally:
+            self._turn_corr_id = None
             self._turn_active.clear()
             self._stop_barge_listener(monitor)
 

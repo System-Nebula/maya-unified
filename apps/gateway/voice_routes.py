@@ -211,6 +211,7 @@ def register_agent_routes(app) -> None:
             "llm_model": llm.get("model"),
             "llm_provider": llm.get("provider"),
             "llm_health": health,
+            "imagine_enabled": bool(snap.get("imagine_enabled")),
             "imagine_health": imagine_health,
             "services": services,
             "capabilities": capabilities,

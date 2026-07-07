@@ -20,6 +20,24 @@ from services.settings.reasoning_normalize import (
 from services.llm.provider import create_llm_client
 
 
+def test_uses_lm_studio_catalog():
+    from services.settings.reasoning_normalize import uses_lm_studio_catalog
+
+    assert uses_lm_studio_catalog({"provider": "lm_studio"})
+    assert not uses_lm_studio_catalog({"provider": "litellm", "litellm": {"mode": "sdk"}})
+    assert uses_lm_studio_catalog({"provider": "litellm", "litellm": {"mode": "proxy"}})
+
+
+def test_normalize_does_not_force_litellm_when_switching_to_lm_studio():
+    raw = {
+        "provider": "lm_studio",
+        "model": "openrouter/deepseek/deepseek-v4-flash",
+        "litellm": {"mode": "sdk", "model": "openrouter/deepseek/deepseek-v4-flash"},
+    }
+    out = normalize_reasoning(raw)
+    assert out["provider"] == "lm_studio"
+
+
 def test_normalize_repairs_lm_studio_with_litellm_sdk_block():
     raw = {
         "provider": "lm_studio",

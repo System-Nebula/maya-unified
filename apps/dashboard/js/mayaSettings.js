@@ -7,7 +7,7 @@ function _detailedStorageKey() {
 
 document.addEventListener("alpine:init", () => {
   const AVATAR_COLOURS = [
-    "#0a84ff", "#30d158", "#ff9f0a", "#ff453a",
+    "#0a84ff", "#16a085", "#f39c12", "#e74c3c",
     "#bf5af2", "#32ade6", "#ffd60a", "#ff6961",
     "#5e5ce6", "#64d2ff",
   ];
@@ -352,14 +352,46 @@ document.addEventListener("alpine:init", () => {
       }
     },
 
+    _looksLikeHostedLlmModel(model) {
+      const raw = String(model || "").trim();
+      if (!raw.includes("/")) return false;
+      const prefix = raw.split("/")[0].toLowerCase();
+      return [
+        "gemini", "openai", "openrouter", "anthropic", "ollama", "groq",
+        "azure", "cohere", "mistral", "deepseek", "xai",
+      ].includes(prefix);
+    },
+
     _llmCatalogUrl() {
       if (!this.usesLmStudioCatalog()) return "";
       const base = (this.s.reasoning?.base_url || "").trim();
       if (!base) return "";
-      const params = new URLSearchParams({ llm: "1", base_url: base });
+      const params = new URLSearchParams({
+        llm: "1",
+        base_url: base,
+        provider: this.s.reasoning?.provider || "lm_studio",
+      });
       const key = (this.s.reasoning?.api_key || "").trim();
-      if (key) params.set("api_key", key);
+      if (this.s.reasoning?.provider === "lm_studio") {
+        params.set("api_key", key || "lm-studio");
+      } else if (key) {
+        params.set("api_key", key);
+      }
       return `/api/voice/settings/catalog?${params}`;
+    },
+
+    _syncLlmModelOptions(models) {
+      const list = Array.isArray(models) ? [...models] : [];
+      const current = (this.s.reasoning?.model || "").trim();
+      if (current && !list.some((m) => m.id === current)) {
+        list.unshift({ id: current, label: current });
+      }
+      this.catalog.llm_models = list;
+      if (!current && list.length) {
+        this.s.reasoning.model = list[0].id;
+        return true;
+      }
+      return false;
     },
 
     async refreshLlmModels() {
@@ -385,16 +417,12 @@ document.addEventListener("alpine:init", () => {
         if (!r.ok) throw new Error(`Could not reach LLM server (HTTP ${r.status})`);
         const data = await r.json();
         const models = data.catalog?.llm_models || [];
-        this.catalog.llm_models = models;
+        const pickedDefault = this._syncLlmModelOptions(models);
         if (!models.length) {
           this.llmModelsHint = "No models returned — open LM Studio and load a model.";
         } else {
           this.llmModelsHint = `${models.length} model${models.length === 1 ? "" : "s"} from server`;
-          const current = this.s.reasoning?.model || "";
-          if (current && !models.some((m) => m.id === current)) {
-            this.s.reasoning.model = models[0].id;
-            this.save();
-          }
+          if (pickedDefault) this.save();
         }
       } catch (e) {
         this.llmModelsHint = String(e.message || e);
@@ -620,12 +648,22 @@ document.addEventListener("alpine:init", () => {
 
     async onProviderChange() {
       const leavingWebLLM = this.s.reasoning?.provider !== "webllm";
+      if (this.s.reasoning?.provider === "lm_studio") {
+        if (this.s.reasoning.litellm) this.s.reasoning.litellm.model = "";
+        const m = (this.s.reasoning.model || "").trim();
+        if (this._looksLikeHostedLlmModel(m)) {
+          this.s.reasoning.model = "local-model";
+        }
+        if (this.s.reasoning.api_key_configured) {
+          this.s.reasoning.api_key = "lm-studio";
+        }
+      }
       this.normalizeWebLLM();
       if (this.s.reasoning?.provider === "litellm") this.normalizeReasoning();
       if (leavingWebLLM && window.mayaWebLLMBridge?.unload) {
         await window.mayaWebLLMBridge.unload();
       }
-      this.save();
+      await this._saveNow();
       if (this.s.reasoning?.provider === "webllm") {
         this.health = {
           status: "skipped",

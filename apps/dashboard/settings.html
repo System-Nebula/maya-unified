@@ -9,6 +9,8 @@
     <link rel="stylesheet" href="/dashboard/css/themes/theme-base.css" />
     <link rel="stylesheet" href="/dashboard/css/themes/theme-unified.css" />
     <link rel="stylesheet" href="/dashboard/css/themes/theme-industrial.css" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-brutalist.css" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-brutalist-dark.css" />
     <script src="/dashboard/js/mayaTheme.js"></script>
     <title>Settings — Maya Unified</title>
     <link rel="stylesheet" href="/sdk/maya-voice-sdk.css" />
@@ -162,7 +164,7 @@
                 <div class="mt-appearance-grid" x-data="mayaThemePicker">
                   <template x-for="t in themes" :key="t.id">
                     <button type="button" class="mt-appearance-card" :class="{ active: activeId === t.id }" @click="pick(t.id)">
-                      <div class="mt-appearance-swatch" :class="t.id === 'industrial' ? 'mt-appearance-swatch--industrial' : 'mt-appearance-swatch--unified'"></div>
+                      <div class="mt-appearance-swatch" :class="'mt-appearance-swatch--' + t.id"></div>
                       <h3 x-text="t.label"></h3>
                       <p x-text="t.description"></p>
                     </button>
@@ -720,7 +722,7 @@
                   <div class="mv-row-sub" x-show="llmModelsLoading">Loading models…</div>
                   <div class="mv-row-sub" x-show="!llmModelsLoading && llmModelsHint" x-text="llmModelsHint"></div></div>
                 <div class="rhs">
-                  <select class="mv-select" style="min-width:240px" x-model="s.reasoning.model" @change="save()" :disabled="llmModelsLoading">
+                  <select class="mv-select" style="min-width:240px" x-model="s.reasoning.model" @change="_saveNow()" :disabled="llmModelsLoading">
                     <template x-for="m in catalog.llm_models" :key="m.id"><option :value="m.id" x-text="m.label"></option></template>
                   </select>
                 </div>

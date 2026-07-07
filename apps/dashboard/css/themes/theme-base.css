@@ -1,5 +1,16 @@
 /* Shared auth + theme picker structure (colors via theme tokens). */
 
+:root {
+  --mv-success: #2ecc71;
+  --mv-success-soft: #16a085;
+  --mv-warn: #f39c12;
+  --mv-danger: #e74c3c;
+  --mu-success: var(--mv-success);
+  --mu-success-border: var(--mv-success-soft);
+  --mu-warn: var(--mv-warn);
+  --mu-danger: var(--mv-danger);
+}
+
 .mt-theme-picker {
   display: flex;
   gap: 8px;
@@ -99,6 +110,16 @@
   background:
     linear-gradient(90deg, transparent, rgba(232, 100, 26, 0.5), transparent),
     #080608;
+}
+
+.mt-appearance-swatch--brutalist {
+  background:
+    linear-gradient(135deg, #d0d0d0 0%, #d0d0d0 42%, #0a0a0a 42%, #0a0a0a 58%, #b8b8b8 58%, #b8b8b8 100%);
+}
+
+.mt-appearance-swatch--brutalist-dark {
+  background:
+    linear-gradient(135deg, #0a0a0a 0%, #141414 36%, #ecf0f1 36%, #ecf0f1 40%, #f39c12 40%, #0a0a0a 100%);
 }
 
 /* Auth page roots */

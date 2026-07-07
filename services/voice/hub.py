@@ -633,13 +633,19 @@ class VoiceHub(Hub):
         from services.discovery.policy import imagine_capability_ready
         from services.discovery.registry import snapshot as services_snapshot
         from services.imagine.health import get_cached_comfyui_health
+        from services.imagine.settings import get_imagine_settings
         from services.llm.health import build_agent_capabilities, get_cached_llm_health
 
         settings = load_effective_settings(operator_id)
-        imagine_health = get_cached_comfyui_health(
-            settings, run_probe=False, operator_id=operator_id
-        )
-        imagine_ready = imagine_capability_ready(imagine_health, settings=settings)
+        imagine_enabled = bool(get_imagine_settings(settings).get("enabled"))
+        if imagine_enabled:
+            imagine_health = get_cached_comfyui_health(
+                settings, run_probe=False, operator_id=operator_id
+            )
+            imagine_ready = imagine_capability_ready(imagine_health, settings=settings)
+        else:
+            imagine_health = None
+            imagine_ready = False
         reasoning = self._reasoning_settings(operator_id)
         provider = str(reasoning.get("provider", "lm_studio")).lower()
         if provider == "webllm":
@@ -666,6 +672,7 @@ class VoiceHub(Hub):
                 "health": health,
                 "capabilities": caps,
                 "llm_ready": caps["text_chat"],
+                "imagine_enabled": imagine_enabled,
                 "imagine_health": imagine_health,
                 "services": services_snapshot(),
             }
@@ -683,6 +690,7 @@ class VoiceHub(Hub):
             "health": health,
             "capabilities": caps,
             "llm_ready": caps["text_chat"],
+            "imagine_enabled": imagine_enabled,
             "imagine_health": imagine_health,
             "services": services_snapshot(),
         }
@@ -1071,16 +1079,23 @@ class VoiceHub(Hub):
                 motion_turn = False
                 direct = None
                 if self.agent._tools_active():  # noqa: SLF001
-                    if self.agent._is_discord_context_turn(text):  # noqa: SLF001
-                        direct = self.agent._try_discord_direct(text)  # noqa: SLF001
-                    else:
-                        direct = self.agent._try_bandcamp_direct(text)  # noqa: SLF001
-                        if direct is None:
-                            direct = self.agent._try_dashboard_music_direct(text)  # noqa: SLF001
-                        if direct is None:
-                            direct = self.agent._try_dashboard_queue_direct(text)  # noqa: SLF001
-                        if direct is None:
+                    if plan and plan.intent not in ("chat", "unknown", "none"):  # noqa: SLF001
+                        direct = self.agent._execute_orchestrator_plan(plan, text, text)  # noqa: SLF001
+                    if direct is None:
+                        direct = self.agent._try_pending_action_direct(text)  # noqa: SLF001
+                    if direct is None and not self.agent._maybe_motion_request(  # noqa: SLF001
+                        text, plan=plan, raw_text=text,
+                    ):
+                        if self.agent._is_discord_context_turn(text):  # noqa: SLF001
                             direct = self.agent._try_discord_direct(text)  # noqa: SLF001
+                        else:
+                            direct = self.agent._try_bandcamp_direct(text)  # noqa: SLF001
+                            if direct is None:
+                                direct = self.agent._try_dashboard_music_direct(text)  # noqa: SLF001
+                            if direct is None:
+                                direct = self.agent._try_dashboard_queue_direct(text)  # noqa: SLF001
+                            if direct is None:
+                                direct = self.agent._try_discord_direct(text)  # noqa: SLF001
                 with _inference_lock:
                     self.agent._avatar_mood_set_this_turn = False  # noqa: SLF001
                     if direct:

@@ -267,9 +267,17 @@
         if (!ctx) return;
 
         const root = this.tokenRoot;
-        const accent = blockColor(root, "--block-accent");
-        const accentHover = blockColor(root, "--block-accent-hover");
-        const mutedBg = blockColor(root, "--block-muted-bg");
+        const themeId = document.documentElement.dataset.mayaTheme || "";
+        const brutalist = themeId === "brutalist" || themeId === "brutalist-dark";
+        const accent = brutalist
+          ? blockColor(root, "--player-fg")
+          : blockColor(root, "--block-accent");
+        const accentHover = brutalist
+          ? blockColor(root, "--player-muted")
+          : blockColor(root, "--block-accent-hover");
+        const mutedBg = brutalist
+          ? blockColor(root, "--player-muted")
+          : blockColor(root, "--block-muted-bg");
         const playhead = blockColor(root, "--player-fg");
 
         const dpr = window.devicePixelRatio || 1;

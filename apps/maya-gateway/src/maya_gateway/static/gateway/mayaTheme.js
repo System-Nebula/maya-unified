@@ -13,9 +13,9 @@
     try {
       const params = new URLSearchParams(window.location.search);
       const fromUrl = migrateThemeId(params.get("theme"));
-      if (fromUrl === "unified" || fromUrl === "industrial") return fromUrl;
+      if (fromUrl === "unified" || fromUrl === "industrial" || fromUrl === "brutalist") return fromUrl;
       const stored = migrateThemeId(localStorage.getItem(STORAGE_KEY));
-      if (stored === "unified" || stored === "industrial") return stored;
+      if (stored === "unified" || stored === "industrial" || stored === "brutalist") return stored;
     } catch (_) {}
     return DEFAULT_THEME;
   }

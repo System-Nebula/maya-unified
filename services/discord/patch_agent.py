@@ -7,9 +7,9 @@ from typing import Any
 
 from services.discord.channel_resolver import (
     build_channels_hint,
+    execute_discord_join,
     extract_join_channel_hint,
-    list_discord_channels,
-    resolve_channel_name,
+    resolve_join_channel_name,
     resolve_plan_channel_params,
 )
 from services.discord.fuzzy_channels import resolve_voice_channel_fuzzy
@@ -106,23 +106,12 @@ def patch_voice_agent(agent: Any) -> None:
                 channel = extract_join_channel_hint(
                     getattr(plan, "user_meant", None) or user_text or raw_text
                 )
-            voice, _ = list_discord_channels(agent.discord)
-            resolved = resolve_channel_name(agent.llm, channel, voice, kind="voice")
-            if resolved:
-                channel = resolved
-                params["channel_name"] = resolved
+            channel = resolve_join_channel_name(agent, channel)
             if channel:
-                return agent._discord_tool_reply(
-                    "discord_join_voice",
-                    {"channel_name": channel},
-                    lambda ch=channel: agent.discord.join_voice(ch),
-                    ok=lambda r, ch=channel: (
-                        f"Joined {r.get('joined', ch)}."
-                        if r.get("joined") or r.get("ok", True)
-                        else f"Joined {ch}."
-                    ),
-                    fail=f"I couldn't join {channel}.",
-                )
+                params["channel_name"] = channel
+            return execute_discord_join(
+                agent, user_text, raw_text, channel_name=channel,
+            )
         return orig_execute(plan, user_text, raw_text)
 
     agent._execute_orchestrator_plan = wrapped_execute

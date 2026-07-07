@@ -14,7 +14,7 @@ from services.settings.catalog import (
     fetch_openai_models,
 )
 from services.llm.api_keys import resolve_reasoning_api_key
-from services.settings.reasoning_normalize import is_litellm_sdk
+from services.settings.reasoning_normalize import uses_lm_studio_catalog
 from services.settings.store import load_effective_settings
 from services.voice.hub import hub
 
@@ -40,6 +40,7 @@ def settings_catalog(
     llm: bool = True,
     base_url: str = "",
     api_key: str = "",
+    provider: str = "",
 ) -> dict:
     catalog: dict = {
         "barge_modes": ["smart", "instant", "off"],
@@ -66,11 +67,17 @@ def settings_catalog(
     }
     oid = _operator_id(request)
     settings = load_effective_settings(oid or None)
-    reasoning = settings.get("reasoning", {})
+    reasoning = dict(settings.get("reasoning", {}) or {})
+    if provider.strip():
+        reasoning["provider"] = provider.strip()
     llm_base = (base_url or "").strip() or str(reasoning.get("base_url", ""))
-    llm_key = (api_key or "").strip() or resolve_reasoning_api_key(reasoning, operator_id=oid or None)
-    if llm and not is_litellm_sdk(reasoning):
-        catalog["llm_models"] = fetch_openai_models(llm_base, llm_key)
+    provider_lc = str(reasoning.get("provider", "lm_studio")).lower()
+    if provider_lc == "lm_studio":
+        llm_key = (api_key or "").strip() or "lm-studio"
+    else:
+        llm_key = (api_key or "").strip() or resolve_reasoning_api_key(reasoning, operator_id=oid or None)
+    if llm and uses_lm_studio_catalog(reasoning):
+        catalog["llm_models"] = fetch_openai_models(llm_base, llm_key, timeout=8.0)
     else:
         catalog["llm_models"] = []
     if not catalog["llm_models"] and reasoning.get("model"):

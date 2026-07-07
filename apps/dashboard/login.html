@@ -10,6 +10,8 @@
     <link rel="stylesheet" href="/dashboard/css/themes/theme-base.css" />
     <link rel="stylesheet" href="/dashboard/css/themes/theme-unified.css" />
     <link rel="stylesheet" href="/dashboard/css/themes/theme-industrial.css" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-brutalist.css" />
+    <link rel="stylesheet" href="/dashboard/css/themes/theme-brutalist-dark.css" />
     <link rel="stylesheet" href="/dashboard/css/maya-login.css" />
     <style>body { margin: 0; }</style>
     <script src="/dashboard/js/mayaTheme.js"></script>
@@ -19,7 +21,7 @@
     <div class="auth-root" x-data x-init="$store.mayaTheme.init(); $store.mayaAuth.init()">
 
       <!-- Unified — open door, email + OAuth -->
-      <div class="ml-page" x-show="$store.mayaTheme.id === 'unified'" x-cloak>
+      <div class="ml-page" x-show="$store.mayaTheme.id !== 'industrial'" x-cloak>
         <div class="ml-bg">
           <div class="ml-blob ml-blob-1"></div>
           <div class="ml-blob ml-blob-2"></div>

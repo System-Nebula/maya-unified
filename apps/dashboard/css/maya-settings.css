@@ -37,19 +37,19 @@
   font-size: 12px;
   padding: 6px 12px;
   border-radius: 4px;
-  border: 1px solid #2d5a3a;
-  color: #30d158;
-  background: rgba(48, 209, 88, 0.08);
+  border: 1px solid var(--mv-success-soft, #16a085);
+  color: var(--mv-success, #2ecc71);
+  background: color-mix(in srgb, var(--mv-success, #2ecc71) 8%, transparent);
 }
 .ms-toast.err {
-  border-color: #5c2d2d;
-  color: #ff453a;
-  background: rgba(255, 69, 58, 0.08);
+  border-color: color-mix(in srgb, var(--mv-danger, #e74c3c) 55%, #000);
+  color: var(--mv-danger, #e74c3c);
+  background: color-mix(in srgb, var(--mv-danger, #e74c3c) 8%, transparent);
 }
 .ms-toast.warn {
-  border-color: #5c4a2d;
-  color: #ff9f0a;
-  background: rgba(255, 159, 10, 0.08);
+  border-color: color-mix(in srgb, var(--mv-warn, #f39c12) 55%, #000);
+  color: var(--mv-warn, #f39c12);
+  background: color-mix(in srgb, var(--mv-warn, #f39c12) 8%, transparent);
 }
 .llm-health-badge {
   display: inline-block;
@@ -59,9 +59,9 @@
   flex-shrink: 0;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--mv-border) 70%, transparent);
 }
-.llm-health-badge.is-ok { background: #22c55e; }
-.llm-health-badge.is-warn { background: #ff9f0a; }
-.llm-health-badge.is-error { background: #ff453a; }
+.llm-health-badge.is-ok { background: var(--mv-success, #2ecc71); }
+.llm-health-badge.is-warn { background: var(--mv-warn, #f39c12); }
+.llm-health-badge.is-error { background: var(--mv-danger, #e74c3c); }
 .llm-health-badge.is-skipped { background: #8e8e93; }
 .llm-health-badge.is-unknown { background: var(--mv-border); }
 .ms-shell.mv-shell {
@@ -156,7 +156,7 @@
   background: var(--mv-accent-tint); color: var(--mv-accent); flex-shrink: 0;
 }
 .ms-tool-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
-.ms-tool-dot.on { background: #30d158; }
+.ms-tool-dot.on { background: var(--mv-success, #2ecc71); }
 .ms-tool-dot.off { background: #ff453a; }
 .ms-empty { color: var(--mv-faint); justify-content: center; border-style: dashed !important; }
 .ms-tool-log li { font-family: var(--mv-mono); font-size: 11px; color: var(--mv-muted); }

@@ -85,7 +85,7 @@
 }
 .mp-save-msg {
   font-size: 12px;
-  color: #30d158;
+  color: var(--mv-success, #2ecc71);
 }
 .mp-save-err {
   font-size: 12px;

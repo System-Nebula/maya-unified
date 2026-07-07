@@ -172,6 +172,44 @@ def resolve_plan_channel_params(agent: Any, plan: Any) -> None:
             params["channel_name"] = resolved
 
 
+_GENERIC_JOIN_HINTS = frozenset({
+    "discord",
+    "discord channel",
+    "the discord channel",
+    "voice",
+    "voice channel",
+    "the voice channel",
+    "vc",
+    "please",
+})
+
+
+def is_generic_channel_hint(hint: str) -> bool:
+    """True when STT/orchestrator returned a placeholder instead of a channel name."""
+    key = norm_name(hint)
+    if not key:
+        return True
+    if key in _GENERIC_JOIN_HINTS:
+        return True
+    return key.startswith("discord channel") or key.endswith(" please")
+
+
+def default_voice_channel_name() -> str:
+    return str(load_settings().get("discord", {}).get("default_voice_channel") or "").strip()
+
+
+def resolve_join_channel_name(agent: Any, hint: str) -> str:
+    """Resolve a join hint to a live voice channel, with settings fallback."""
+    channel = (hint or "").strip()
+    if not channel or is_generic_channel_hint(channel):
+        channel = default_voice_channel_name() or channel
+    if not channel or agent.discord is None:
+        return channel
+    voice, _ = list_discord_channels(agent.discord)
+    resolved = resolve_channel_name(agent.llm, channel, voice, kind="voice")
+    return resolved or channel
+
+
 def extract_join_channel_hint(text: str) -> str:
     """Pull a channel fragment from join-style utterances."""
     import re
@@ -188,3 +226,47 @@ def extract_join_channel_hint(text: str) -> str:
         if m:
             return m.group(1).strip(" '\".,!?")
     return t
+
+
+def wants_discord_join(text: str) -> bool:
+    """True when the user is asking the bot to join a Discord voice channel."""
+    t = (text or "").lower()
+    if not t:
+        return False
+    join_phrases = ("join", "connect to", "get in", "hop in", "switch to", "move to")
+    if not any(p in t for p in join_phrases):
+        return False
+    return any(w in t for w in ("discord", "channel", "vc", "voice"))
+
+
+def execute_discord_join(
+    agent: Any,
+    user_text: str,
+    raw_text: str,
+    *,
+    channel_name: str = "",
+) -> Any:
+    """Join a voice channel; returns spoken reply or None."""
+    if agent.discord is None:
+        return None
+    hint = (channel_name or "").strip()
+    if not hint:
+        if not wants_discord_join(user_text):
+            return None
+        hint = extract_join_channel_hint(
+            (user_text or "").strip() or (raw_text or "").strip(),
+        )
+    channel = resolve_join_channel_name(agent, hint)
+    if not channel:
+        return None
+    return agent._discord_tool_reply(
+        "discord_join_voice",
+        {"channel_name": channel},
+        lambda ch=channel: agent.discord.join_voice(ch),
+        ok=lambda r, ch=channel: (
+            f"Joined {r.get('joined', ch)}."
+            if r.get("joined") or r.get("ok", True)
+            else f"Joined {ch}."
+        ),
+        fail=f"I couldn't join {channel}.",
+    )

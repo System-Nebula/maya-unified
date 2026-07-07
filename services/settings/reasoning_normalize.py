@@ -37,6 +37,21 @@ def is_litellm_sdk(reasoning: dict[str, Any] | None) -> bool:
     return str(litellm.get("mode", "sdk")).lower() != "proxy"
 
 
+def uses_lm_studio_catalog(reasoning: dict[str, Any] | None) -> bool:
+    """True when the UI should list models from an OpenAI-compatible base URL."""
+    if not isinstance(reasoning, dict):
+        return True
+    provider = str(reasoning.get("provider", "lm_studio")).lower()
+    if provider == "webllm":
+        return False
+    if provider == "lm_studio":
+        return True
+    if provider == "litellm":
+        litellm = reasoning.get("litellm") or {}
+        return str(litellm.get("mode", "sdk")).lower() == "proxy"
+    return False
+
+
 def normalize_reasoning(reasoning: dict[str, Any] | None) -> dict[str, Any]:
     """Align provider, model, and litellm block so create_llm_client routes correctly."""
     if not isinstance(reasoning, dict):
@@ -53,7 +68,16 @@ def normalize_reasoning(reasoning: dict[str, Any] | None) -> dict[str, Any]:
             out["model"] = litellm_model
         return out
 
-    if mode == "sdk" and litellm_model and looks_like_litellm_model(litellm_model):
+    # Repair legacy misconfig: provider stuck on lm_studio while litellm SDK model was chosen.
+    # Do not repair when the active model is still a hosted LiteLLM id — user is switching away.
+    current_model = str(out.get("model") or "").strip()
+    if (
+        provider == "lm_studio"
+        and mode == "sdk"
+        and litellm_model
+        and looks_like_litellm_model(litellm_model)
+        and not looks_like_litellm_model(current_model)
+    ):
         out["provider"] = "litellm"
         out["model"] = litellm_model
     return out

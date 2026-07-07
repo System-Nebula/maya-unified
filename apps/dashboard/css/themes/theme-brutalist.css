@@ -1,0 +1,344 @@
+/* Brutalist theme — album-art / CONCRETE palette (project_album_art_two_line) */
+
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+
+[data-maya-theme="brutalist"] {
+  --mv-success: #0a0a0a;
+  --mv-success-soft: #0a0a0a;
+  --mu-success: #0a0a0a;
+  --mu-success-border: #0a0a0a;
+  --mt-bg: #b8b8b8;
+  --mt-text: #0a0a0a;
+  --mt-muted: #3a3a3a;
+  --mt-faint: #6a6a6a;
+  --mt-accent: #0a0a0a;
+  --mt-accent-tint: #c4c4c4;
+  --mt-accent-hover: #2a2a2a;
+  --mt-accent-line: #0a0a0a;
+  --mt-card: #d0d0d0;
+  --mt-border: #0a0a0a;
+  --mt-border-subtle: #0a0a0a;
+  --mt-surface-dim: #c4c4c4;
+  --mt-danger: #e74c3c;
+  --mt-danger-tint: #c4c4c4;
+  --mt-font: "JetBrains Mono", "Courier New", ui-monospace, monospace;
+  --mt-font-display: var(--mt-font);
+  --mt-font-mono: var(--mt-font);
+  --mt-radius-card: 0;
+  --mt-radius-control: 0;
+  --mt-link: #0a0a0a;
+}
+
+[data-maya-theme="brutalist"] body {
+  background: var(--mt-bg);
+  cursor: default;
+}
+
+[data-maya-theme="brutalist"] .ind-auth-page {
+  display: none !important;
+}
+
+[data-maya-theme="brutalist"] .ml-page {
+  background: var(--mt-bg);
+  font-family: var(--mt-font);
+}
+
+[data-maya-theme="brutalist"] .ml-bg,
+[data-maya-theme="brutalist"] .ml-blob {
+  display: none;
+}
+
+[data-maya-theme="brutalist"] .ml-card {
+  background: var(--mt-card);
+  border: 1px solid var(--mt-border);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+[data-maya-theme="brutalist"] .ml-title {
+  color: var(--mt-text);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+[data-maya-theme="brutalist"] .ml-mark {
+  background: var(--mt-accent);
+  color: var(--mt-card);
+  border-radius: 0;
+}
+
+[data-maya-theme="brutalist"] .ml-subtitle {
+  color: var(--mt-muted);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+[data-maya-theme="brutalist"] .ml-row {
+  background: var(--mt-bg);
+  border: 1px solid var(--mt-border);
+  border-radius: 0;
+}
+
+[data-maya-theme="brutalist"] .ml-row:focus-within {
+  border-color: var(--mt-border);
+  box-shadow: none;
+}
+
+[data-maya-theme="brutalist"] .ml-row-input {
+  color: var(--mt-text);
+  font-family: var(--mt-font-mono);
+  font-size: 11px;
+}
+
+[data-maya-theme="brutalist"] .ml-btn {
+  background: var(--mt-accent);
+  color: var(--mt-card);
+  border: 1px solid var(--mt-border);
+  border-radius: 0;
+  font-family: var(--mt-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: crosshair;
+}
+
+[data-maya-theme="brutalist"] .ml-btn:hover:not(:disabled) {
+  background: var(--mt-accent-hover);
+}
+
+[data-maya-theme="brutalist"] .ml-footer {
+  color: var(--mt-faint);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+[data-maya-theme="brutalist"] .ml-footer a {
+  color: var(--mt-text);
+  font-weight: 600;
+}
+
+[data-maya-theme="brutalist"] .ml-page.ml-page--setup {
+  background: var(--mt-bg);
+  font-family: var(--mt-font);
+}
+
+[data-maya-theme="brutalist"] .ml-page.ml-page--setup .ml-card {
+  background: var(--mt-card);
+  border: 1px solid var(--mt-border);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+[data-maya-theme="brutalist"] .ml-page.ml-page--setup .ml-title {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 16px;
+}
+
+[data-maya-theme="brutalist"] .ml-page.ml-page--setup .ml-btn {
+  border-radius: 0;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+[data-maya-theme="brutalist"] .mv-root {
+  --mv-bg: #d0d0d0;
+  --mv-sidebar: #c4c4c4;
+  --mv-surface: #d0d0d0;
+  --mv-input: #b8b8b8;
+  --mv-input-hover: #c4c4c4;
+  --mv-text: #0a0a0a;
+  --mv-muted: #3a3a3a;
+  --mv-faint: #6a6a6a;
+  --mv-border: #0a0a0a;
+  --mv-border-strong: #0a0a0a;
+  --mv-accent: #0a0a0a;
+  --mv-accent-tint: #c4c4c4;
+  --mv-danger: #e74c3c;
+  --mv-danger-tint: #c4c4c4;
+  --mv-r-ctl: 0;
+  --mv-r-panel: 0;
+  --mv-font: "JetBrains Mono", "Courier New", ui-monospace, monospace;
+  --mv-mono: var(--mv-font);
+}
+
+[data-maya-theme="brutalist"] .mv-btn,
+[data-maya-theme="brutalist"] .mv-select,
+[data-maya-theme="brutalist"] .mv-input,
+[data-maya-theme="brutalist"] .mv-textarea,
+[data-maya-theme="brutalist"] button.mv-nav-item,
+[data-maya-theme="brutalist"] .mt-theme-btn,
+[data-maya-theme="brutalist"] .mt-appearance-card,
+[data-maya-theme="brutalist-dark"] .mt-appearance-card {
+  border-radius: 0;
+  cursor: crosshair;
+}
+
+[data-maya-theme="brutalist"] .mv-btn-primary {
+  background: var(--mv-accent);
+  color: var(--mv-bg);
+  border: 1px solid var(--mv-border);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 10px;
+  box-shadow: none;
+}
+
+[data-maya-theme="brutalist"] .mv-btn-primary:hover:not(:disabled) {
+  background: #2a2a2a;
+}
+
+[data-maya-theme="brutalist"] .mv-btn:not(.mv-btn-primary) {
+  background: var(--mv-surface);
+  border: 1px solid var(--mv-border);
+  box-shadow: none;
+}
+
+[data-maya-theme="brutalist"] .mv-card,
+[data-maya-theme="brutalist"] .md-memory-card,
+[data-maya-theme="brutalist"] .md-panel,
+[data-maya-theme="brutalist"] .mp-section,
+[data-maya-theme="brutalist"] .mv-shell {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+[data-maya-theme="brutalist"] .mv-eyebrow,
+[data-maya-theme="brutalist"] .md-memory-card-head h3,
+[data-maya-theme="brutalist"] .mp-section-head h2 {
+  font-family: var(--mv-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--mv-faint);
+}
+
+[data-maya-theme="brutalist"] .mv-title,
+[data-maya-theme="brutalist"] .md-hero h1 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+[data-maya-theme="brutalist"] .mu-shell {
+  font-family: var(--mt-font-mono);
+  border-bottom-width: 1px;
+}
+
+[data-maya-theme="brutalist"] .mu-brand {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+
+[data-maya-theme="brutalist"] .mu-nav a {
+  border-radius: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: crosshair;
+}
+
+[data-maya-theme="brutalist"] .mu-chip {
+  border-radius: 0;
+  font-family: var(--mt-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+[data-maya-theme="brutalist"] .player-root.preset-maya {
+  --player-bg: #b8b8b8;
+  --player-fg: #0a0a0a;
+  --player-muted: #3a3a3a;
+  --player-hue: 0;
+  --player-chroma: 0;
+  --accent-active: #0a0a0a;
+  --block-accent-fg: #d0d0d0;
+  --block-interactive-hover: #0a0a0a;
+  --block-border-subtle: #0a0a0a;
+  --block-border-strong: #0a0a0a;
+  --block-groove-bg: #c4c4c4;
+}
+
+[data-maya-theme="brutalist"] .player-root.preset-maya .mp-art img {
+  filter: grayscale(1) contrast(1.15);
+}
+
+[data-maya-theme="brutalist"] .player-btn-strip {
+  border-radius: 0 !important;
+}
+
+[data-maya-theme="brutalist"] .player-btn-strip-item {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0 !important;
+}
+
+[data-maya-theme="brutalist"] .player-btn-strip-item--play {
+  width: 3.25rem;
+}
+
+[data-maya-theme="brutalist"] .player-btn-strip-item--play.is-playing {
+  background: var(--player-fg);
+  color: var(--player-bg);
+  box-shadow: none;
+}
+
+[data-maya-theme="brutalist"] .player-btn-strip-solo {
+  border-radius: 0 !important;
+}
+
+[data-maya-theme="brutalist"] .md-player {
+  border-radius: 0 !important;
+}
+
+[data-maya-theme="brutalist"] .mu-chip.ready .dot {
+  background: #0a0a0a;
+}
+
+[data-maya-theme="brutalist"] .mu-chip.ready {
+  color: #0a0a0a;
+  border-color: #0a0a0a;
+  background: #d0d0d0;
+  font-weight: 700;
+}
+
+[data-maya-theme="brutalist"] .mu-llm-dot {
+  background: #0a0a0a;
+  box-shadow: 0 0 0 1px #0a0a0a;
+}
+
+[data-maya-theme="brutalist-dark"] .mu-chip.ready .dot {
+  background: #0a0a0a;
+}
+
+[data-maya-theme="brutalist-dark"] .mu-chip.ready {
+  color: #0a0a0a;
+  border-color: #ecf0f1;
+  background: #ecf0f1;
+  font-weight: 700;
+}
+
+[data-maya-theme="brutalist-dark"] .mu-chip.loading {
+  color: #f39c12;
+  border-color: #f39c12;
+}
+
+[data-maya-theme="brutalist-dark"] .mu-llm-dot {
+  background: #f39c12;
+  box-shadow: 0 0 0 1px #f39c12;
+}
+
+[data-maya-theme="brutalist"] .md-scroll::-webkit-scrollbar-thumb {
+  background: #0a0a0a;
+  border-radius: 0;
+}
