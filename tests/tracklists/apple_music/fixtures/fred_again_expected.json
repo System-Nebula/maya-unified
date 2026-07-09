@@ -1,0 +1,34 @@
+{
+  "album_id": "1890298647",
+  "set_key": "apple_music:1890298647",
+  "track_count": 3,
+  "container_url": "https://music.apple.com/us/album/alexandra-palace-london-feb-27-2026-dj-mix/1890298647",
+  "container_schema": "apple_music",
+  "title": "Alexandra Palace, London (Feb 27, 2026) [DJ Mix]",
+  "entries": [
+    {
+      "position": 1,
+      "start_seconds": 0,
+      "end_seconds": 300,
+      "label": "Turn On The Lights again..",
+      "artist": null,
+      "title": "Turn On The Lights again.."
+    },
+    {
+      "position": 2,
+      "start_seconds": 300,
+      "end_seconds": 720,
+      "label": "Trax On Da Rocks Vol. 1",
+      "artist": null,
+      "title": "Trax On Da Rocks Vol. 1"
+    },
+    {
+      "position": 3,
+      "start_seconds": 720,
+      "end_seconds": 1080,
+      "label": "Delilah (pull me out of this)",
+      "artist": null,
+      "title": "Delilah (pull me out of this)"
+    }
+  ]
+}

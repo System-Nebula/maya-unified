@@ -1,4 +1,4 @@
-"""Repository-wide pytest bootstrap matching the gateway import layout."""
+"""Repository-wide pytest bootstrap matching gateway and shared fixture imports."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 EXTRA_PATHS = (
     ROOT,
+    ROOT / "tests",
     ROOT / "apps" / "discord-shim" / "src",
 )
 for path in EXTRA_PATHS:

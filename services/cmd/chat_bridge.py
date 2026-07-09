@@ -185,6 +185,8 @@ def _broadcast_cmd_turn(
         }
         if reply.artifacts:
             ai_payload["artifacts"] = reply.artifacts
+            if any(a.get("type") == "playlist" for a in reply.artifacts):
+                ai_payload["player_activate"] = True
         if reply.trace_id:
             ai_payload["trace_id"] = reply.trace_id
         if reply.job_id:

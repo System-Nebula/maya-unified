@@ -14,15 +14,12 @@ RESOLVE_TIMEOUT = 25.0
 
 
 async def resolve_playlist(query: str) -> dict[str, Any]:
+    from services.cmd.play_query import normalize_play_query
     from services.dashboard.player import build_playlist_for_query
-    from services.music.ontology import build_playlist_from_resolution, resolve_for_play
 
-    q = (query or "").strip()
+    q = normalize_play_query((query or "").strip())
     if not q:
         raise ValueError("query required")
-    resolved = await resolve_for_play(q)
-    if resolved is not None:
-        return build_playlist_from_resolution(q, resolved)
     return await build_playlist_for_query(q)
 
 

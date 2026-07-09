@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live Set Viewer Demo</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="live-set-demo.css" />
+    <script defer src="https://www.youtube.com/iframe_api"></script>
+    <script defer src="mayaLiveSet.js"></script>
+    <script defer src="live-set-demo.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+  </head>
+  <body>
+    <div
+      class="player-root preset-compact live-set-root"
+      x-data="mayaLiveSet()"
+      x-init="init()"
+      @destroy="destroy()"
+      :style="accentStyle"
+      x-cloak
+    >
+      <header class="live-set-header">
+        <div class="live-set-header-meta">
+          <span class="live-set-set-id" x-text="liveSet?.set_id || 'SET'"></span>
+          <span class="live-set-dot">·</span>
+          <span class="live-set-artists" x-text="liveSet?.title"></span>
+          <span class="live-set-dot">·</span>
+          <span class="live-set-venue" x-text="(liveSet?.venue || '') + (liveSet?.date ? ' · ' + liveSet.date : '')"></span>
+        </div>
+        <div class="live-set-header-right">
+          <span class="live-set-demo-badge" x-show="demoMode">Demo</span>
+          <span class="live-set-stats" x-text="trackCount + ' tracks · ' + (liveSet?.duration_label || fmtTime(setDuration))"></span>
+        </div>
+      </header>
+
+      <div class="live-set-body">
+        <div class="live-set-video-col">
+          <div class="live-set-video-wrap">
+            <div id="yt-player"></div>
+            <div class="live-set-demo-overlay" x-show="demoMode">
+              <div>
+                <p>YouTube embed · Demo mode active</p>
+                <p>Tracklist sync is simulated — click any track to jump</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="live-set-now-playing" :class="currentEntry ? 'is-active' : ''">
+            <template x-if="currentEntry">
+              <div class="live-set-eq live-set-eq--md" aria-hidden="true">
+                <span style="height: 50%; animation-duration: 0.38s"></span>
+                <span style="height: 100%; animation-duration: 0.49s"></span>
+                <span style="height: 65%; animation-duration: 0.6s"></span>
+                <span style="height: 85%; animation-duration: 0.71s"></span>
+                <span style="height: 45%; animation-duration: 0.82s"></span>
+              </div>
+            </template>
+            <template x-if="currentEntry">
+              <div style="flex: 1; min-width: 0">
+                <div class="live-set-now-label">Now Playing</div>
+                <div class="live-set-now-title" x-text="currentEntry.title || currentEntry.label"></div>
+              </div>
+            </template>
+            <template x-if="currentEntry">
+              <div class="live-set-now-time" x-text="fmtTime(currentTime)"></div>
+            </template>
+            <span x-show="!currentEntry" class="live-set-now-time" style="opacity: 0.4">—</span>
+          </div>
+
+          <div class="live-set-progress">
+            <div class="live-set-progress-head">
+              <span>Set progress</span>
+              <span x-text="currentIdx >= 0 ? (currentIdx + 1) + ' / ' + entries.length : '—'"></span>
+            </div>
+            <div class="live-set-progress-track">
+              <div class="live-set-progress-fill" :style="{ width: progressPct + '%' }"></div>
+            </div>
+            <div class="live-set-milestones">
+              <template x-for="entry in milestoneEntries" :key="entry.id">
+                <div class="live-set-milestone" :style="{ left: milestoneLeft(entry) }"></div>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <div class="live-set-tracklist-col">
+          <div class="live-set-tracklist-head">
+            <span>#</span>
+            <span class="col-track">Track</span>
+            <span>Time</span>
+          </div>
+
+          <div class="live-set-tracklist" x-ref="tracklist">
+            <template x-for="(track, i) in entries" :key="track.id">
+              <div
+                class="live-set-row-wrap"
+                :class="isCurrent(i) ? 'is-current' : ''"
+                :data-track-idx="i"
+              >
+                <div
+                  class="live-set-row"
+                  :class="isPlayed(i) ? 'is-played' : ''"
+                  @click="onRowClick(track, i)"
+                >
+                  <div class="live-set-row-num" :class="isCurrent(i) ? 'is-current' : ''">
+                    <template x-if="track.isNote">
+                      <span class="live-set-row-note-mark">✦</span>
+                    </template>
+                    <template x-if="!track.isNote && isCurrent(i)">
+                      <div class="live-set-eq live-set-eq--sm" aria-hidden="true">
+                        <span style="height: 50%; animation-duration: 0.38s"></span>
+                        <span style="height: 100%; animation-duration: 0.49s"></span>
+                        <span style="height: 65%; animation-duration: 0.6s"></span>
+                        <span style="height: 85%; animation-duration: 0.71s"></span>
+                        <span style="height: 45%; animation-duration: 0.82s"></span>
+                      </div>
+                    </template>
+                    <template x-if="!track.isNote && !isCurrent(i)">
+                      <span x-text="trackNumbers[i]"></span>
+                    </template>
+                  </div>
+
+                  <div class="live-set-row-body">
+                    <div class="live-set-row-title-row">
+                      <span
+                        class="live-set-row-title"
+                        :class="isCurrent(i) ? 'is-current' : (track.isNote ? 'is-note' : '')"
+                        x-text="track.title || track.label"
+                      ></span>
+                      <button
+                        type="button"
+                        class="live-set-footnote-btn"
+                        :class="expandedFootnote === i ? 'is-open' : ''"
+                        x-show="track.footnote"
+                        @click.stop="toggleFootnote(i)"
+                        aria-label="Toggle footnote"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                      </button>
+                    </div>
+                    <p class="live-set-footnote-text" x-show="expandedFootnote === i && track.footnote" x-text="track.footnote"></p>
+                  </div>
+
+                  <div class="live-set-row-time" :class="isCurrent(i) ? 'is-current' : ''" x-text="track.timestamp"></div>
+                </div>
+              </div>
+            </template>
+
+            <div class="live-set-end-cap">end of set</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

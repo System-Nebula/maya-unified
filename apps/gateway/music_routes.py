@@ -238,6 +238,18 @@ async def stop_player_cast(
     return await stop_cast(operator_id=str(op.id))
 
 
+@router.get("/player")
+async def get_player_snapshot(
+    op: Annotated[OperatorUser, Depends(require_operator)],
+):
+    from services.dashboard.player import player_snapshot
+
+    snapshot = player_snapshot(str(op.id))
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="no active player state")
+    return snapshot
+
+
 @router.post("/player/clear")
 async def clear_player(
     op: Annotated[OperatorUser, Depends(require_operator)],
@@ -307,7 +319,7 @@ async def resolve_player_query(
     from services.dashboard.resolve import resolve_playlist
 
     try:
-        artifact = await resolve_playlist(body.query.strip())
+        artifact = await resolve_playlist(body.query)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

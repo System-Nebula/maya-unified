@@ -43,13 +43,23 @@ async def lifespan(app: FastAPI):
     set_main_loop(asyncio.get_running_loop())
     install_loop_handler()
     os.makedirs(DATA_DIR, exist_ok=True)
+    if os.getenv("MAYA_E2E_FIXTURES"):
+        from services.music.e2e_fixtures import seed_andrea_fetch_cache
+
+        seed_andrea_fetch_cache()
     migrate_qwen3_data_to_unified()
     os.environ.setdefault("VA_DATA_DIR", str(DATA_DIR))
     seed_examples_if_needed()
     await _seed_operator_account()
     settings = seed_env_defaults()
     platform = settings.get("platform", {}) or {}
-    if platform.get("otel_enabled"):
+    otel_on = platform.get("otel_enabled") or os.getenv("VA_OTEL_ENABLED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if otel_on:
         os.environ["VA_OTEL_ENABLED"] = "1"
         try:
             from observability import setup_observability

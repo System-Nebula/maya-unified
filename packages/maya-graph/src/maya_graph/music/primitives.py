@@ -20,6 +20,7 @@ NODE_CANONICAL_WORK = "canonical_work"  # domain_id = work key ("wd:Q…" | "fp:
 NODE_RECORDING = "recording"  # domain_id = SourceRef.domain_key() ("yt:…", "bandcamp:…")
 NODE_ARTIST = "artist"  # domain_id = slug (artist_bridge.slugify)
 NODE_RELEASE = "release"
+NODE_DJ_SET = "dj_set"  # domain_id = "{schema}:{external_id}"
 
 # --- edge types ---
 EDGE_HAS_RECORDING = "has_recording"  # canonical_work -> recording
@@ -30,6 +31,9 @@ EDGE_DERIVED_FROM = "derived_from"  # remix/edit -> original work
 EDGE_SIMILAR_TO = "similar_to"
 EDGE_IN_GENRE = "in_genre"  # work/artist -> shared genre facet
 EDGE_APPEARS_ON = "appears_on"  # recording -> release
+EDGE_CONTAINS_ENTRY = "contains_entry"  # dj_set -> canonical_work
+EDGE_LINKED_SET = "linked_set"  # dj_set <-> dj_set
+EDGE_REACTED = "reacted"  # operator/work social signal
 
 # --- dimensions (subset of the private ontology vocabulary music uses) ---
 DIM_SEMANTIC = "semantic"

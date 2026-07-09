@@ -189,7 +189,34 @@ def test_cast_requires_operator():
     assert client.get("/api/media/cast").status_code == 401
     assert client.post("/api/media/cast").status_code == 401
     assert client.delete("/api/media/cast").status_code == 401
+    assert client.get("/api/media/player").status_code == 401
     assert client.post("/api/media/player/clear").status_code == 401
+
+
+def test_player_snapshot_empty(monkeypatch):
+    app = _media_app(authed=True)
+    monkeypatch.setattr("services.dashboard.player.player_snapshot", lambda _oid: None)
+    client = TestClient(app)
+    resp = client.get("/api/media/player")
+    assert resp.status_code == 404
+
+
+def test_player_snapshot_returns_playlist(monkeypatch):
+    app = _media_app(authed=True)
+    snapshot = {
+        "type": "playlist",
+        "presentation": "set",
+        "tracks": [{"title": "A", "query": "https://youtu.be/x", "src": "/api/media/stream?q=x"}],
+        "current": 0,
+    }
+
+    monkeypatch.setattr("services.dashboard.player.player_snapshot", lambda _oid: snapshot)
+    client = TestClient(app)
+    resp = client.get("/api/media/player")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["presentation"] == "set"
+    assert len(body["tracks"]) == 1
 
 
 def test_player_clear_ok(monkeypatch):

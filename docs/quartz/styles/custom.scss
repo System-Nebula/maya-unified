@@ -50,3 +50,14 @@ iframe.player-demo-embed {
   border-radius: 8px;
   background: #0b0b10;
 }
+
+iframe.live-set-demo-embed {
+  display: block;
+  width: 100%;
+  max-width: 56rem;
+  height: 32rem;
+  margin: 1.5rem 0;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: #0b0b10;
+}

@@ -1,0 +1,55 @@
+{
+  "video_id": "gfF8jzBVWvM",
+  "set_key": "yt:gfF8jzBVWvM",
+  "track_count": 3,
+  "container_url": "https://www.youtube.com/watch?v=gfF8jzBVWvM",
+  "container_schema": "yt",
+  "title": "Fred again.. live at Alexandra Palace",
+  "duration_seconds": 3600,
+  "entries": [
+    {
+      "position": 1,
+      "start_seconds": 0,
+      "end_seconds": 312,
+      "label": "Fred again.. & Swedish House Mafia - Turn On The Lights again..",
+      "artist": "Fred again.. & Swedish House Mafia",
+      "title": "Turn On The Lights again..",
+      "source_ref_schemas": [
+        "1001tl",
+        "apple_music",
+        "yt"
+      ]
+    },
+    {
+      "position": 2,
+      "start_seconds": 312,
+      "end_seconds": 765,
+      "label": "Thomas Bangalter - Trax On Da Rocks Vol. 1",
+      "artist": "Thomas Bangalter",
+      "title": "Trax On Da Rocks Vol. 1",
+      "source_ref_schemas": [
+        "1001tl",
+        "apple_music",
+        "yt"
+      ]
+    },
+    {
+      "position": 3,
+      "start_seconds": 765,
+      "end_seconds": 3600,
+      "label": "Fred again.. - Delilah (pull me out of this)",
+      "artist": "Fred again..",
+      "title": "Delilah (pull me out of this)",
+      "source_ref_schemas": [
+        "1001tl",
+        "apple_music",
+        "yt"
+      ]
+    }
+  ],
+  "linked_set_schemas": [
+    "1001tl",
+    "apple_music",
+    "yt"
+  ]
+}

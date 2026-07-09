@@ -25,6 +25,88 @@ function _playerStorageKey() {
   return `maya.player.v2.${uid}`;
 }
 
+function _liveSetDebugEnabled() {
+  try {
+    return localStorage.getItem("maya.debug.liveSet") === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function _logSetTransport(player, event, detail = {}) {
+  const payload = {
+    event,
+    corr_id: _lastPlayerLoadCorrId || null,
+    attrs: {
+      presentation: player.presentation,
+      mode: player.mode,
+      setUseYt: player.setUseYt,
+      setYtReady: player.setYtReady,
+      setTransportState: player.setTransportState,
+      entryCount: player.setEntries?.length,
+      videoId: player.setArtifact?.video_id,
+      ...detail,
+    },
+  };
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (_lastChatTraceparent) headers.traceparent = _lastChatTraceparent;
+    fetch("/api/telemetry/event", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (_) {}
+
+  if (!_liveSetDebugEnabled()) return;
+  console.info("[maya.liveSet]", event, payload.attrs);
+}
+
+function _installLiveSetDebugHelper() {
+  window.mayaLiveSetDebug = () => {
+    const player = window.Alpine?.store?.("mayaPlayer");
+    if (!player) {
+      console.warn("mayaPlayer store not ready");
+      return null;
+    }
+    const checklist = {
+      active: player.active,
+      presentation: player.presentation,
+      mode: player.mode,
+      isSetPresentation: player.isSetPresentation,
+      setUseYt: player.setUseYt,
+      setYtReady: player.setYtReady,
+      ytTransportReady: player._ytTransport?.isReady?.() === true,
+      setTransportState: player.setTransportState,
+      setEntries: player.setEntries?.length,
+      tracks: player.tracks?.length,
+      currentTime: player.currentTime,
+      videoId: player.setArtifact?.video_id,
+      error: player.error,
+      pendingLoads: _pendingPlayerLoads.length,
+      lastLoadCorrId: _lastPlayerLoadCorrId,
+      hasLastArtifact: !!_lastPlaylistArtifact,
+    };
+    console.table(checklist);
+    console.info("Retry: mayaRetryPlayerLoad()");
+    return checklist;
+  };
+}
+
+_installLiveSetDebugHelper();
+
+window.mayaRetryPlayerLoad = async function mayaRetryPlayerLoad() {
+  _flushPendingPlayerLoads();
+  if (_lastPlaylistArtifact) {
+    _safePlayerLoad(_lastPlaylistArtifact, { autoplay: false });
+  }
+  if (!_mayaPlayerStore()?.active) {
+    await _hydratePlayerFromServer();
+  }
+  return window.mayaLiveSetDebug?.();
+};
+
 function _streamSrcForQuery(query) {
   const q = String(query || "").trim();
   if (!q) return "";
@@ -115,6 +197,14 @@ function _normalizePlayerTrack(tr, index) {
   if (key) out.key = key;
   if (tr?.bpm != null && tr.bpm !== "") out.bpm = tr.bpm;
   if (tr?.duration != null && isFinite(Number(tr.duration))) out.duration = Number(tr.duration);
+  if (tr?.start_offset != null && isFinite(Number(tr.start_offset))) out.start_offset = Number(tr.start_offset);
+  if (tr?.end_offset != null && isFinite(Number(tr.end_offset))) out.end_offset = Number(tr.end_offset);
+  if (tr?.work_key) out.work_key = String(tr.work_key);
+  if (tr?.set_key) out.set_key = String(tr.set_key);
+  if (tr?.position != null && isFinite(Number(tr.position))) out.position = Number(tr.position);
+  if (tr?.play_mode) out.play_mode = String(tr.play_mode);
+  if (Array.isArray(tr?.source_refs)) out.source_refs = tr.source_refs;
+  if (tr?.reactions && typeof tr.reactions === "object") out.reactions = { ...tr.reactions };
   return out;
 }
 
@@ -126,15 +216,155 @@ function _mayaPlayerStore() {
   return window.Alpine?.store?.("mayaPlayer") || null;
 }
 
-function _routePlaylistArtifacts(artifacts) {
+const _pendingPlayerLoads = [];
+let _lastPlayerLoadCorrId = null;
+let _lastChatTraceparent = null;
+
+function _newTraceparent() {
+  const traceBytes = new Uint8Array(16);
+  const spanBytes = new Uint8Array(8);
+  crypto.getRandomValues(traceBytes);
+  crypto.getRandomValues(spanBytes);
+  const traceId = Array.from(traceBytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  const spanId = Array.from(spanBytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `00-${traceId}-${spanId}-01`;
+}
+let _lastPlaylistArtifact = null;
+
+function _clonePlaylistArtifact(artifact) {
+  if (!artifact) return null;
+  try {
+    return JSON.parse(JSON.stringify(artifact));
+  } catch (_) {
+    return { ...artifact };
+  }
+}
+
+function _rememberPlaylistArtifact(artifact) {
+  const cloned = _clonePlaylistArtifact(artifact);
+  if (cloned) _lastPlaylistArtifact = cloned;
+  return cloned;
+}
+
+function _safePlayerLoad(playlist, { autoplay = false, corrId = null } = {}) {
+  if (!playlist) return false;
+  if (corrId) _lastPlayerLoadCorrId = corrId;
+  const payload = _rememberPlaylistArtifact(playlist) || playlist;
+  const player = _mayaPlayerStore();
+  if (player) {
+    try {
+      player.load(payload, { autoplay });
+      if (player.active) {
+        console.info("[mayaPlayer] loaded", {
+          presentation: player.presentation,
+          tracks: player.tracks?.length,
+          setEntries: player.setEntries?.length,
+          corrId,
+        });
+        return true;
+      }
+    } catch (err) {
+      console.error("[mayaPlayer] load failed", err, payload);
+    }
+    return false;
+  }
+  _pendingPlayerLoads.push({ playlist: payload, autoplay, corrId });
+  console.warn("[mayaPlayer] queued load (store not ready)", {
+    presentation: payload.presentation,
+    tracks: payload.tracks?.length,
+    corrId,
+  });
+  return false;
+}
+
+function _flushPendingPlayerLoads() {
+  const player = _mayaPlayerStore();
+  if (!player || !_pendingPlayerLoads.length) return;
+  const pending = _pendingPlayerLoads.splice(0);
+  for (const item of pending) {
+    try {
+      player.load(item.playlist, { autoplay: item.autoplay });
+      if (item.corrId) _lastPlayerLoadCorrId = item.corrId;
+    } catch (err) {
+      console.error("[mayaPlayer] flushed load failed", err);
+    }
+  }
+}
+
+async function _ensurePlayerActiveAfterCmd(text, { artifacts, corrId } = {}) {
+  const player = _mayaPlayerStore();
+  if (player?.active) return true;
+
+  const fromArtifacts = (artifacts || []).find((a) => a?.type === "playlist");
+  if (fromArtifacts) {
+    _safePlayerLoad(fromArtifacts, { autoplay: false, corrId });
+    if (_mayaPlayerStore()?.active) return true;
+  }
+
+  if (_lastPlaylistArtifact) {
+    _safePlayerLoad(_lastPlaylistArtifact, { autoplay: false, corrId });
+    if (_mayaPlayerStore()?.active) return true;
+  }
+
+  const hydrated = await _hydratePlayerFromServer();
+  if (hydrated && _mayaPlayerStore()?.active) return true;
+
+  if (/live set|\btracks\b/i.test(String(text || ""))) {
+    console.warn("[mayaPlayer] play cmd completed but player inactive", {
+      text,
+      corrId,
+      pendingLoads: _pendingPlayerLoads.length,
+      hasLastArtifact: !!_lastPlaylistArtifact,
+    });
+    setTimeout(() => {
+      if (!_mayaPlayerStore()?.active) {
+        void _ensurePlayerActiveAfterCmd(text, { artifacts, corrId });
+      }
+    }, 250);
+  }
+  return false;
+}
+
+async function _hydratePlayerFromServer() {
+  const player = _mayaPlayerStore();
+  if (player?.active) return false;
+  try {
+    const r = await fetch("/api/media/player", { credentials: "same-origin" });
+    if (!r.ok) return false;
+    const snapshot = await r.json();
+    if (snapshot?.tracks?.length || snapshot?.presentation === "set") {
+      _safePlayerLoad(snapshot, { autoplay: false });
+      return true;
+    }
+  } catch (err) {
+    console.warn("[mayaPlayer] server hydrate failed", err);
+  }
+  return false;
+}
+
+async function _maybeHydratePlayerAfterCmd(text, meta = {}) {
+  const player = _mayaPlayerStore();
+  if (player?.active) return;
+  await _ensurePlayerActiveAfterCmd(text, meta);
+}
+
+function _routePlaylistArtifacts(artifacts, { autoplay = false, corrId = null } = {}) {
   if (!artifacts?.length) return artifacts;
   let lastPlaylist = null;
   for (const a of artifacts) {
     if (a?.type === "playlist") lastPlaylist = a;
   }
   if (lastPlaylist) {
-    const player = _mayaPlayerStore();
-    if (player) player.load(lastPlaylist);
+    const loaded = _safePlayerLoad(lastPlaylist, { autoplay, corrId });
+    if (loaded) {
+      const filtered = artifacts.filter((a) => a?.type !== "playlist");
+      return filtered.length ? filtered : undefined;
+    }
+    return artifacts;
   }
   const filtered = artifacts.filter((a) => a?.type !== "playlist");
   return filtered.length ? filtered : undefined;
@@ -151,8 +381,7 @@ function _migrateLegacyPlaylists(store) {
     if (!t.artifacts.length) delete t.artifacts;
   }
   if (newest) {
-    const player = _mayaPlayerStore();
-    if (player) player.load(newest, { autoplay: false });
+    _safePlayerLoad(newest, { autoplay: false });
   }
 }
 
@@ -165,16 +394,41 @@ function _restorePlayerStore(player) {
     }
     if (!raw) return;
     const data = JSON.parse(raw);
-    if (data.tracks?.length) {
-      player.active = true;
-      player.title = data.title || "";
-      player.url = data.url || "";
-      player.tracks = _normalizePlayerTracks(data.tracks);
-      player.current = Math.min(
-        Math.max(0, Number(data.current) || 0),
-        player.tracks.length - 1,
+    if (!data.tracks?.length) return;
+
+    if (data.presentation === "set" || data.mode === "live_set") {
+      player._loadSetPresentation(
+        {
+          type: "playlist",
+          presentation: "set",
+          mode: data.mode || "live_set",
+          title: data.title || "",
+          url: data.url || "",
+          ...(data.setArtifact || {}),
+          entries: data.setEntries || data.setArtifact?.entries || [],
+          tracks: data.tracks,
+        },
+        { autoplay: false },
       );
+      if (typeof data.volume === "number") player.volume = Math.min(1, Math.max(0, data.volume));
+      if (typeof data.muted === "boolean") player.muted = data.muted;
+      if (typeof data.shuffle === "boolean") player.shuffle = data.shuffle;
+      if (typeof data.repeat === "boolean") player.repeat = data.repeat;
+      if (typeof data.radioMode === "boolean") player.radioMode = data.radioMode;
+      if (typeof data.radioPrompt === "string") player.radioPrompt = data.radioPrompt;
+      return;
     }
+
+    player.active = true;
+    player.presentation = data.presentation || "playlist";
+    player.mode = data.mode || "";
+    player.title = data.title || "";
+    player.url = data.url || "";
+    player.tracks = _normalizePlayerTracks(data.tracks);
+    player.current = Math.min(
+      Math.max(0, Number(data.current) || 0),
+      player.tracks.length - 1,
+    );
     if (typeof data.volume === "number") player.volume = Math.min(1, Math.max(0, data.volume));
     if (typeof data.muted === "boolean") player.muted = data.muted;
     if (typeof data.shuffle === "boolean") player.shuffle = data.shuffle;
@@ -202,6 +456,10 @@ function _persistPlayerStore(player) {
       repeat: player.repeat,
       radioMode: player.radioMode,
       radioPrompt: player.radioPrompt,
+      presentation: player.presentation,
+      mode: player.mode,
+      setArtifact: player.setArtifact,
+      setEntries: player.setEntries,
     });
     localStorage.setItem(_playerStorageKey(), payload);
   } catch (_) {}
@@ -1121,6 +1379,8 @@ function _upsertCmdMayaTurn(store, {
   corrId,
   text,
   artifacts,
+  rawArtifacts,
+  playerActivate,
   cmdPhase,
   messageId,
   operatorText,
@@ -1128,7 +1388,8 @@ function _upsertCmdMayaTurn(store, {
   jobId,
   ev,
 }) {
-  artifacts = _routePlaylistArtifacts(artifacts);
+  const playlistArtifacts = rawArtifacts?.length ? rawArtifacts : artifacts;
+  artifacts = _routePlaylistArtifacts(playlistArtifacts, { corrId });
   if (cmdPhase === "remark") {
     const doneIdx = _findCmdDoneTurn(store, corrId, messageId);
     if (doneIdx >= 0) {
@@ -1165,6 +1426,12 @@ function _upsertCmdMayaTurn(store, {
     store._expectingReply = false;
     _persistConversation(store);
     _scrollTranscript();
+    if ((cmdPhase || "done") === "done") {
+      void _ensurePlayerActiveAfterCmd(text, {
+        artifacts: playlistArtifacts,
+        corrId,
+      });
+    }
     return true;
   }
   if (cmdPhase === "ack") {
@@ -1219,6 +1486,12 @@ function _upsertCmdMayaTurn(store, {
   store._expectingReply = false;
   _persistConversation(store);
   _scrollTranscript();
+  if ((cmdPhase || "done") === "done") {
+    void _ensurePlayerActiveAfterCmd(text, {
+      artifacts: playlistArtifacts,
+      corrId,
+    });
+  }
   return true;
 }
 
@@ -1379,6 +1652,10 @@ function _applyCmdResponse(store, data, operatorText) {
       traceId: data.trace_id || null,
       jobId: data.job_id || null,
     });
+    void _ensurePlayerActiveAfterCmd(data.text || "", {
+      artifacts: data.artifacts,
+      corrId,
+    });
     return;
   }
   const formatted = _formatCmdError(data.error || data.text || "command failed");
@@ -1464,11 +1741,13 @@ function _applyAgentEvent(store, ev) {
     return;
   }
   if (ev.type === "player.load" && ev.playlist) {
+    _safePlayerLoad(ev.playlist, { corrId: ev.corr_id || null });
     const player = _mayaPlayerStore();
-    if (player) {
-      player.load(ev.playlist);
-      player._scheduleCastSync?.();
-    }
+    player?._scheduleCastSync?.();
+    return;
+  }
+  if (ev.type === "player.activate") {
+    void _ensurePlayerActiveAfterCmd("", { corrId: ev.corr_id || null });
     return;
   }
   if (ev.type === "player.append" && (ev.tracks?.length || ev.playlist?.tracks?.length)) {
@@ -1672,8 +1951,9 @@ function _applyAgentEvent(store, ev) {
       // Legacy / VC alias — treat like a finalized Maya turn.
       ev = { ...ev, type: "ai", final: ev.final !== false };
     }
+    const rawArtifacts = ev.artifacts?.length ? [...ev.artifacts] : [];
     if (ev.artifacts?.length) {
-      ev.artifacts = _routePlaylistArtifacts(ev.artifacts);
+      ev.artifacts = _routePlaylistArtifacts(ev.artifacts, { corrId: _evCorrId(ev) });
     }
     const corrId = _evCorrId(ev);
     if (corrId && (ev.artifacts?.length || ev.text)) {
@@ -1695,6 +1975,12 @@ function _applyAgentEvent(store, ev) {
         });
         _persistConversation(store);
         _scrollTranscript();
+      }
+      if (ev.player_activate || /live set|\btracks\b/i.test(chunk)) {
+        void _ensurePlayerActiveAfterCmd(chunk, {
+          artifacts: rawArtifacts,
+          corrId,
+        });
       }
       return;
     }
@@ -1732,6 +2018,8 @@ function _applyAgentEvent(store, ev) {
         corrId,
         text: chunk,
         artifacts: ev.artifacts,
+        rawArtifacts,
+        playerActivate: !!ev.player_activate,
         cmdPhase: ev.cmd_phase || "done",
         messageId: ev.message_id,
         traceId: ev.trace_id || null,
@@ -1803,6 +2091,9 @@ document.addEventListener("alpine:init", () => {
     title: "",
     url: "",
     tracks: [],
+    entries: [],
+    setArtifact: null,
+    presentation: "playlist",
     current: 0,
     error: "",
     playing: false,
@@ -1822,6 +2113,19 @@ document.addEventListener("alpine:init", () => {
     ingestUrl: "",
     ingestPrompt: "",
     savedPlaylists: [],
+    mode: "",
+    setEntries: [],
+    expandedFootnote: null,
+    setTransportState: "",
+    get trackNumbers() {
+      if (this.presentation !== "set" || !this.entries) return [];
+      const utils = window.mayaLiveSetUtils;
+      return utils ? utils.buildTrackNumbers(this.entries) : [];
+    },
+    setUseYt: false,
+    setYtReady: false,
+    setMuted: false,
+    _ytTransport: null,
     casting: false,
     castBusy: false,
     castAvailable: false,
@@ -1836,13 +2140,60 @@ document.addEventListener("alpine:init", () => {
       return tr.src || "";
     },
     get currentTrack() {
+      if (this.isSetPresentation) {
+        const idx = this.setCurrentIdx;
+        if (idx >= 0) return this.setEntries[idx];
+      }
       return (this.tracks || [])[this.current] || null;
+    },
+    get isSetPresentation() {
+      return this.presentation === "set" || this.mode === "live_set";
+    },
+    get setCurrentIdx() {
+      if (!this.isSetPresentation) return -1;
+      const utils = window.mayaLiveSetUtils;
+      return utils?.currentEntryIndex(this.setEntries, this.currentTime) ?? -1;
+    },
+    get setNowPlayingLabel() {
+      if (!this.isSetPresentation) return "";
+      const idx = this.setCurrentIdx;
+      if (idx >= 0) {
+        const entry = this.setEntries[idx];
+        if (entry?.label) return entry.label;
+        const parts = [entry?.artist, entry?.title].filter(Boolean);
+        if (parts.length) return parts.join(" — ");
+      }
+      return this.title || "Live set";
+    },
+    get setTrackNumbers() {
+      const utils = window.mayaLiveSetUtils;
+      return utils?.buildTrackNumbers(this.setEntries) || [];
+    },
+    get setDuration() {
+      const artifact = this.setArtifact;
+      if (artifact?.duration_seconds) return Number(artifact.duration_seconds);
+      const last = this.setEntries[this.setEntries.length - 1];
+      return last ? (last.start_seconds ?? last.startSec ?? 0) + 300 : 1;
+    },
+    get setProgressPct() {
+      const dur = this.setDuration;
+      return dur > 0 ? Math.min(100, (this.currentTime / dur) * 100) : 0;
+    },
+    get milestoneEntries() {
+      const entries = this.setEntries || [];
+      return entries.filter((_, i) => i === 0 || i % 4 === 0);
+    },
+    milestoneLeft(entry) {
+      const dur = this.setDuration;
+      const start = Number(entry?.start_seconds ?? entry?.startSec) || 0;
+      return dur > 0 ? Math.min(100, (start / dur) * 100) : 0;
     },
     get currentArt() {
       return this.currentTrack?.art || "";
     },
     get subtitle() {
       const tr = this.currentTrack;
+      if (this.isSetPresentation && tr?.title) return tr.title;
       if (tr?.artist) return tr.artist;
       if (this.title) return this.title;
       const n = (this.tracks || []).length;
@@ -1875,6 +2226,13 @@ document.addEventListener("alpine:init", () => {
       return Math.max(0, n - this.current - 1);
     },
     get queueLabel() {
+      if (this.isSetPresentation) {
+        const n = this.setEntries?.length || 0;
+        if (!n) return "Tracklist empty";
+        const idx = this.setCurrentIdx;
+        if (idx >= 0) return `Track ${idx + 1} of ${n}`;
+        return `${n} tracks`;
+      }
       const n = this.tracks?.length || 0;
       if (!n) return "Queue empty";
       const up = this.upNextCount;
@@ -1891,6 +2249,211 @@ document.addEventListener("alpine:init", () => {
       const abs = new URL(src, window.location.origin).href;
       if (el.src !== abs) el.src = src;
       return true;
+    },
+    _teardownSetTransport() {
+      if (this._ytTransport) {
+        this._ytTransport.destroy();
+        this._ytTransport = null;
+      }
+      this.setUseYt = false;
+      this.setYtReady = false;
+      this.setMuted = false;
+    },
+    _ytControlsActive() {
+      return this.isSetPresentation && !!this._ytTransport?.isReady?.();
+    },
+    _scrollSetTracklist() {
+      const idx = this.setCurrentIdx;
+      if (idx < 0) return;
+      const list =
+        document.querySelector(".mp-live-set .live-set-tracklist") ||
+        document.querySelector(".mp-set-tracklist");
+      const row = list?.querySelector(`[data-set-idx="${idx}"]`);
+      if (!list || !row) return;
+      const listRect = list.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const visible = rowRect.top >= listRect.top && rowRect.bottom <= listRect.bottom;
+      if (!visible) row.scrollIntoView({ behavior: "smooth", block: "center" });
+    },
+    _failYoutubeSetTransport(message) {
+      this.error = message;
+      this.buffering = false;
+      this.playing = false;
+      this.setUseYt = false;
+      this.setYtReady = false;
+      this.setTransportState = "error";
+      _logSetTransport(this, "yt-transport-failed", { message });
+    },
+    _activateSetAudioFallback(autoplay) {
+      this.setTransportState = "audio-fallback";
+      this.error = "";
+      _logSetTransport(this, "audio-fallback");
+      this.setUseYt = false;
+      this.setYtReady = false;
+      if (!this.tracks?.length) return;
+      this.current = 0;
+      _persistPlayerStore(this);
+      this._ensureArt(0);
+      if (autoplay) requestAnimationFrame(() => this.play(0));
+    },
+    _loadSetPresentation(artifact, { autoplay = true } = {}) {
+      const utils = window.mayaLiveSetUtils;
+      const sameSet =
+        this.isSetPresentation &&
+        this.setArtifact &&
+        artifact?.set_key &&
+        this.setArtifact.set_key === artifact.set_key;
+      if (sameSet && this._ytTransport) {
+        // Redundant load: the same set is delivered via several broadcast paths
+        // (player.load SSE, ai-artifact route, player.activate). Refresh metadata
+        // in place instead of tearing down and re-mounting the live YT transport.
+        this.active = true;
+        this.setArtifact = artifact;
+        this.setEntries = (artifact.entries || []).map((e, i) =>
+          utils?.normalizeEntry(e, i) || e,
+        );
+        this.tracks = _normalizePlayerTracks(artifact.tracks || []);
+        this.title = artifact.title || this.title || "Live set";
+        this.duration = Number(artifact.duration_seconds) || this.duration || 0;
+        _persistPlayerStore(this);
+        _logSetTransport(this, "load-set-dedup", { autoplay });
+        return;
+      }
+      this._teardownSetTransport();
+      this.active = true;
+      this.presentation = "set";
+      this.mode = artifact.mode || "live_set";
+      this.setArtifact = artifact;
+      this.setEntries = (artifact.entries || []).map((e, i) =>
+        utils?.normalizeEntry(e, i) || e,
+      );
+      this.title = artifact.title || "Live set";
+      this.url = artifact.url || artifact.container_url || "";
+      this.tracks = _normalizePlayerTracks(artifact.tracks || []);
+      this.current = 0;
+      this.error = "";
+      this.currentTime = 0;
+      this.duration = Number(artifact.duration_seconds) || 0;
+      this.expandedFootnote = null;
+      this.queueOpen = true;
+      this.setTransportState = "initializing";
+      _persistPlayerStore(this);
+      _logSetTransport(this, "load-set", { autoplay });
+
+      const videoId = artifact.video_id;
+      const schema = artifact.container_schema;
+      const startYtTransport = () => {
+        if (!window.mayaSetYtTransport) {
+          this._activateSetAudioFallback(autoplay);
+          return;
+        }
+        this.buffering = true;
+        this._ytTransport = window.mayaSetYtTransport.create(this, { videoId });
+        this._ytTransport.init(
+          () => {
+            this.buffering = false;
+            this.setUseYt = true;
+            this.setYtReady = true;
+            this.setTransportState = "youtube";
+            // If a slow onReady let the audio fallback start first, stop it so the
+            // video is the single transport (avoids double audio on self-heal).
+            const fallbackAudio = this._audioEl();
+            if (fallbackAudio && !fallbackAudio.paused) {
+              try {
+                fallbackAudio.pause();
+              } catch (_) {}
+            }
+            _logSetTransport(this, "yt-ready");
+            if (autoplay) {
+              this._ytTransport.play();
+              setTimeout(() => {
+                if (!this.setYtReady || this.playing) return;
+                this.setTransportState = "cued";
+                _logSetTransport(this, "cued-autoplay-blocked");
+              }, 1200);
+            }
+          },
+          () => {
+            _logSetTransport(this, "yt-fallback-audio");
+            this._activateSetAudioFallback(autoplay);
+          },
+        );
+      };
+      const deferYtMount = (fn) => {
+        let ran = false;
+        const fire = () => {
+          if (ran) return;
+          ran = true;
+          fn();
+        };
+        // rAF can stall in headless/offscreen tabs; setTimeout is the safety net.
+        setTimeout(fire, 150);
+        const run = () => requestAnimationFrame(() => requestAnimationFrame(fire));
+        if (typeof Alpine !== "undefined" && typeof Alpine.nextTick === "function") {
+          Alpine.nextTick(run);
+        } else {
+          run();
+        }
+      };
+
+      if (schema === "yt" && videoId) {
+        deferYtMount(startYtTransport);
+      } else if (schema === "yt") {
+        this._activateSetAudioFallback(autoplay);
+      } else {
+        this._activateSetAudioFallback(autoplay);
+      }
+    },
+    seekSetEntry(entry) {
+      const sec = Number(entry?.start_seconds ?? entry?.startSec) || 0;
+      if (this._ytControlsActive()) {
+        this._ytTransport.seekToSeconds(sec);
+        return;
+      }
+      const idx = (this.tracks || []).findIndex(
+        (t) => t.start_offset === sec || t.position === entry?.position,
+      );
+      if (idx >= 0) this.play(idx);
+      else this.seekTo(sec / Math.max(this.duration || this.setDuration, 1));
+    },
+    setNext() {
+      const list = this.setEntries || [];
+      if (!list.length) return;
+      const cur = this.setCurrentIdx;
+      const n = Math.min((cur < 0 ? -1 : cur) + 1, list.length - 1);
+      this.seekSetEntry(list[n]);
+    },
+    setPrev() {
+      const list = this.setEntries || [];
+      if (!list.length) return;
+      const cur = this.setCurrentIdx;
+      const n = Math.max((cur < 0 ? 0 : cur) - 1, 0);
+      this.seekSetEntry(list[n]);
+    },
+    unmuteSet() {
+      if (this._ytTransport?.unMute) this._ytTransport.unMute();
+    },
+    setEntryPlayed(i) {
+      return i < this.setCurrentIdx;
+    },
+    setEntryCurrent(i) {
+      return i === this.setCurrentIdx;
+    },
+    toggleSetFootnote(i) {
+      this.expandedFootnote = this.expandedFootnote === i ? null : i;
+    },
+    fmtSetTime(sec) {
+      return window.mayaLiveSetUtils?.fmtSetTime(sec) || this.fmtTime(sec);
+    },
+    _seekToOffset() {
+      const tr = this.currentTrack;
+      const el = this._audioEl();
+      const offset = Number(tr?.start_offset) || 0;
+      if (!el || !offset) return;
+      try {
+        el.currentTime = offset;
+        this.currentTime = offset;
+      } catch (_) {}
     },
     _applyVolume() {
       const el = this._audioEl();
@@ -1963,7 +2526,16 @@ document.addEventListener("alpine:init", () => {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || "Resolve failed");
         this.load(data, { autoplay: true });
-        this.ingestStatus = `Loaded ${data.tracks?.length || 0} track(s)`;
+        const pres = data.presentation;
+        const n = data.entries?.length || data.tracks?.length || 0;
+        if (pres === "set") {
+          const label = data.set_id || data.title || "Set";
+          this.ingestStatus = `Loaded ${label} — ${n} tracks (live set)`;
+        } else if (pres === "single") {
+          this.ingestStatus = "Now playing";
+        } else {
+          this.ingestStatus = `Loaded ${n} track${n === 1 ? "" : "s"}`;
+        }
       } catch (e) {
         this.ingestStatus = String(e.message || e);
       } finally {
@@ -2084,8 +2656,17 @@ document.addEventListener("alpine:init", () => {
       }
     },
     load(artifact, { autoplay = true } = {}) {
+      if (artifact?.presentation === "set" || artifact?.mode === "live_set") {
+        this._loadSetPresentation(artifact, { autoplay });
+        return;
+      }
+      this._teardownSetTransport();
       if (!artifact?.tracks?.length) return;
       this.active = true;
+      this.presentation = artifact.presentation || (artifact.tracks.length > 1 ? "playlist" : "single");
+      this.mode = "";
+      this.setArtifact = null;
+      this.setEntries = [];
       this.title = artifact.title || "Playlist";
       this.url = artifact.url || "";
       this.tracks = _normalizePlayerTracks(artifact.tracks);
@@ -2132,6 +2713,10 @@ document.addEventListener("alpine:init", () => {
       }
     },
     play(i) {
+      if (this._ytControlsActive()) {
+        this._ytTransport.play();
+        return;
+      }
       const tracks = this.tracks || [];
       if (i < 0 || i >= tracks.length) return;
       this.error = "";
@@ -2157,6 +2742,11 @@ document.addEventListener("alpine:init", () => {
       });
     },
     toggle() {
+      if (this._ytControlsActive()) {
+        if (this.playing) this._ytTransport.pause();
+        else this._ytTransport.play();
+        return;
+      }
       if (!this.active && this.tracks?.length) {
         this.play(this.current);
         return;
@@ -2195,6 +2785,7 @@ document.addEventListener("alpine:init", () => {
       if (this.current > 0) this.play(this.current - 1);
     },
     onEnded() {
+      if (this.isSetPresentation && this.setUseYt) return;
       if (this.repeat && !this.radioMode) {
         this.seekTo(0);
         this.resume();
@@ -2214,10 +2805,18 @@ document.addEventListener("alpine:init", () => {
       this.next();
     },
     pause() {
+      if (this._ytControlsActive()) {
+        this._ytTransport.pause();
+        return;
+      }
       const el = this._audioEl();
       if (el) el.pause();
     },
     resume() {
+      if (this._ytControlsActive()) {
+        this._ytTransport.play();
+        return;
+      }
       const el = this._audioEl();
       if (!el) return;
       if (!this.active && this.tracks?.length) this.active = true;
@@ -2226,10 +2825,16 @@ document.addEventListener("alpine:init", () => {
       if (p && p.catch) p.catch(() => {});
     },
     seekTo(fraction) {
+      const f = Math.min(1, Math.max(0, Number(fraction) || 0));
+      if (this._ytControlsActive()) {
+        const setDur = this.setDuration || this.duration || 0;
+        const sec = f * setDur;
+        this._ytTransport.seekToSeconds(sec);
+        return;
+      }
       const el = this._audioEl();
       const dur = this.duration || (el && el.duration) || 0;
       if (!el || !dur || !isFinite(dur)) return;
-      const f = Math.min(1, Math.max(0, Number(fraction) || 0));
       try {
         el.currentTime = f * dur;
         this.currentTime = el.currentTime;
@@ -2328,7 +2933,7 @@ document.addEventListener("alpine:init", () => {
       else if (act === "resume") this.resume();
       else if (act === "skip") this.next();
       else if (act === "previous" || act === "back") this.prev();
-      else if (act === "clear") this.clear();
+      else if (act === "clear") this.clearLocal();
       else if (act === "play" && index != null) this.play(Number(index));
     },
     onPlay() {
@@ -2339,13 +2944,21 @@ document.addEventListener("alpine:init", () => {
       this.playing = false;
     },
     onTime() {
+      if (this.isSetPresentation && this.setUseYt) return;
       const el = this._audioEl();
       if (el) this.currentTime = el.currentTime || 0;
+      if (this.isSetPresentation) this._scrollSetTracklist();
+      const tr = (this.tracks || [])[this.current];
+      const endOffset = Number(tr?.end_offset);
+      if (el && endOffset > 0 && el.currentTime >= endOffset - 0.25) {
+        this.next();
+      }
     },
     onMeta() {
       const el = this._audioEl();
       if (el && isFinite(el.duration)) this.duration = el.duration || 0;
       this.buffering = false;
+      this._seekToOffset();
     },
     onWaiting() {
       this.buffering = true;
@@ -2365,6 +2978,79 @@ document.addEventListener("alpine:init", () => {
       this.buffering = false;
       this.playing = false;
       this.error = "Couldn't play this track — it may be unavailable.";
+    },
+    _reactionEntity(tr) {
+      if (!tr) return null;
+      if (tr.work_key) return { entity_type: "work", entity_key: tr.work_key };
+      if (tr.set_key && tr.position != null) {
+        return { entity_type: "set_entry", entity_key: `${tr.set_key}:${tr.position}` };
+      }
+      return null;
+    },
+    trackForReaction(index) {
+      const idx = Number.isFinite(Number(index)) ? Number(index) : this.current;
+      const tr = (this.tracks || [])[idx];
+      if (tr && this._reactionEntity(tr)) return tr;
+      if (this.isSetPresentation) {
+        const entry = (this.setEntries || [])[idx];
+        const setKey = this.setArtifact?.set_key;
+        if (entry && setKey) {
+          const position = entry.position ?? idx + 1;
+          const virtual = (this.tracks || []).find((t) => t.position === position);
+          if (virtual) return virtual;
+          return {
+            title: entry.title || entry.label,
+            set_key: setKey,
+            position,
+            start_offset: entry.start_seconds ?? entry.startSec ?? 0,
+            reactions: {},
+          };
+        }
+      }
+      return tr || null;
+    },
+    canReact(tr) {
+      return !!this._reactionEntity(tr);
+    },
+    hasReaction(tr, reaction) {
+      const key = tr?.work_key || (tr?.set_key && tr?.position != null ? `${tr.set_key}:${tr.position}` : "");
+      return !!key && tr?.reactions?.[reaction];
+    },
+    async toggleReaction(reaction, trackIndex) {
+      const idx = Number.isFinite(Number(trackIndex)) ? Number(trackIndex) : this.current;
+      const tr = this.trackForReaction(idx);
+      const entity = this._reactionEntity(tr);
+      if (!entity) return;
+      const active = !this.hasReaction(tr, reaction);
+      try {
+        const resp = await fetch("/api/music/reactions", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...entity,
+            reaction,
+            source_url: this.url || tr.query || null,
+            active,
+            attrs: {
+              set_key: tr.set_key || null,
+              position: tr.position || null,
+              timestamp_seconds: tr.start_offset || 0,
+            },
+          }),
+        });
+        if (!resp.ok) return;
+        tr.reactions = tr.reactions || {};
+        if (active) tr.reactions[reaction] = true;
+        else delete tr.reactions[reaction];
+        const virtual = (this.tracks || []).find(
+          (t) => t.set_key === tr.set_key && t.position === tr.position,
+        );
+        if (virtual && virtual !== tr) {
+          virtual.reactions = { ...(tr.reactions || {}) };
+        }
+        _persistPlayerStore(this);
+      } catch (_) {}
     },
     async _ensureArt(i) {
       const tracks = this.tracks || [];
@@ -2390,7 +3076,11 @@ document.addEventListener("alpine:init", () => {
         _persistPlayerStore(this);
       } catch (_) {}
     },
-    clear() {
+    clearLocal() {
+      // Local teardown only — no server POST. Used when reacting to an inbound
+      // player.control "clear" broadcast (echoing back would create a feedback
+      // loop: POST /player/clear -> broadcast player.control:clear -> clear -> POST …).
+      this._teardownSetTransport();
       if (this.casting) void this.toggleCast();
       this.pause();
       const el = this._audioEl();
@@ -2415,11 +3105,28 @@ document.addEventListener("alpine:init", () => {
       this.repeat = false;
       this.radioMode = false;
       this.radioPrompt = "";
+      this.presentation = "";
+      this.mode = "";
+      this.setArtifact = null;
+      this.setEntries = [];
+      this.expandedFootnote = null;
+      this.setTransportState = "";
       _persistPlayerStore(this);
+    },
+    clear() {
+      // User-initiated clear: tear down locally, then tell the server (which
+      // fans a player.control:clear out to other tabs — they clearLocal only).
+      this.clearLocal();
       void fetch("/api/media/player/clear", { method: "POST", credentials: "same-origin" }).catch(
         () => {},
       );
     },
+  });
+
+  _flushPendingPlayerLoads();
+
+  document.addEventListener("alpine:initialized", () => {
+    _flushPendingPlayerLoads();
   });
 
   Alpine.store("mayaConversation", {
@@ -2703,7 +3410,11 @@ document.addEventListener("alpine:init", () => {
       const player = _mayaPlayerStore();
       if (player) {
         _restorePlayerStore(player);
+        _flushPendingPlayerLoads();
         player.refreshCastStatus();
+        if (!player.active) await _hydratePlayerFromServer();
+      } else {
+        await _hydratePlayerFromServer();
       }
       await this.rehydrateAudio();
       await this.loadSettings();
@@ -2988,7 +3699,10 @@ document.addEventListener("alpine:init", () => {
         }
         const r = await fetch("/api/voice/agent/chat", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            traceparent: (_lastChatTraceparent = _newTraceparent()),
+          },
           body: JSON.stringify({ text }),
         });
         if (fetchHangTimer) clearTimeout(fetchHangTimer);

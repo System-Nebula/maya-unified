@@ -348,6 +348,29 @@ def test_play_bare_extracts_empty() -> None:
     assert _extract_query(CmdContext(raw_text="/play")) == ""
 
 
+def test_play_strips_duplicate_play_prefix() -> None:
+    from services.cmd.executors.play import _extract_query
+
+    url = "https://youtu.be/u1NHX9FcHVw?list=RDu1NHX9FcHVw"
+    ctx = CmdContext(surface=CmdSurface.DASHBOARD, raw_text=f"/play /play {url}")
+    assert _extract_query(ctx) == url
+
+
+def test_play_strips_triple_play_prefix() -> None:
+    from services.cmd.executors.play import _extract_query
+
+    url = "https://www.youtube.com/watch?v=u1NHX9FcHVw"
+    ctx = CmdContext(raw_text=f"/play /play /play {url}")
+    assert _extract_query(ctx) == url
+
+
+def test_play_strips_play_word_prefix_without_slash() -> None:
+    from services.cmd.executors.play import _extract_query
+
+    ctx = CmdContext(raw_text="/play play daft punk one more time")
+    assert _extract_query(ctx) == "daft punk one more time"
+
+
 def test_expand_playlist_album(monkeypatch) -> None:
     import sys
 

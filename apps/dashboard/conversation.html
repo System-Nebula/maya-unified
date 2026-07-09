@@ -108,9 +108,10 @@
           </div>
 
           <div class="md-session">
-            <div class="md-player-sticky" x-show="$store.mayaPlayer.active" x-cloak>
+            <div class="md-player-sticky" data-testid="md-player-sticky" x-show="$store.mayaPlayer.active" x-cloak>
               <div
                 class="player-root preset-maya player-shell player-layout-auto md-player"
+                :class="$store.mayaPlayer.isSetPresentation ? 'md-player--live-set' : ''"
                 :style="{ '--accent-active': $store.mayaPlayer.accentColor }"
               >
                 <audio
@@ -203,6 +204,270 @@
                   @click.outside="trayOpen = false"
                 >
                   <div class="mp-main">
+                <div
+                  class="mp-live-set"
+                  data-testid="live-set-viewer"
+                  x-show="$store.mayaPlayer.isSetPresentation"
+                  x-cloak
+                >
+                  <header class="live-set-header">
+                    <div class="live-set-header-meta">
+                      <span class="live-set-set-id" x-text="$store.mayaPlayer.setArtifact?.set_id || 'SET'"></span>
+                      <span class="live-set-dot">·</span>
+                      <span class="live-set-artists" x-text="$store.mayaPlayer.title"></span>
+                    </div>
+                    <div class="live-set-header-right">
+                      <span
+                        class="live-set-stats"
+                        x-text="($store.mayaPlayer.setEntries?.length || 0) + ' tracks · ' + $store.mayaPlayer.fmtSetTime($store.mayaPlayer.setDuration)"
+                      ></span>
+                    </div>
+                  </header>
+
+                  <div class="live-set-body">
+                    <div class="live-set-video-col">
+                      <div class="live-set-video-wrap mp-live-set-video-wrap">
+                        <div id="maya-yt-player"></div>
+                        <div
+                          class="live-set-video-overlay"
+                          x-show="$store.mayaPlayer.setTransportState === 'cued' || $store.mayaPlayer.setTransportState === 'audio-fallback'"
+                          x-cloak
+                        >
+                          <button
+                            type="button"
+                            class="live-set-overlay-play"
+                            x-show="$store.mayaPlayer.setTransportState === 'cued'"
+                            title="Play video"
+                            @click="$store.mayaPlayer.toggle()"
+                          >
+                            <span class="player-icon" x-html="mayaPlayerIcon('play', 28, 2.5)"></span>
+                          </button>
+                          <p x-show="$store.mayaPlayer.setTransportState === 'audio-fallback'">
+                            Video unavailable — playing audio stream
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          class="live-set-unmute"
+                          x-show="$store.mayaPlayer.setMuted"
+                          x-cloak
+                          title="Playing muted — tap to unmute"
+                          @click="$store.mayaPlayer.unmuteSet()"
+                        >
+                          ▶ MUTED — TAP TO UNMUTE
+                        </button>
+                      </div>
+
+                      <div class="live-set-now-playing" :class="$store.mayaPlayer.setCurrentIdx >= 0 ? 'is-active' : ''">
+                        <template x-if="$store.mayaPlayer.setCurrentIdx >= 0">
+                          <div class="live-set-eq live-set-eq--md" aria-hidden="true">
+                            <span style="height: 50%; animation-duration: 0.38s"></span>
+                            <span style="height: 100%; animation-duration: 0.49s"></span>
+                            <span style="height: 65%; animation-duration: 0.6s"></span>
+                            <span style="height: 85%; animation-duration: 0.71s"></span>
+                            <span style="height: 45%; animation-duration: 0.82s"></span>
+                          </div>
+                        </template>
+                        <template x-if="$store.mayaPlayer.setCurrentIdx >= 0">
+                          <div style="flex: 1; min-width: 0">
+                            <div class="live-set-now-label">Now Playing</div>
+                            <div
+                              class="live-set-now-title"
+                              x-text="$store.mayaPlayer.setNowPlayingLabel"
+                            ></div>
+                          </div>
+                        </template>
+                        <div class="live-set-now-time" x-text="$store.mayaPlayer.fmtSetTime($store.mayaPlayer.currentTime)"></div>
+                      </div>
+
+                      <div class="live-set-progress live-set-progress--wave">
+                        <div class="live-set-progress-head">
+                          <span>Set progress</span>
+                          <span
+                            x-text="$store.mayaPlayer.setCurrentIdx >= 0
+                              ? 'TRACK ' + ($store.mayaPlayer.setCurrentIdx + 1) + ' OF ' + ($store.mayaPlayer.setEntries?.length || 0)
+                              : '—'"
+                          ></span>
+                        </div>
+                        <div
+                          class="live-set-waveform mp-wave-col player-waveform-wrap"
+                          x-data="mayaWaveform()"
+                          x-init="init()"
+                          @destroy="destroy()"
+                          @mouseleave="hoverProgress = null"
+                        >
+                          <canvas
+                            x-ref="canvas"
+                            class="player-waveform-canvas"
+                            @click="onClick($event)"
+                            @mousemove="onMouseMove($event)"
+                          ></canvas>
+                          <div
+                            class="mp-wave-tooltip player-waveform-tooltip"
+                            x-show="hoverProgress !== null && $store.mayaPlayer.setDuration > 0"
+                            :style="{ left: (Math.min(Math.max(hoverProgress * 100, 5), 90)) + '%' }"
+                            x-text="$store.mayaPlayer.fmtSetTime(hoverProgress * $store.mayaPlayer.setDuration)"
+                          ></div>
+                        </div>
+                      </div>
+
+                      <div class="mp-live-set-controls">
+                        <div class="player-btn-strip">
+                          <button
+                            type="button"
+                            class="player-btn-strip-item"
+                            title="Previous track"
+                            @click="$store.mayaPlayer.setPrev()"
+                          >
+                            <span class="player-icon" x-html="mayaPlayerIcon('skip-back', 15)"></span>
+                          </button>
+                          <button
+                            type="button"
+                            class="player-btn-strip-item player-btn-strip-item--play player-btn-play"
+                            :class="$store.mayaPlayer.playing ? 'is-playing' : ''"
+                            title="Play / pause"
+                            @click="$store.mayaPlayer.toggle()"
+                          >
+                            <span class="mp-spinner" x-show="$store.mayaPlayer.buffering" x-cloak></span>
+                            <span
+                              class="player-icon"
+                              x-show="!$store.mayaPlayer.buffering"
+                              x-html="mayaPlayerIcon($store.mayaPlayer.playing ? 'pause' : 'play', 16, 2.5)"
+                            ></span>
+                          </button>
+                          <button
+                            type="button"
+                            class="player-btn-strip-item"
+                            title="Next track"
+                            @click="$store.mayaPlayer.setNext()"
+                          >
+                            <span class="player-icon" x-html="mayaPlayerIcon('skip-forward', 15)"></span>
+                          </button>
+                        </div>
+
+                        <div class="mp-controls-spacer"></div>
+
+                        <div
+                          class="mp-volume-inline mp-volume-inline--set"
+                          x-data="mayaVolumeControl()"
+                        >
+                          <span class="mp-volume-inline-label">VOL</span>
+                          <span class="mp-volume-inline-pct" x-text="String(volume).padStart(3, '0')"></span>
+                          <button
+                            type="button"
+                            class="mp-ingest-btn"
+                            style="padding:0.25rem 0.375rem;border:none;background:transparent;"
+                            @click="toggleMute()"
+                            :title="isMuted ? 'Unmute' : 'Mute'"
+                          >
+                            <span
+                              class="player-icon"
+                              x-html="mayaPlayerIcon(isMuted || volume === 0 ? 'volume-x' : 'volume-2', 14)"
+                            ></span>
+                          </button>
+                          <input
+                            type="range"
+                            class="ind-range"
+                            min="0"
+                            max="100"
+                            step="1"
+                            :value="volume"
+                            @input="setVolumePercent($event.target.value)"
+                            aria-label="Volume"
+                          />
+                        </div>
+
+                        <button type="button" class="mp-queue-clear" title="Clear set" @click="$store.mayaPlayer.clear()">Clear</button>
+                      </div>
+                    </div>
+
+                    <div class="live-set-tracklist-col">
+                      <div class="live-set-tracklist-head">
+                        <span>#</span>
+                        <span class="col-track">Track</span>
+                        <span>Time</span>
+                      </div>
+                      <div class="live-set-tracklist mp-set-tracklist" data-testid="live-set-tracklist">
+                        <template x-for="(track, i) in ($store.mayaPlayer.setEntries || [])" :key="track.id ?? i">
+                          <div
+                            class="live-set-row-wrap mp-set-row-wrap"
+                            :class="$store.mayaPlayer.setEntryCurrent(i) ? 'is-current' : ''"
+                            :data-set-idx="i"
+                          >
+                            <div
+                              class="live-set-row mp-set-row"
+                              :class="$store.mayaPlayer.setEntryPlayed(i) ? 'is-played' : ''"
+                              @click="!track.isNote && $store.mayaPlayer.seekSetEntry(track)"
+                            >
+                              <div class="live-set-row-num mp-set-row-num" :class="$store.mayaPlayer.setEntryCurrent(i) ? 'is-current' : ''">
+                                <template x-if="track.isNote">
+                                  <span class="live-set-row-note-mark mp-set-note-mark">✦</span>
+                                </template>
+                                <template x-if="!track.isNote && $store.mayaPlayer.setEntryCurrent(i)">
+                                  <div class="live-set-eq live-set-eq--sm" aria-hidden="true">
+                                    <span style="height: 50%; animation-duration: 0.38s"></span>
+                                    <span style="height: 100%; animation-duration: 0.49s"></span>
+                                    <span style="height: 65%; animation-duration: 0.6s"></span>
+                                    <span style="height: 85%; animation-duration: 0.71s"></span>
+                                    <span style="height: 45%; animation-duration: 0.82s"></span>
+                                  </div>
+                                </template>
+                                <template x-if="!track.isNote && !$store.mayaPlayer.setEntryCurrent(i)">
+                                  <span x-text="$store.mayaPlayer.setTrackNumbers[i]"></span>
+                                </template>
+                              </div>
+                              <div class="live-set-row-body mp-set-row-body">
+                                <div class="live-set-row-title-row mp-set-row-title-row">
+                                  <span
+                                    class="live-set-row-title mp-set-row-title"
+                                    :class="$store.mayaPlayer.setEntryCurrent(i) ? 'is-current' : (track.isNote ? 'is-note' : '')"
+                                    x-text="track.label || track.title"
+                                  ></span>
+                                  <button
+                                    type="button"
+                                    class="live-set-footnote-btn mp-set-footnote-btn"
+                                    :class="$store.mayaPlayer.expandedFootnote === i ? 'is-open' : ''"
+                                    x-show="track.footnote"
+                                    @click.stop="$store.mayaPlayer.toggleSetFootnote(i)"
+                                    aria-label="Toggle footnote"
+                                  >
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                                    </svg>
+                                  </button>
+                                </div>
+                                <p
+                                  class="live-set-footnote-text mp-set-footnote-text"
+                                  x-show="$store.mayaPlayer.expandedFootnote === i && track.footnote"
+                                  x-text="track.footnote"
+                                ></p>
+                              </div>
+                              <div class="mp-reactions mp-set-reactions" x-show="$store.mayaPlayer.canReact($store.mayaPlayer.trackForReaction(i))" @click.stop>
+                                <button
+                                  type="button"
+                                  class="mp-react-btn"
+                                  :class="$store.mayaPlayer.hasReaction($store.mayaPlayer.trackForReaction(i), 'heart') ? 'is-active' : ''"
+                                  title="Heart track"
+                                  @click="$store.mayaPlayer.toggleReaction('heart', i)"
+                                >♥</button>
+                              </div>
+                              <div
+                                class="live-set-row-time mp-set-row-time"
+                                :class="$store.mayaPlayer.setEntryCurrent(i) ? 'is-current' : ''"
+                                x-text="track.timestamp || $store.mayaPlayer.fmtSetTime(track.start_seconds)"
+                              ></div>
+                            </div>
+                          </div>
+                        </template>
+                        <div class="live-set-end-cap mp-set-end-cap">end of set</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p class="mp-error mp-live-set-error" x-show="$store.mayaPlayer.error" x-text="$store.mayaPlayer.error"></p>
+                </div>
+
+                <div class="mp-mini-player" x-show="!$store.mayaPlayer.isSetPresentation">
                 <div class="mp-top">
                   <div
                     class="mp-art"
@@ -521,10 +786,11 @@
                     </div>
                   </div>
                 </div>
+                </div>
 
-                <p class="mp-error" x-show="$store.mayaPlayer.error && !$store.mayaPlayer.playing" x-text="$store.mayaPlayer.error"></p>
+                <p class="mp-error" x-show="$store.mayaPlayer.error && !$store.mayaPlayer.playing && !$store.mayaPlayer.isSetPresentation" x-text="$store.mayaPlayer.error"></p>
 
-                <div class="mp-queue" x-show="$store.mayaPlayer.queueOpen" x-cloak>
+                <div class="mp-queue" x-show="$store.mayaPlayer.queueOpen && !$store.mayaPlayer.isSetPresentation" x-cloak>
                   <div class="mp-queue-head">
                     <span x-text="$store.mayaPlayer.queueLabel"></span>
                     <button
@@ -534,37 +800,62 @@
                       @click="$store.mayaPlayer.clear()"
                     >Clear</button>
                   </div>
-                  <template x-for="(tr, i) in ($store.mayaPlayer.tracks || [])" :key="i">
-                    <div
-                      class="mp-queue-row player-queue-row"
-                      :class="$store.mayaPlayer.current === i ? 'is-active' : ''"
-                      @click="$store.mayaPlayer.play(i)"
-                    >
+                  <template x-if="!$store.mayaPlayer.isSetPresentation">
+                    <template x-for="(tr, i) in ($store.mayaPlayer.tracks || [])" :key="i">
                       <div
-                        class="player-mini-waveform"
-                        x-init="$nextTick(() => $store.mayaPlayer.drawQueueMini($el, tr, i))"
-                      ></div>
-                      <div class="mp-queue-title-wrap">
-                        <span class="mp-queue-title" x-text="tr.title || ('Track ' + (i + 1))"></span>
-                        <span class="mp-queue-artist" x-text="tr.artist || ''"></span>
+                        class="mp-queue-row player-queue-row"
+                        :class="$store.mayaPlayer.current === i ? 'is-active' : ''"
+                        @click="$store.mayaPlayer.play(i)"
+                      >
+                        <div
+                          class="player-mini-waveform"
+                          x-init="$nextTick(() => $store.mayaPlayer.drawQueueMini($el, tr, i))"
+                        ></div>
+                        <div class="mp-queue-title-wrap">
+                          <span class="mp-queue-title" x-text="tr.title || ('Track ' + (i + 1))"></span>
+                          <span class="mp-queue-artist" x-text="tr.artist || ''"></span>
+                        </div>
+                        <span class="mp-queue-meta" x-show="tr.bpm" x-text="tr.bpm"></span>
+                        <span
+                          class="mp-queue-meta"
+                          x-text="tr.duration ? $store.mayaPlayer.fmtTime(tr.duration) : ''"
+                        ></span>
+                        <div class="mp-reactions" x-show="$store.mayaPlayer.canReact(tr)" @click.stop>
+                          <button
+                            type="button"
+                            class="mp-react-btn"
+                            :class="$store.mayaPlayer.hasReaction(tr, 'heart') ? 'is-active' : ''"
+                            title="Heart track"
+                            @click="$store.mayaPlayer.toggleReaction('heart', i)"
+                          >♥</button>
+                          <button
+                            type="button"
+                            class="mp-react-btn"
+                            :class="$store.mayaPlayer.hasReaction(tr, 'star') ? 'is-active' : ''"
+                            title="Star track"
+                            @click="$store.mayaPlayer.toggleReaction('star', i)"
+                          >★</button>
+                          <button
+                            type="button"
+                            class="mp-react-btn"
+                            :class="$store.mayaPlayer.hasReaction(tr, 'like') ? 'is-active' : ''"
+                            title="Like track"
+                            @click="$store.mayaPlayer.toggleReaction('like', i)"
+                          >👍</button>
+                        </div>
+                        <div class="mp-eq" x-show="$store.mayaPlayer.current === i && $store.mayaPlayer.playing">
+                          <span style="height: 60%"></span>
+                          <span style="height: 100%"></span>
+                          <span style="height: 40%"></span>
+                          <span style="height: 80%"></span>
+                        </div>
                       </div>
-                      <span class="mp-queue-meta" x-show="tr.bpm" x-text="tr.bpm"></span>
-                      <span
-                        class="mp-queue-meta"
-                        x-text="tr.duration ? $store.mayaPlayer.fmtTime(tr.duration) : ''"
-                      ></span>
-                      <div class="mp-eq" x-show="$store.mayaPlayer.current === i && $store.mayaPlayer.playing">
-                        <span style="height: 60%"></span>
-                        <span style="height: 100%"></span>
-                        <span style="height: 40%"></span>
-                        <span style="height: 80%"></span>
-                      </div>
-                    </div>
+                    </template>
                   </template>
                 </div>
 
                 <div class="mp-footer-status" x-show="$store.mayaPlayer.active">
-                  <span><strong>TRK</strong> <span x-text="String(($store.mayaPlayer.current || 0) + 1).padStart(2, '0') + ' / ' + String(($store.mayaPlayer.tracks?.length || 0)).padStart(2, '0')"></span></span>
+                  <span x-show="!$store.mayaPlayer.isSetPresentation"><strong>TRK</strong> <span x-text="String(($store.mayaPlayer.current || 0) + 1).padStart(2, '0') + ' / ' + String(($store.mayaPlayer.tracks?.length || 0)).padStart(2, '0')"></span></span>
                   <span x-show="$store.mayaPlayer.radioMode"><strong>RAD</strong> ON</span>
                   <span x-show="$store.mayaPlayer.casting"><strong>CAST</strong> <span x-text="$store.mayaPlayer.castChannel || 'discord'"></span></span>
                   <span x-show="$store.mayaPlayer.error"><strong>SIG</strong> <span x-text="$store.mayaPlayer.error"></span></span>
@@ -1166,11 +1457,13 @@
       </div>
     </div>
 
+    <script defer src="https://www.youtube.com/iframe_api"></script>
     <script defer src="/dashboard/vendor/eq-ui.js"></script>
     <script defer src="/dashboard/js/mayaVisionCapture.js"></script>
     <script defer src="/dashboard/js/mayaWebLLM.js"></script>
     <script defer src="/dashboard/js/mayaPlayerIcons.js"></script>
     <script defer src="/dashboard/js/mayaWaveform.js"></script>
+    <script defer src="/dashboard/js/mayaLiveSet.js"></script>
     <script defer src="/dashboard/js/mayaConversation.js"></script>
     <script defer src="/dashboard/js/mayaCmdPalette.js"></script>
     <script defer src="/dashboard/js/mayaShell.js"></script>

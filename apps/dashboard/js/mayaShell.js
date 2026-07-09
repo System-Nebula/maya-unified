@@ -8,7 +8,11 @@
       window.mayaVoiceLeader?.setSubscriberId?.(ev.subscriber_id);
     }
     handlers.forEach((fn) => {
-      try { fn(ev); } catch (_) {}
+      try {
+        fn(ev);
+      } catch (e) {
+        console.error("[mayaAgentEvents] handler failed", e, ev?.type);
+      }
     });
   }
 

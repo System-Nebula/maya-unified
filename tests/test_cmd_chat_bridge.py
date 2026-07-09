@@ -407,3 +407,71 @@ async def test_background_timeout_error_is_not_empty() -> None:
     error_events = [b for b in broadcasts if b.get("type") == "error"]
     assert len(error_events) == 1
     assert "timed out after 300s" in error_events[0]["text"]
+
+
+def assert_play_success_not_cmd_residue(text: str, *, track_count: int = 26) -> None:
+    assert f"{track_count} tracks" in text
+    assert "Loaded" in text or "Queued" in text
+    assert "/play http" not in text
+    assert "Now playing" not in text
+
+
+@pytest.mark.asyncio
+async def test_chat_play_double_prefix_queues_andrea_setlist(monkeypatch) -> None:
+    """Conversation path: ``try_dispatch`` ack + ``_run_long_cmd_async`` → exec_play."""
+    from helpers.music_set_fixtures import ANDREA_URL, andrea_resolved_set
+    from services.cmd import bootstrap
+    from services.cmd.bootstrap import ensure_cmds_registered
+    from services.cmd.registry import registry
+
+    monkeypatch.setattr(bootstrap, "_bootstrapped", False)
+    registry._by_id.clear()
+    registry._alias_index.clear()
+    ensure_cmds_registered()
+
+    broadcasts: list[dict] = []
+    mock_hub = MagicMock()
+    mock_hub.ready = False
+    mock_hub.agent = None
+    mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
+
+    resolved = andrea_resolved_set()
+
+    async def fake_index(_url, *, ingest=False, correlate=True):
+        return resolved
+
+    monkeypatch.setattr("services.music.url_handler.index_music_url", fake_index)
+    monkeypatch.setattr(asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1])
+
+    text = f"/play /play {ANDREA_URL}"
+    parsed = ParsedCmd(cmd_id="play", name="play", raw_args=f"/play {ANDREA_URL}", args={})
+    ctx = CmdContext(operator_id="op-1", surface=CmdSurface.CHAT, raw_text=text)
+
+    with _patch_voice_hub(mock_hub), patch("services.cmd.chat_bridge._schedule_persist_cmd_turns"):
+        await _run_long_cmd_async(
+            parsed=parsed,
+            ctx=ctx,
+            text=text,
+            corr_id="c_andrea_play",
+            operator_id="op-1",
+        )
+
+    ai_events = [b for b in broadcasts if b.get("type") == "ai"]
+    assert ai_events, broadcasts
+    reply_text = ai_events[-1].get("text") or ""
+    assert_play_success_not_cmd_residue(reply_text)
+    assert "live set" in reply_text
+
+    artifacts = ai_events[-1].get("artifacts") or []
+    assert artifacts
+    assert artifacts[0]["type"] == "playlist"
+    assert artifacts[0]["presentation"] == "set"
+    assert len(artifacts[0].get("tracks") or []) == 26
+
+    assert ai_events[0]["player_activate"] is True
+
+    load_events = [b for b in broadcasts if b.get("type") == "player.load"]
+    assert load_events
+    playlist = load_events[0]["playlist"]
+    assert playlist["presentation"] == "set"
+    assert len(playlist.get("tracks") or []) == 26

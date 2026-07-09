@@ -49,10 +49,34 @@ async function postCapture(payload, settings) {
   return resp.json();
 }
 
+function isTracklistUrl(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    if (host === "youtu.be" || host.includes("youtube.com")) {
+      return Boolean(u.searchParams.get("v"));
+    }
+    if (host.includes("1001tracklists.com")) {
+      return /\/tracklist\/[a-z0-9]+/i.test(u.pathname);
+    }
+    if (host.includes("music.apple.com")) {
+      return /\/album\//i.test(u.pathname);
+    }
+  } catch (_) {
+    return false;
+  }
+  return false;
+}
+
 async function runCapture(tab, captureTypeOverride) {
   const settings = await getSettings();
   const page = await extractFromTab(tab.id);
   const screenshotB64 = await captureVisibleTabBase64(tab.windowId);
+  const pageUrl = page.url || tab.url;
+  const captureType =
+    captureTypeOverride ||
+    (isTracklistUrl(pageUrl) ? "tracklist" : settings.captureType || "article");
 
   const assets = [
     {
@@ -77,8 +101,8 @@ async function runCapture(tab, captureTypeOverride) {
 
   const payload = {
     event: "browser.capture",
-    capture_type: captureTypeOverride || settings.captureType || "article",
-    url: page.url || tab.url,
+    capture_type: captureType,
+    url: pageUrl,
     title: page.title || tab.title,
     selection: page.selection || "",
     reader_text: page.reader_text || "",

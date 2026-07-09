@@ -14,4 +14,7 @@ if [[ ! -x "$PY" ]]; then
   echo "Missing venv. Create .venv and install packages/voice-runtime/requirements.txt" >&2
   exit 1
 fi
-exec "$PY" "$ROOT/launch.py" "$@"
+export UV_PYTHON="$PY"
+export PYTHONNOUSERSITE=1
+unset PYTHONHOME
+exec "$PY" -I "$ROOT/launch.py" "$@"

@@ -54,6 +54,13 @@ serves the pre-built Homepage from
 `apps/maya-gateway/src/maya_gateway/static/`, which is produced by
 `make homepage-deploy`.
 
+For conversation live-set tests (`play-andrea-live-set.spec.ts`), boot the
+unified gateway with offline Andrea fixtures:
+
+```bash
+MAYA_E2E_UNIFIED=1 MAYA_GATEWAY_PORT=8765 bun x playwright test tests/play-andrea-live-set.spec.ts
+```
+
 ## What's covered
 
 - `play-rick-astley.spec.ts`

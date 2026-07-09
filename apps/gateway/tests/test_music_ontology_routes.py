@@ -83,3 +83,38 @@ def test_lookup_404_when_no_match() -> None:
     with patch("services.music.ontology.lookup", new=AsyncMock(return_value=None)):
         resp = client.get("/api/music/ontology/lookup", params={"q": "unknown xyz"})
     assert resp.status_code == 404
+
+
+def test_index_url_400_for_unsupported() -> None:
+    app = _build_app()
+    client = TestClient(app)
+    resp = client.post("/api/music/url/index", json={"url": "https://example.com/not-music"})
+    assert resp.status_code == 400
+
+
+def test_index_url_200_fred_again_merged_set() -> None:
+    _TESTS = Path(__file__).resolve().parents[3] / "tests"
+    if str(_TESTS) not in sys.path:
+        sys.path.insert(0, str(_TESTS))
+
+    from helpers.music_set_fixtures import FRED_AGAIN_1001TL_URL, fred_again_merged_resolved_set
+
+    merged = fred_again_merged_resolved_set()
+    app = _build_app()
+    client = TestClient(app)
+    with patch(
+        "services.music.url_handler.index_music_url",
+        new=AsyncMock(return_value=merged),
+    ):
+        resp = client.post(
+            "/api/music/url/index",
+            json={"url": FRED_AGAIN_1001TL_URL, "correlate": True},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["set_key"] == merged.set_key
+    assert len(body["entries"]) == 3
+    assert len(body["linked_sets"]) >= 2
+    first_refs = {r["schema_id"] for r in body["entries"][0]["source_refs"]}
+    assert first_refs == {"yt", "1001tl", "apple_music"}
+

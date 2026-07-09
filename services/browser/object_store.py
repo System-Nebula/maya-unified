@@ -43,3 +43,11 @@ async def upload_capture_asset(
         "size_bytes": len(raw),
         "sha256": hashlib.sha256(raw).hexdigest(),
     }
+
+
+async def fetch_capture_asset(http_client: httpx.AsyncClient, key: str) -> bytes:
+    """Download a stored capture asset from object store."""
+    url = f"{S3_ENDPOINT}/{S3_BUCKET}/{key}"
+    resp = await http_client.get(url, timeout=30.0)
+    resp.raise_for_status()
+    return resp.content

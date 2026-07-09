@@ -9,6 +9,17 @@ aliases: [Design/Music Player Alpine]
 
 Alpine.js patterns for the Maya mini player: global store for audio state, declarative HTML bindings, canvas waveform lifecycle, and relative color blocking via CSS custom properties. See [[Design/Music Player Interface]] for layout tokens and visual spec.
 
+**Live set mode** (YouTube + synced tracklist): [[Design/Music Player Live Set]].
+
+## Player modes
+
+| Mode | Component | Transport | Use case |
+|------|-----------|-----------|----------|
+| `queue` | Mini player strip + queue panel | Hidden `<audio>` per track | Playlists, radio, smart playlists |
+| `live_set` | `mayaLiveSet()` full-page viewer | YouTube IFrame API (or demo timer) | DJ mixes, timestamped sets |
+
+The dashboard implements adaptive `queue` + `live_set` presentation in one `mayaPlayer` store. Full-page `mayaLiveSet()` remains in the Quartz demo.
+
 ## Architecture
 
 ```mermaid
@@ -17,21 +28,28 @@ flowchart LR
     store[mayaPlayer store]
     shell[mayaPlayerShell data]
     wave[mayaWaveform data]
+    liveSet[mayaLiveSet data]
   end
   subgraph dom [DOM]
     audio[hidden audio element]
     canvas[waveform canvas]
     controls[transport markup]
+    ytembed[YouTube embed]
+    tracklist[live set tracklist]
   end
   subgraph css [TokenLayer]
     tokens[tokens.css blocks]
   end
   store --> audio
   store --> controls
+  store --> liveSet
+  liveSet --> ytembed
+  liveSet --> tracklist
   shell --> tokens
   wave --> canvas
   shell -->|"accent-active"| tokens
   store -->|"progress peaks"| wave
+  store -->|"mode live_set currentTime"| liveSet
 ```
 
 | Layer | Live dashboard | Reference module |
@@ -39,6 +57,7 @@ flowchart LR
 | Global state | `Alpine.store("mayaPlayer")` in `apps/dashboard/js/mayaConversation.js` | Same store when embedded; `mayaPlayerDemo()` in Quartz demo |
 | Canvas | `mayaWaveform()` canvas seek | Same component in `mayaWaveform.js` |
 | Volume | `mayaVolumeControl()` vertical mixer fader | Same component; binds store or demo root |
+| Live set | `presentation: "set"` in `mayaPlayer` queue panel | `mayaLiveSet()` in `mayaLiveSet.js` |
 | Tokens | `preset-maya` + `--mv-*` dashboard vars | `preset-compact` in Quartz demo |
 
 ## Live demo
@@ -48,6 +67,14 @@ Try the embedded player — waveform seek, queue, volume, and per-track accent c
 <iframe class="player-demo-embed" src="../static/player-demo/index.html" title="Music player interactive demo" loading="lazy"></iframe>
 
 Built from `mayaWaveform.js`, `demo.js`, and `tokens.css` in `quartz/static/player-demo/`.
+
+### Live set demo
+
+YouTube + timestamped tracklist (USB002 fixture, demo mode when YT API unavailable):
+
+<iframe class="live-set-demo-embed" src="../static/live-set-demo/index.html" title="Live set viewer demo" loading="lazy"></iframe>
+
+Built from `mayaLiveSet.js` and `live-set-demo/` in `quartz/static/`. Full spec: [[Design/Music Player Live Set]].
 
 ---
 
@@ -371,7 +398,9 @@ Priority for `peaks` and `progress`:
 |---------|---------------|-------------|------------------|
 | Seek UI | Canvas waveform | Canvas waveform | Canvas |
 | Accent color | Per-track `--accent-active` | Per-track `--accent-active` | Dynamic via inline style |
-| Layout | Compact strip + hero (container) | Compact + Hero | `preset-maya` / `preset-compact` |
+| Layout | Compact strip + hero (container) | Compact + Hero + Live Set | `preset-maya` / `preset-compact` |
+| Live set viewer | In progress — set tracklist in queue when `presentation: "set"` | Documented | `mayaLiveSet.js` + demo iframe |
+| YT tracklist sync | YT IFrame transport + audio fallback | 500ms poll + seek | `mayaSetYtTransport` + demo |
 | Shuffle / repeat | Implemented | Yes | Demo toggles |
 | BPM / key badges | LCD + queue when metadata present | Yes | Mock track metadata |
 | Peaks on tracks | Client-generated when missing | Required | `generatePeaks()` helper |
@@ -408,5 +437,8 @@ The Quartz docs embed the same demo via iframe (`../static/player-demo/index.htm
 | `apps/dashboard/css/maya-dashboard.css` | `.md-player-sticky` placement |
 | `apps/dashboard/js/mayaWaveform.js` | `mayaWaveform()` + `mayaVolumeControl()` |
 | `design-reference/music-player/tokens.css` | Relative color blocking tokens |
+| `design-reference/music-player/mayaLiveSet.js` | Live set viewer Alpine module |
 | `quartz/static/player-demo/` | Embeddable interactive demo with real audio |
+| `quartz/static/live-set-demo/` | Embeddable live set viewer demo |
 | [[Design/Music Player Interface]] | Visual design spec |
+| [[Design/Music Player Live Set]] | Live set mode spec |

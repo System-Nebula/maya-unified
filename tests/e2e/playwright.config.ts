@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const PORT = Number(process.env.MAYA_GATEWAY_PORT ?? 8765);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
+const USE_UNIFIED_GATEWAY = process.env.MAYA_E2E_UNIFIED === "1";
 
 export default defineConfig({
   testDir: "./tests",
@@ -18,8 +19,9 @@ export default defineConfig({
   },
 
   webServer: {
-    // Launch the maya-gateway via uv from the repo root.
-    command: `uv run --quiet maya-gateway`,
+    command: USE_UNIFIED_GATEWAY
+      ? `MAYA_E2E_FIXTURES=1 PORT=${PORT} uv run python launch.py`
+      : `uv run --quiet maya-gateway`,
     cwd: "../..",
     url: `${BASE_URL}/`,
     timeout: 60_000,

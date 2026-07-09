@@ -5,13 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from services.cmd.models import CmdContext, CmdResult, CmdSurface
+from services.cmd.play_query import extract_cmd_query_from_raw_text, looks_like_cmd_residue
 
 
 def _extract_query(ctx: CmdContext) -> str:
-    raw = (ctx.raw_text or "").strip()
-    body = raw[1:].strip() if raw.startswith("/") else raw
-    parts = body.split(None, 1)
-    return parts[1].strip() if len(parts) > 1 else ""
+    return extract_cmd_query_from_raw_text(ctx.raw_text or "", cmd="queue")
 
 
 async def exec_queue(ctx: CmdContext, args: dict[str, Any]) -> CmdResult:
@@ -20,6 +18,11 @@ async def exec_queue(ctx: CmdContext, args: dict[str, Any]) -> CmdResult:
         return CmdResult(
             ok=False,
             error="Give me a link or search text to queue — e.g. /queue gangnam style.",
+        )
+    if looks_like_cmd_residue(query):
+        return CmdResult(
+            ok=False,
+            error="Queue query still looks like a command — paste only the URL or search text.",
         )
     if ctx.surface not in (CmdSurface.DASHBOARD, CmdSurface.CHAT):
         return CmdResult(ok=False, error="/queue is for the dashboard music player.")

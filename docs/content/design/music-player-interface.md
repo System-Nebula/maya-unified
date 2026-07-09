@@ -11,13 +11,13 @@ Design reference for a compact **mini player** web component: waveform seek bar,
 
 ## Overview
 
-| | Compact Strip | Hero Art |
-|---|---------------|----------|
-| **Source** | Figma Make export | Google AI Studio export |
-| **Reference path** | `design-reference/project-2/` | `design-reference/music-player-aistudio/` |
-| **Layout** | Single horizontal row (88px art + metadata + waveform + time) | Left hero art column + stacked metadata/waveform |
-| **Stack** | React, Tailwind 4, shadcn tokens, Lucide icons | React, Tailwind 4, inline hex, Lucide icons |
-| **Live default** | Quartz demo (`preset-compact`) | Container-responsive via `player-layout-auto` |
+| | Compact Strip | Hero Art | Live Set Viewer |
+|---|---------------|----------|-----------------|
+| **Source** | Figma Make export | Google AI Studio export | Figma Make export (USB002) |
+| **Reference path** | `design-reference/project-2/` | `design-reference/music-player-aistudio/` | `design-reference/live-set-viewer/` |
+| **Layout** | Single horizontal row (88px art + metadata + waveform + time) | Left hero art column + stacked metadata/waveform | 58% video + 42% synced tracklist |
+| **Stack** | React, Tailwind 4, shadcn tokens, Lucide icons | React, Tailwind 4, inline hex, Lucide icons | React, Tailwind 4, YT IFrame API |
+| **Live default** | Quartz demo (`preset-compact`) | Container-responsive via `player-layout-auto` | Quartz demo (`live-set-demo`) |
 
 The live dashboard implements the **Compact Strip** layout with **`preset-maya`**, inline Heroicons-style SVG transport controls, a vertical mixer fader (`mayaVolumeControl`), and a list-music icon for the queue toggle.
 
@@ -30,6 +30,14 @@ Interactive mini player with canvas waveform, transport controls, and synthetic 
 <iframe class="player-demo-embed" src="../static/player-demo/index.html" title="Music player interactive demo" loading="lazy"></iframe>
 
 Source: `quartz/static/player-demo/` — Alpine.js, color-blocking tokens, and bundled WAV tones.
+
+### Live set demo
+
+YouTube + timestamped tracklist viewer (Fred again.. USB002 fixture):
+
+<iframe class="live-set-demo-embed" src="../static/live-set-demo/index.html" title="Live set viewer demo" loading="lazy"></iframe>
+
+Source: `quartz/static/live-set-demo/` — see [[Design/Music Player Live Set]] for full spec.
 
 ## Relative color theory blocking
 
@@ -196,21 +204,25 @@ interface Track {
 
 ## Layout variants
 
-| Element | Compact Strip | Hero Art |
-|---------|---------------|----------|
-| Shell bg | `--block-surface-1` + page gradient | `--block-surface-0` flat |
-| Border | `--block-border-subtle` | `--block-border-strong` |
-| Corner radius | `rounded-sm` (~2px) | None (sharp) |
-| Album art | 88×88, brightness filter + right fade | 192–224px, grayscale → color on hover |
-| Metadata | Narrow column + badge chips | Headline line + pipe-separated mono row |
-| Title scale | `text-sm` semibold | `text-3xl` bold |
-| Time display | Stacked current / remaining | Inline current (accent) / duration |
-| Waveform panel | Inline in top row | Bordered sub-panel on `--block-surface-2` |
-| Play button | 36px square, `rounded-sm` | 48px circle, `rounded-full` |
-| Transport | Inline Heroicons SVGs | Same icon set |
-| Volume | Vertical mixer fader + speaker + `%` edit | Same |
-| Queue toggle | List-music SVG icon | Same |
-| Controls padding | `px-4 py-2.5` | `px-8 py-5` |
+| Element | Compact Strip | Hero Art | Live Set Viewer |
+|---------|---------------|----------|-----------------|
+| Shell bg | `--block-surface-1` + page gradient | `--block-surface-0` flat | `--block-surface-0` full viewport |
+| Primary transport | Waveform + audio element | Same | YouTube embed + time poll |
+| Tracklist | Collapsible queue panel | Same | Fixed right column, auto-scroll |
+| Active indicator | Queue row border + mini waveform | Same | Left border + EQ bars, dim played |
+| Click row | Select track, restart playback | Same | Seek video to `start_seconds` |
+| Border | `--block-border-subtle` | `--block-border-strong` | `--block-border-subtle` |
+| Corner radius | `rounded-sm` (~2px) | None (sharp) | `rounded-[2px]` on badges |
+| Album art | 88×88, brightness filter + right fade | 192–224px, grayscale → color on hover | Video embed 16:9 |
+| Metadata | Narrow column + badge chips | Headline line + pipe-separated mono row | Header bar: set ID, artists, venue |
+| Title scale | `text-sm` semibold | `text-3xl` bold | `text-xs` in now-playing bar |
+| Time display | Stacked current / remaining | Inline current (accent) / duration | Per-row timestamp column |
+| Waveform panel | Inline in top row | Bordered sub-panel on `--block-surface-2` | Set progress bar + milestones |
+| Play button | 36px square, `rounded-sm` | 48px circle, `rounded-full` | YT embed controls |
+| Transport | Inline Heroicons SVGs | Same icon set | — |
+| Volume | Vertical mixer fader + speaker + `%` edit | Same | — |
+| Queue toggle | List-music SVG icon | Same | — |
+| Controls padding | `px-4 py-2.5` | `px-8 py-5` | — |
 
 ### Layout anatomy
 
@@ -296,6 +308,20 @@ Vertical mixer fader in the controls bar:
 - **Mini waveform:** 28–32px wide bar preview; active track uses `--block-accent`, inactive `--block-muted-bg`
 - **Playing indicator:** 4 animated EQ bars in `--block-accent` (`scaleY` keyframes, staggered timing)
 
+### Live set tracklist rows
+
+See [[Design/Music Player Live Set]] for full spec. Summary:
+
+| State | Visual |
+|-------|--------|
+| **Played** | Opacity 0.3 |
+| **Current** | Left border `--block-accent`, bg `--block-accent-soft`, EQ bars replace track # |
+| **Upcoming** | Full opacity, muted title color |
+| **Narrative** (`attrs.is_narrative`) | ✦ marker, italic, no seek on click |
+| **Footnote** (`attrs.footnote`) | Message icon toggles inline expansion below title |
+
+Auto-scroll keeps the current row centered in the tracklist viewport.
+
 ## Interaction patterns
 
 | Action | Behavior |
@@ -349,8 +375,10 @@ Both Quartz docs and the player widget can share a single accent swap without du
 |---------|----------------|
 | `Downloads/project(2).zip` | `design-reference/project-2/` |
 | `Downloads/zip(1).zip` | `design-reference/music-player-aistudio/` |
+| `Downloads/project(3).zip` | `design-reference/live-set-viewer/` |
 | Token reference | `design-reference/music-player/tokens.css` |
 | Interactive demo | `quartz/static/player-demo/` (embedded via iframe above) |
+| Live set demo | `quartz/static/live-set-demo/` |
 
 Key implementation files:
 
@@ -358,7 +386,11 @@ Key implementation files:
 - `design-reference/project-2/src/styles/theme.css` — shadcn token overrides
 - `design-reference/music-player-aistudio/src/App.tsx` — Hero Art player
 - `design-reference/music-player-aistudio/src/index.css` — fonts and base colors
+- `design-reference/live-set-viewer/src/app/App.tsx` — Live Set Viewer (USB002)
+- `design-reference/music-player/mayaLiveSet.js` — Alpine live set reference
 
 ## Alpine.js implementation
 
 See [[Design/Music Player Alpine]] for store patterns, HTML bindings, canvas lifecycle, and the portable reference module (`design-reference/music-player/mayaWaveform.js`).
+
+Live set mode: [[Design/Music Player Live Set]].

@@ -32,6 +32,7 @@ CaptureType = Literal[
     "paper",
     "tweet",
     "recipe",
+    "tracklist",
     "generic",
 ]
 

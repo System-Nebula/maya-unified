@@ -6,7 +6,7 @@ import asyncio
 import inspect
 from typing import Any
 
-from opentelemetry import trace
+from opentelemetry import baggage, context as otel_context_mod, trace
 
 from services.cmd.capabilities import check_cmd_permissions
 from services.cmd.models import CmdContext, CmdResult, ParsedCmd
@@ -49,8 +49,12 @@ async def dispatch_cmd_async(parsed: ParsedCmd, ctx: CmdContext) -> CmdResult:
         span.set_attribute("cmd.id", parsed.cmd_id)
         span.set_attribute("cmd.surface", ctx.surface.value)
         corr_id = (ctx.metadata or {}).get("corr_id")
+        baggage_token = None
         if corr_id:
             span.set_attribute("chat.corr_id", str(corr_id))
+            baggage_token = otel_context_mod.attach(
+                baggage.set_baggage("corr_id", str(corr_id))
+            )
         try:
             result = cmd.executor(ctx, parsed.args)
             if inspect.isawaitable(result):
@@ -66,6 +70,9 @@ async def dispatch_cmd_async(parsed: ParsedCmd, ctx: CmdContext) -> CmdResult:
             return CmdResult(ok=True, text=str(result))
         except Exception as exc:  # noqa: BLE001
             return CmdResult(ok=False, error=str(exc), trace_id=_cmd_trace_id())
+        finally:
+            if baggage_token is not None:
+                otel_context_mod.detach(baggage_token)
 
 
 def dispatch_cmd(parsed: ParsedCmd, ctx: CmdContext) -> CmdResult:

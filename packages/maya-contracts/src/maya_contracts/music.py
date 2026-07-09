@@ -21,6 +21,7 @@ MatchedVia = Literal[
     "crate",
     "ontology",
     "url",
+    "setlist",
 ]
 
 
@@ -112,6 +113,12 @@ class TrackInfo(StrictModel):
     ontology: Optional[OntologyRef] = None
     # Cross-source identity refs (schema-prefixed; wikidata is one of many).
     source_refs: list[SourceRefModel] = []
+    # DJ set virtual track boundaries (seconds into container recording).
+    start_offset_seconds: Optional[int] = None
+    end_offset_seconds: Optional[int] = None
+    set_key: Optional[str] = None
+    set_position: Optional[int] = None
+    play_mode: Literal["seek", "standalone"] = "seek"
 
 
 class PlayResolveResponse(StrictModel):
@@ -122,3 +129,47 @@ class PlayResolveResponse(StrictModel):
     zone: str
     tracks: list[TrackInfo]
     explanation: Optional[str] = None
+
+
+class IndexMusicUrlRequest(StrictModel):
+    url: str
+    correlate: bool = True
+
+
+class SetEntryModel(StrictModel):
+    position: int
+    start_seconds: int
+    end_seconds: Optional[int] = None
+    label: str
+    artist: Optional[str] = None
+    title: Optional[str] = None
+    work_key: Optional[str] = None
+    play_mode: Literal["seek", "standalone"] = "seek"
+    source_refs: list[SourceRefModel] = []
+
+
+class ResolvedSetModel(StrictModel):
+    set_key: str
+    title: str
+    container_url: str
+    container_schema: str
+    entries: list[SetEntryModel]
+    linked_sets: list[SourceRefModel] = []
+    attrs: dict = {}
+
+
+class MusicReactionRequest(StrictModel):
+    entity_type: Literal["work", "set_entry", "set", "recording"]
+    entity_key: str
+    reaction: Literal["like", "star", "heart"]
+    source_url: Optional[str] = None
+    active: bool = True
+    attrs: dict = {}
+
+
+class MusicReactionResponse(StrictModel):
+    id: Optional[str] = None
+    active: bool
+    entity_type: str
+    entity_key: str
+    reaction: str

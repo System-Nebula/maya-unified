@@ -243,7 +243,7 @@ class MusicPlatformLink(Base, UUIDPrimaryKey, TimestampMixin):
 
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False)  # artist|track|release|genre
     entity_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
-    platform: Mapped[str] = mapped_column(String(32), nullable=False)  # discogs|soundcloud|spotify|beatport|bandcamp|yt|slskd
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)  # discogs|soundcloud|spotify|beatport|bandcamp|yt|slskd|1001tl|apple_music
     external_id: Mapped[str | None] = mapped_column(String(255))
     url: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(
@@ -252,6 +252,28 @@ class MusicPlatformLink(Base, UUIDPrimaryKey, TimestampMixin):
     source: Mapped[str] = mapped_column(
         String(64), nullable=False, server_default=text("'manual'")
     )  # manual|resolver|schema:<id>|enrich
+    attrs: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+
+
+class MusicReaction(Base, UUIDPrimaryKey, TimestampMixin):
+    """Operator reactions on canonical works, set entries, or DJ sets."""
+
+    __tablename__ = "music_reaction"
+    __table_args__ = (
+        UniqueConstraint(
+            "operator_id", "entity_type", "entity_key", "reaction",
+            name="uq_music_reaction_operator_entity",
+        ),
+        Index("ix_music_reaction_entity", "entity_type", "entity_key"),
+    )
+
+    operator_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)  # work|set_entry|set|recording
+    entity_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    reaction: Mapped[str] = mapped_column(String(16), nullable=False)  # like|star|heart
+    source_url: Mapped[str | None] = mapped_column(Text)
     attrs: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )

@@ -25,36 +25,92 @@ def build_playlist_artifact(query: str, expansion) -> dict[str, Any]:
             for i, (url, title) in enumerate(expansion.tracks)
         ]
         album = expansion.title or "Playlist"
+        presentation = "playlist" if len(tracks) > 1 else "single"
     else:
         q = (query or "").strip()
-        tracks = [_track_payload(query=q, title=q, index=0)]
-        album = q
-    return {"type": "playlist", "title": album, "url": query, "tracks": tracks}
+        from services.discord.playlist import is_url
+
+        fallback_title = q if q and not is_url(q) else "Playlist"
+        tracks = [_track_payload(query=q, title=fallback_title, index=0)]
+        album = fallback_title
+        presentation = "single"
+    return {
+        "type": "playlist",
+        "presentation": presentation,
+        "title": album,
+        "url": query,
+        "tracks": tracks,
+    }
 
 
 async def build_playlist_for_query(query: str) -> dict[str, Any]:
-    from services.discord.playlist import expand_playlist
+    import asyncio
 
-    # Ontology-first: canonical work → known/enriched recording URL. Returns
-    # None for direct URLs and unconfident matches — then legacy expansion
-    # runs unchanged. Every confident play also warms the graph write-through.
-    try:
-        from services.music.ontology import (
-            build_playlist_from_resolution,
-            resolve_for_play,
-        )
+    from services.cmd.play_query import looks_like_cmd_residue, normalize_play_query, salvage_media_url
+    from services.discord.playlist import expand_playlist, is_url
+    from services.tracing import corr_span
 
-        resolved = await resolve_for_play(query)
-    except Exception:  # noqa: BLE001 — ontology must never break playback
-        resolved = None
-    if resolved is not None:
-        return build_playlist_from_resolution(query, resolved)
+    with corr_span("play.build_playlist") as span:
+        q = normalize_play_query((query or "").strip())
+        if q and not is_url(q):
+            salvaged = salvage_media_url(q)
+            if salvaged:
+                q = salvaged
+        if looks_like_cmd_residue(q):
+            q = salvage_media_url(q) or q
+        span.set_attribute("query", q)
 
-    try:
-        expansion = await asyncio.to_thread(expand_playlist, query)
-    except Exception:  # noqa: BLE001
-        expansion = None
-    return build_playlist_artifact(query, expansion)
+        if q and is_url(q):
+            try:
+                from services.music.url_handler import detect_platform, index_music_url
+                from services.music.set_playlist import build_playlist_from_set
+
+                if detect_platform(q):
+                    resolved = await index_music_url(q, ingest=False)
+                    if resolved is not None:
+                        try:
+                            from services.music.set_ingest import ingest_set
+
+                            asyncio.create_task(ingest_set(resolved))
+                        except Exception:  # noqa: BLE001
+                            pass
+                        result = build_playlist_from_set(q, resolved)
+                        _stamp_playlist_span(span, result)
+                        return result
+            except Exception:  # noqa: BLE001 — set enrichment must not break playback
+                pass
+
+        # Ontology-first: canonical work → known/enriched recording URL. Returns
+        # None for direct URLs and unconfident matches — then legacy expansion
+        # runs unchanged. Every confident play also warms the graph write-through.
+        try:
+            from services.music.ontology import (
+                build_playlist_from_resolution,
+                resolve_for_play,
+            )
+
+            resolved = await resolve_for_play(q)
+        except Exception:  # noqa: BLE001 — ontology must never break playback
+            resolved = None
+        if resolved is not None:
+            result = build_playlist_from_resolution(q, resolved)
+            _stamp_playlist_span(span, result)
+            return result
+
+        try:
+            expansion = await asyncio.to_thread(expand_playlist, q)
+        except Exception:  # noqa: BLE001
+            expansion = None
+        result = build_playlist_artifact(q, expansion)
+        _stamp_playlist_span(span, result)
+        return result
+
+
+def _stamp_playlist_span(span, playlist: dict[str, Any]) -> None:
+    entries = playlist.get("entries") or playlist.get("tracks") or []
+    span.set_attribute("presentation", playlist.get("presentation", ""))
+    span.set_attribute("title", playlist.get("title", ""))
+    span.set_attribute("track_count", len(entries))
 
 
 @dataclass
@@ -64,16 +120,29 @@ class _OperatorPlayerState:
 
 
 _player_cache: dict[str, _OperatorPlayerState] = {}
+_GLOBAL_PLAYER_CACHE_KEY = "__global__"
 
 
 def _cache_key(operator_id: str | None) -> str | None:
     oid = (operator_id or "").strip()
-    return oid or None
+    if oid:
+        return oid
+    try:
+        from services.voice.hub import hub
+
+        active = (getattr(hub, "_active_operator_id", None) or "").strip()
+        if active:
+            return active
+    except Exception:  # noqa: BLE001
+        pass
+    return _GLOBAL_PLAYER_CACHE_KEY
 
 
 def remember_player_load(playlist: dict[str, Any], *, operator_id: str | None = None) -> None:
+    if not playlist.get("tracks"):
+        return
     key = _cache_key(operator_id)
-    if not key or not playlist.get("tracks"):
+    if not key:
         return
     _player_cache[key] = _OperatorPlayerState(playlist=dict(playlist), current=0)
 
@@ -110,21 +179,31 @@ def clear_player_state(*, operator_id: str | None = None) -> None:
 
 
 def clear_player_and_broadcast(*, operator_id: str | None = None) -> None:
-    """Clear server-side player cache and notify connected dashboards."""
+    """Clear server-side player cache and notify connected dashboards.
+
+    Only broadcasts when there was actually a player to clear. Making repeated
+    clears idempotent means a duplicate clear cannot fan a player.control:clear
+    back out to the dashboards, which is what let a stray clear echo into a
+    POST /player/clear -> broadcast -> clear feedback loop.
+    """
+    key = _cache_key(operator_id)
+    had_state = bool(key and _player_cache.get(key) is not None)
     clear_player_state(operator_id=operator_id)
-    broadcast_player_control("clear", operator_id=operator_id)
+    if had_state:
+        broadcast_player_control("clear", operator_id=operator_id)
 
 
 def player_snapshot(operator_id: str | None) -> dict[str, Any] | None:
-    key = _cache_key(operator_id)
-    if not key:
-        return None
-    state = _player_cache.get(key)
-    if state is None:
-        return None
-    playlist = dict(state.playlist)
-    playlist["current"] = state.current
-    return playlist
+    for key in (_cache_key(operator_id), _GLOBAL_PLAYER_CACHE_KEY):
+        if not key:
+            continue
+        state = _player_cache.get(key)
+        if state is None:
+            continue
+        playlist = dict(state.playlist)
+        playlist["current"] = state.current
+        return playlist
+    return None
 
 
 def replay_player_to_subscriber(q: Any, *, operator_id: str | None = None) -> None:
@@ -134,11 +213,28 @@ def replay_player_to_subscriber(q: Any, *, operator_id: str | None = None) -> No
     q.put({"type": "player.load", "playlist": snapshot, "operator_id": operator_id})
 
 
-def broadcast_player_load(playlist: dict[str, Any], *, operator_id: str | None = None) -> None:
+def broadcast_player_load(
+    playlist: dict[str, Any],
+    *,
+    operator_id: str | None = None,
+    corr_id: str | None = None,
+) -> None:
+    from services.tracing import corr_span
     from services.voice.hub import hub
 
-    remember_player_load(playlist, operator_id=operator_id)
-    hub.broadcast({"type": "player.load", "playlist": playlist}, operator_id=operator_id)
+    entries = playlist.get("entries") or playlist.get("tracks") or []
+    with corr_span(
+        "player.broadcast",
+        corr_id=corr_id,
+        presentation=playlist.get("presentation", ""),
+        track_count=len(entries),
+        set_key=playlist.get("set_key", ""),
+    ):
+        remember_player_load(playlist, operator_id=operator_id)
+        event: dict[str, Any] = {"type": "player.load", "playlist": playlist}
+        if corr_id:
+            event["corr_id"] = corr_id
+        hub.broadcast(event, operator_id=operator_id)
 
 
 def remember_player_append(

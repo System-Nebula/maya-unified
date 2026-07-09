@@ -87,6 +87,35 @@ async def process_one(conn: asyncpg.Connection, row: asyncpg.Record) -> None:
 
         assets = json.loads(assets)
 
+    url = row["url"] or ""
+    capture_type = row["capture_type"] or "generic"
+
+    from maya_feeds.tracklist.filter import is_tracklist_url
+
+    if is_tracklist_url(url):
+        import httpx
+
+        from services.browser.tracklist_processor import process_tracklist_capture
+
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            result = await process_tracklist_capture(
+                conn,
+                capture_id=capture_id,
+                url=url,
+                title=title,
+                assets=assets,
+                http_client=http_client,
+            )
+        if result is not None:
+            log.info(
+                "indexed tracklist capture %s set_key=%s entries=%s",
+                capture_id,
+                result.get("set_key"),
+                result.get("entry_count"),
+            )
+        await _mark_processed(conn, row["outbox_id"], row["capture_id"])
+        return
+
     write_capture_artifacts(
         capture_id=capture_id,
         capture_type=row["capture_type"],

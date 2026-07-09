@@ -1,0 +1,34 @@
+{
+  "tracklist_id": "2gu8q2xk",
+  "set_key": "1001tl:2gu8q2xk",
+  "track_count": 3,
+  "container_url": "https://www.1001tracklists.com/tracklist/2gu8q2xk/fred-again-thomas-bangalter-usb002.html",
+  "container_schema": "1001tl",
+  "title": "Fred again.. & Thomas Bangalter @ USB002, Alexandra Palace London, United Kingdom 2026-02-27",
+  "entries": [
+    {
+      "position": 1,
+      "start_seconds": 0,
+      "end_seconds": 312,
+      "label": "Fred again.. & Swedish House Mafia - Turn On The Lights again.. (Fred again.. & Swedish House Mafia)",
+      "artist": "Fred again.. & Swedish House Mafia",
+      "title": "Turn On The Lights again.. (Fred again.. & Swedish House Mafia)"
+    },
+    {
+      "position": 2,
+      "start_seconds": 312,
+      "end_seconds": 765,
+      "label": "Thomas Bangalter - Trax On Da Rocks Vol. 1",
+      "artist": "Thomas Bangalter",
+      "title": "Trax On Da Rocks Vol. 1"
+    },
+    {
+      "position": 3,
+      "start_seconds": 765,
+      "end_seconds": null,
+      "label": "Fred again.. - Delilah (pull me out of this)",
+      "artist": "Fred again..",
+      "title": "Delilah (pull me out of this)"
+    }
+  ]
+}

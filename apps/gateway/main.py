@@ -43,6 +43,7 @@ from apps.gateway.cmd_routes import router as cmd_router  # noqa: E402
 from apps.gateway.room_routes import router as room_router  # noqa: E402
 from apps.gateway.browser_capture_routes import router as browser_capture_router  # noqa: E402
 from apps.gateway.game_routes import router as game_router  # noqa: E402
+from apps.gateway.telemetry_routes import router as telemetry_router  # noqa: E402
 from apps.gateway.voice_routes import register_agent_routes  # noqa: E402
 from services.auth.api_auth_registry import ApiAuthClass, classify_request  # noqa: E402
 from services.auth.deps import resolve_operator_from_token  # noqa: E402
@@ -87,6 +88,22 @@ async def _attach_operator(request: Request):
     except Exception:
         request.state.operator = None
         return None
+
+
+@app.middleware("http")
+async def _otel_traceparent(request: Request, call_next):
+    """Continue browser-initiated traces when traceparent is present."""
+    from opentelemetry import context, propagate
+
+    tp = request.headers.get("traceparent")
+    token = None
+    if tp:
+        token = context.attach(propagate.extract(dict(request.headers)))
+    try:
+        return await call_next(request)
+    finally:
+        if token is not None:
+            context.detach(token)
 
 
 @app.middleware("http")
@@ -238,6 +255,7 @@ from services.game.enabled import GAME_MODE_ENABLED  # noqa: E402
 
 if GAME_MODE_ENABLED:
     app.include_router(game_router)
+app.include_router(telemetry_router)
 register_agent_routes(app)
 
 try:
@@ -434,5 +452,15 @@ def run() -> None:
         # graceful shutdown open forever, so a --reload restart wedges the port.
         timeout_graceful_shutdown=5,
         # Voice-runtime edits reload the heavy TTS model needlessly; skip them.
-        reload_excludes=["packages/voice-runtime/*"] if reload else None,
+        reload_excludes=[
+            "packages/voice-runtime/*",
+            "tests/*",
+            "apps/maya-gateway/tests/*",
+            "apps/gateway/tests/*",
+            "docs/*",
+            "tests/tracklists/*",
+            "tests/fixtures/*",
+            "tests/helpers/*",
+            "uv.lock",
+        ] if reload else None,
     )

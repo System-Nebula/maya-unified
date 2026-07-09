@@ -36,6 +36,35 @@ def build_music_ontology_tools(*, emit: Callable[..., None] | None = None) -> li
             "matched_via": meta.matched_via,
         }
 
+    def music_index_url(args: dict[str, Any]) -> dict[str, Any]:
+        url = str(args.get("url") or "").strip()
+        if not url:
+            return {"ok": False, "error": "url required"}
+        from services.music.url_handler import index_music_url_sync
+
+        resolved = index_music_url_sync(url, correlate=bool(args.get("correlate", True)))
+        if resolved is None:
+            return {"ok": True, "found": False, "url": url, "message": "No tracklist found."}
+        return {
+            "ok": True,
+            "found": True,
+            "set_key": resolved.set_key,
+            "title": resolved.title,
+            "container_url": resolved.container_url,
+            "entry_count": len(resolved.entries),
+            "entries": [
+                {
+                    "position": e.position,
+                    "start_seconds": e.start_seconds,
+                    "label": e.label,
+                    "artist": e.artist,
+                    "title": e.title,
+                    "work_key": e.work_key,
+                }
+                for e in resolved.entries
+            ],
+        }
+
     return [
         ToolSpec(
             name="music_lookup",
@@ -57,5 +86,29 @@ def build_music_ontology_tools(*, emit: Callable[..., None] | None = None) -> li
             handler=music_lookup,
             group="integrations",
             execution_timeout=15.0,
+        ),
+        ToolSpec(
+            name="music_index_url",
+            description=(
+                "Index a DJ set URL (YouTube mix, 1001tracklists, Apple Music album) "
+                "and return parsed timestamped tracklist entries with ontology enrichment."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "YouTube, 1001tracklists, or Apple Music album URL.",
+                    },
+                    "correlate": {
+                        "type": "boolean",
+                        "description": "Merge linked cross-source tracklists when found.",
+                    },
+                },
+                "required": ["url"],
+            },
+            handler=music_index_url,
+            group="integrations",
+            execution_timeout=30.0,
         ),
     ]
