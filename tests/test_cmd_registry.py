@@ -23,6 +23,15 @@ def _fresh_registry(monkeypatch):
     ensure_cmds_registered()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_player_cache():
+    from services.dashboard import player
+
+    player._player_cache.clear()
+    yield
+    player._player_cache.clear()
+
+
 @pytest.fixture
 def imagine_preflight_ok():
     """Stub the settings/health preflight so dispatch tests stay unit-level."""
@@ -451,7 +460,8 @@ async def test_dispatch_play_dashboard_emits_playlist(monkeypatch) -> None:
         CmdContext(surface=CmdSurface.DASHBOARD, raw_text="/play https://x.bandcamp.com/album/--5"),
     )
     assert result.ok is True
-    assert not result.artifacts
+    assert result.artifacts and result.artifacts[0]["type"] == "playlist"
+    assert result.artifacts[0]["title"] == "Album X"
     assert "Queued 2 tracks" in (result.text or "")
     load_events = [e for e in broadcasts if e.get("type") == "player.load"]
     assert len(load_events) == 1
