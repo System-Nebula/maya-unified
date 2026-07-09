@@ -82,3 +82,18 @@ def test_salvage_dialogue_wrapped_in_asterisks():
 
     raw = "*Hey everyone, who's ready for a little chaos?*"
     assert strip_roleplay_actions(raw) == "Hey everyone, who's ready for a little chaos?"
+
+
+def test_preserve_emphasized_asterisks():
+    from memory.character_card import strip_roleplay_actions
+
+    raw = "I *really* need to raise my taxes."
+    assert strip_roleplay_actions(raw) == "I really need to raise my taxes."
+
+    raw2 = "It is *extremely* expensive taste."
+    assert strip_roleplay_actions(raw2) == "It is extremely expensive taste."
+
+    # Verify that single-word actions are still stripped
+    raw_action = "It is *sighs* expensive."
+    assert strip_roleplay_actions(raw_action) == "It is expensive."
+

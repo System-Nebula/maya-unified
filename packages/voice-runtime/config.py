@@ -228,7 +228,7 @@ class ChunkConfig:
 class AudioConfig:
     output_dir: str = field(default_factory=lambda: _env_str("VA_OUTPUT_DIR", "output"))
     # Enable barge-in: stop playback when the user starts talking again.
-    barge_in: bool = field(default_factory=lambda: _env_bool("VA_BARGE_IN", True))
+    barge_in: bool = field(default_factory=lambda: _env_bool("VA_BARGE_IN", False))
     # How barge-in decides to interrupt the agent:
     #   "smart"   = listen for a full utterance and only cut the agent off once you've
     #               finished speaking AND it transcribes to real words (ignores coughs,
@@ -252,6 +252,10 @@ class AudioConfig:
     output_volume: float = field(default_factory=lambda: _env_float("VA_OUTPUT_VOLUME", 1.0))
     # "system" = local speakers via sounddevice; "browser" = stream PCM to dashboard tab.
     output_sink: str = field(default_factory=lambda: _env_str("VA_OUTPUT_SINK", "browser"))
+    # Monologue settings for proactive streaming
+    monologue_enabled: bool = field(default_factory=lambda: _env_bool("VA_MONOLOGUE_ENABLED", True))
+    monologue_timeout: float = field(default_factory=lambda: _env_float("VA_MONOLOGUE_TIMEOUT", 22.0))
+
 
 
 @dataclass

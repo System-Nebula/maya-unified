@@ -22,7 +22,7 @@ _REVIEW_PROMPT = (
     "trivia, small talk, and anything easily re-derived.\n\n"
     "Return ONLY a JSON object with these optional fields (omit empties):\n"
     '{"user": ["stable facts about the person discussed"],\n'
-    ' "memory": ["durable conventions or notes the assistant should recall"],\n'
+    ' "memory": ["durable conventions, notes, or active/running jokes or bits the assistant should commit to or keep alive in future turns"],\n'
     ' "semantic": ["specific facts for semantic recall"],\n'
     ' "skills": [{"name": "slug-name", "description": "one line summary", '
     '"content": "markdown body with steps — omit if skill already exists unchanged"}]}\n'

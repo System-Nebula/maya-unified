@@ -206,7 +206,27 @@ document.addEventListener("alpine:init", () => {
           return;
         }
         this.applyDetail(d);
-        this.status = "Generated — review fields, then Save as new.";
+        this.name = (d.card?.name || this.name || "").trim();
+        if (!this.name) {
+          this.status = "Generated — enter a name and Save.";
+          return;
+        }
+        this.status = "Saving and activating…";
+        const saved = await this.post("/save", {
+          name: this.name,
+          card: this.collectCard(),
+          activate: true,
+        });
+        if (saved.ok) {
+          this.applyDetail(saved);
+          this.activeId = saved.active || this.activeId;
+          if (saved.personalities) this.personalities = saved.personalities;
+          this.status = `Saved and activated as "${this.name}"`;
+          await this.syncSettingsPersonality();
+        } else {
+          this.error = saved.error || "Save failed after generation";
+          this.status = "Generated — review fields, then Save.";
+        }
       } finally {
         this.busy = false;
       }

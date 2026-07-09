@@ -454,6 +454,9 @@ document.addEventListener("alpine:init", () => {
       if (ev.type === "avatar_animation" && ev.name) {
         this.playAvatarAnimation(ev.name, !!ev.loop);
       }
+      if (ev.type === "ai" && ev.text) {
+        this._bus.post({ type: "subtitle", text: ev.text, sender: "ai", final: !!ev.final });
+      }
       if (ev.type === "status") {
         const v = ev.value || "idle";
         if (v === "speaking") {
@@ -472,6 +475,12 @@ document.addEventListener("alpine:init", () => {
         }
       }
       if (ev.type === "audio_stop") {
+        this.speaking = false;
+        this._syncToStore();
+        this.stopSpectrumPoll();
+        this._engine?.setAudioFrame({ speaking: false, level: 0, bands: [] });
+        this._engine?.lipSync?.reset();
+        this._bus.post({ type: "lip", speaking: false, level: 0, bands: [] });
         this.scheduleMoodReleaseAfterSpeech();
       }
       if (ev.type === "settings") {
@@ -549,6 +558,7 @@ document.addEventListener("alpine:init", () => {
           this._relayLip(frame);
         } else {
           this._engine?.setAudioFrame(frame);
+          this._relayLip(frame);
         }
         if (this._shouldStopSpectrumPoll(frame)) {
           this.stopSpectrumPoll();

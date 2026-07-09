@@ -60,6 +60,34 @@ def test_looks_like_litellm_model():
     assert not looks_like_litellm_model("google/gemma-4-26b-a4b")
 
 
+def test_operator_lm_studio_wins_over_global_litellm(monkeypatch):
+    from llm import LLMClient
+    from services.llm.provider import create_llm_client, get_provider_name
+
+    monkeypatch.setattr(
+        "services.settings.store.seed_env_defaults",
+        lambda: {
+            "reasoning": {
+                "provider": "litellm",
+                "litellm": {"mode": "sdk", "model": "gemini/gemini-2.0-flash"},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "services.operator_voice.context.load_settings",
+        lambda _oid: {
+            "reasoning": {
+                "provider": "lm_studio",
+                "model": "google/gemma-4-26b-a4b",
+                "base_url": "http://localhost:1234/v1",
+                "litellm": {"mode": "sdk", "model": ""},
+            }
+        },
+    )
+    assert get_provider_name(operator_id="op-1") == "lm_studio"
+    assert isinstance(create_llm_client(operator_id="op-1"), LLMClient)
+
+
 def test_create_llm_client_uses_effective_settings(monkeypatch):
     from services.settings import store
 

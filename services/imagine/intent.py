@@ -98,6 +98,15 @@ def looks_like_imagine_request(text: str) -> bool:
     raw = (text or "").strip()
     if not raw:
         return False
+    if raw.lstrip().startswith("/game") or raw.lstrip().startswith("/gamegoal"):
+        return False
+    try:
+        from services.game.intent import is_game_play_request
+
+        if is_game_play_request(raw):
+            return False
+    except ImportError:
+        pass
     if looks_like_music_playback_request(raw):
         return False
     if looks_like_director_refinement(raw):

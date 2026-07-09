@@ -66,6 +66,7 @@ class ToolCall:
 @dataclass
 class LLMResponse:
     content: str = ""
+    reasoning_content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
 
 
@@ -102,19 +103,32 @@ class LLMClient:
         messages.append({"role": "user", "content": user_text})
         return messages
 
-    def _extra_body(self) -> dict:
+    def _extra_body(
+        self,
+        *,
+        enable_thinking: bool | None = None,
+        reasoning_effort: str | None = None,
+    ) -> dict:
         extra_body: dict = {}
-        if self.cfg.disable_thinking:
+        thinking_off = self.cfg.disable_thinking if enable_thinking is None else (not enable_thinking)
+        if thinking_off:
             # Honored by LM Studio / vLLM for Qwen3-style templates; ignored otherwise.
             extra_body["chat_template_kwargs"] = {"enable_thinking": False}
-        effort = (self.cfg.reasoning_effort or "").strip().lower()
-        if effort:
-            # Honored by reasoning models like Gemma; "none" disables hidden reasoning
-            # so the visible reply isn't empty. Sent raw to bypass client validation.
-            extra_body["reasoning_effort"] = self.cfg.reasoning_effort
-        elif self.cfg.disable_thinking:
-            # Many reasoning models return an empty spoken stream unless effort is set.
-            extra_body["reasoning_effort"] = "none"
+        elif enable_thinking is True:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": True}
+        # Game loop passes reasoning_effort explicitly; voice chat leaves it None and
+        # uses operator settings (typically none/off for Gemma spoken replies).
+        if reasoning_effort is not None:
+            extra_body["reasoning_effort"] = (reasoning_effort or "none").strip()
+        else:
+            effort = (self.cfg.reasoning_effort or "").strip().lower()
+            if effort:
+                extra_body["reasoning_effort"] = self.cfg.reasoning_effort
+            elif enable_thinking is True:
+                # Gemma-4 on LM Studio uses reasoning_effort, not enable_thinking.
+                extra_body["reasoning_effort"] = "low"
+            elif thinking_off:
+                extra_body["reasoning_effort"] = "none"
         return extra_body
 
     @staticmethod
@@ -215,6 +229,17 @@ class LLMClient:
         """Stream a reply for a pre-built message list (used after the tool loop)."""
         yield from self._stream_with_fallback(messages, model=model)
 
+    @staticmethod
+    def _message_text(msg) -> str:
+        content = (getattr(msg, "content", None) or "").strip()
+        if content:
+            return content
+        for attr in ("reasoning_content", "reasoning"):
+            alt = getattr(msg, attr, None)
+            if isinstance(alt, str) and alt.strip():
+                return alt.strip()
+        return ""
+
     # ----- one-shot completion (tool loop) ----------------------------------
 
     def complete(
@@ -223,6 +248,10 @@ class LLMClient:
         tools: list[dict] | None = None,
         model: str | None = None,
         max_tokens: int | None = None,
+        *,
+        enable_thinking: bool | None = None,
+        reasoning_effort: str | None = None,
+        response_format: dict | None = None,
     ) -> LLMResponse:
         """Non-streaming completion. If `tools` is given, request native tool
         calling and surface any tool_calls the model returns."""
@@ -239,9 +268,14 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
-        extra_body = self._extra_body()
+        extra_body = self._extra_body(
+            enable_thinking=enable_thinking,
+            reasoning_effort=reasoning_effort,
+        )
         if extra_body:
             kwargs["extra_body"] = extra_body
+        if response_format:
+            kwargs["response_format"] = response_format
 
         try:
             resp = self.client.chat.completions.create(**kwargs)
@@ -257,11 +291,17 @@ class LLMClient:
             log.warning("LLM complete returned no choices")
             return LLMResponse()
         msg = resp.choices[0].message
-        content = sanitize_llm_output((msg.content or "").strip())
+        content = sanitize_llm_output(self._message_text(msg))
+        reasoning_raw = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
+        reasoning_content = (
+            sanitize_llm_output(reasoning_raw.strip())
+            if isinstance(reasoning_raw, str) and reasoning_raw.strip()
+            else ""
+        )
         if not content:
             finish = getattr(resp.choices[0], "finish_reason", None)
             log.warning("LLM complete returned empty content (finish_reason=%s)", finish)
-        out = LLMResponse(content=content)
+        out = LLMResponse(content=content, reasoning_content=reasoning_content)
         for tc in (getattr(msg, "tool_calls", None) or []):
             raw = tc.function.arguments or "{}"
             try:

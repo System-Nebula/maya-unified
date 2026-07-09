@@ -22,11 +22,14 @@ def _resolve_operator_id(operator_id: str | None = None) -> str | None:
 
 def _reasoning_settings(*, operator_id: str | None = None) -> dict:
     """Effective reasoning profile — operator settings override global file."""
+    from services.settings.reasoning_normalize import normalize_reasoning
     from services.settings.store import load_effective_settings
 
     settings = load_effective_settings(_resolve_operator_id(operator_id))
     reasoning = settings.get("reasoning")
-    return dict(reasoning) if isinstance(reasoning, dict) else {}
+    if not isinstance(reasoning, dict):
+        return {}
+    return normalize_reasoning(reasoning)
 
 
 def get_provider_name(*, operator_id: str | None = None) -> str:

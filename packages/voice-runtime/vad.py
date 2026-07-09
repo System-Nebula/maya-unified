@@ -172,7 +172,10 @@ def _capture_utterance(
     should_stop: Optional[Callable[[], bool]],
     on_speech_start: Optional[Callable[[], None]],
     cfg: VADConfig,
+    timeout_seconds: float = -1.0,
 ) -> np.ndarray:
+    import time
+
     silence_frames_needed = max(1, cfg.silence_ms // cfg.frame_ms)
     min_speech_frames = max(1, cfg.min_speech_ms // cfg.frame_ms)
     max_frames = max(1, cfg.max_turn_ms // cfg.frame_ms)
@@ -184,10 +187,14 @@ def _capture_utterance(
     total_frames = 0
     speech_frames = 0
     stop = should_stop or (lambda: False)
+    start_time = time.monotonic()
 
     while total_frames < max_frames:
         if stop():
             return np.array([], dtype=np.int16)
+        if timeout_seconds > 0.0 and not triggered:
+            if time.monotonic() - start_time > timeout_seconds:
+                return np.array([], dtype=np.int16)
         frame = read_frame()
         if frame is None:
             if stop():
@@ -297,6 +304,7 @@ def record_until_silence(
     aec=None,
     mic: SharedMic | None = None,
     frame_processor: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    timeout_seconds: float = -1.0,
 ) -> np.ndarray:
     cfg = cfg or CONFIG.vad
     sr = sample_rate or CONFIG.stt.sample_rate
@@ -316,7 +324,7 @@ def record_until_silence(
             return _process(raw) if raw is not None else None
 
         return _capture_utterance(
-            state, frame_samples, read_shared, should_stop, on_speech_start, cfg
+            state, frame_samples, read_shared, should_stop, on_speech_start, cfg, timeout_seconds
         )
 
     import sounddevice as sd
@@ -330,7 +338,7 @@ def record_until_silence(
             return _process(frame)
 
         return _capture_utterance(
-            state, frame_samples, read_ephemeral, should_stop, on_speech_start, cfg
+            state, frame_samples, read_ephemeral, should_stop, on_speech_start, cfg, timeout_seconds
         )
 
 

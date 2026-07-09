@@ -15,10 +15,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "eq_preset": "off",
         "eq_bands": [],
         "aec_enabled": True,
+        "monologue_enabled": True,
+        "monologue_timeout": 22.0,
     },
     "detection": {
         "barge_mode": "smart",
-        "barge_in": True,
+        "barge_in": False,
         "vad_aggressiveness": 2,
         "silence_ms": 500,
         "min_speech_ms": 250,
@@ -154,6 +156,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "runtime": {
         "orchestrator": True,
         "web_tools": True,
+    },
+    "game": {
+        "poll_fps": 8,
+        "analysis_fps_min": 0.4,
+        "analysis_fps_max": 1.0,
+        "tts_ms_per_char": 22,
+        "tts_extra_cap_ms": 1200,
     },
 }
 

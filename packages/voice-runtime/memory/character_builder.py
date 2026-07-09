@@ -56,6 +56,67 @@ _RETRY_USER = (
     "full object fits in one reply."
 )
 
+_NAME_PATTERNS = (
+    re.compile(r"(?i)\b(?:hi,?\s*)?(?:i'?m|i am|im)\s+([A-Za-z][\w-]{1,30})"),
+    re.compile(r"(?i)\bmy name is\s+([A-Za-z][\w-]{1,30})"),
+)
+
+
+def _response_text(resp) -> str:
+    content = (getattr(resp, "content", None) or "").strip()
+    if content:
+        return content
+    reasoning = (getattr(resp, "reasoning_content", None) or "").strip()
+    return reasoning
+
+
+def _fallback_card_from_brief(brief: str) -> dict[str, Any]:
+    """Build a usable card from pasted bio text when the LLM returns nothing."""
+    text = (brief or "").strip()
+    if not text:
+        return {}
+
+    name = "Character"
+    for pat in _NAME_PATTERNS:
+        match = pat.search(text)
+        if match:
+            name = match.group(1).strip()
+            break
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    summary = " ".join(lines[:3])[:500]
+    low = text.lower()
+    tags: list[str] = []
+    for tag, hints in (
+        ("streamer", ("stream", "variety streamer")),
+        ("gaming", ("game", "bloodborne", "play games")),
+        ("wholesome", (":3", "doggo", "enjoy your stay")),
+    ):
+        if any(h in low for h in hints):
+            tags.append(tag)
+
+    return normalize_card(
+        {
+            "name": name,
+            "description": summary or text[:500],
+            "personality": text[:1200],
+            "scenario": "Casual conversation with {{user}} on stream or voice chat.",
+            "first_mes": f"Hey {{user}}, I'm {name}! Thanks for stopping by.",
+            "mes_example": (
+                f"<START>\n{{{{user}}}}: hey!\n{{{{char}}}}: Hey! Good to see you here."
+            ),
+            "post_history_instructions": (
+                "Stay in character as {{char}}. Keep replies short and spoken."
+            ),
+            "tags": tags or ["original"],
+            "creator_notes": (
+                "Auto-generated from pasted bio because the LLM did not return valid JSON. "
+                "Review and edit fields before saving."
+            ),
+            "system_prompt": "",
+        }
+    )
+
 
 def _strip_markdown_fence(text: str) -> str:
     raw = (text or "").strip()
@@ -194,9 +255,26 @@ def build_character_from_prompt(llm: LLMClient, brief: str) -> dict[str, Any]:
     ]
     last_content = ""
     raw: dict[str, Any] | None = None
+    complete_kwargs = {
+        "max_tokens": _BUILDER_MAX_TOKENS,
+        "enable_thinking": False,
+        "reasoning_effort": "none",
+        "response_format": {"type": "json_object"},
+    }
     for attempt in range(2):
-        resp = llm.complete(messages, max_tokens=_BUILDER_MAX_TOKENS)
-        last_content = (resp.content or "").strip()
+        try:
+            resp = llm.complete(messages, **complete_kwargs)
+        except TypeError:
+            complete_kwargs.pop("response_format", None)
+            resp = llm.complete(messages, **complete_kwargs)
+        except Exception:
+            resp = llm.complete(
+                messages,
+                max_tokens=_BUILDER_MAX_TOKENS,
+                enable_thinking=False,
+                reasoning_effort="none",
+            )
+        last_content = _response_text(resp)
         raw = _parse_json_object(last_content)
         if raw:
             break
@@ -205,8 +283,10 @@ def build_character_from_prompt(llm: LLMClient, brief: str) -> dict[str, Any]:
             messages.append({"role": "user", "content": _RETRY_USER})
 
     if not raw:
-        snippet = last_content[:240]
-        raise ValueError(f"model did not return valid JSON{f': {snippet}' if snippet else ''}")
+        raw = _fallback_card_from_brief(brief)
+        if not raw:
+            snippet = last_content[:240]
+            raise ValueError(f"model did not return valid JSON{f': {snippet}' if snippet else ''}")
 
     if isinstance(raw.get("tags"), str) or isinstance(raw.get("tags"), list):
         raw["tags"] = _coerce_tags(raw.get("tags"))

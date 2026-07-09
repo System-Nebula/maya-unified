@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "voice-runtime"))
 
-from ref_text import read_ref_text_sidecar, sync_clone_ref_text  # noqa: E402
+from ref_text import ensure_ref_text_sidecar, read_ref_text_sidecar, sync_clone_ref_text  # noqa: E402
 
 
 @dataclass
@@ -52,3 +52,11 @@ def test_read_sidecar(tmp_path: Path) -> None:
     assert read_ref_text_sidecar(str(wav)) == ""
     (tmp_path / "a.txt").write_text("  trimmed  \n", encoding="utf-8")
     assert read_ref_text_sidecar(str(wav)) == "trimmed"
+
+
+def test_ensure_ref_text_sidecar_writes_transcript(tmp_path: Path) -> None:
+    wav = tmp_path / "pj.wav"
+    wav.write_bytes(b"RIFF")
+    assert ensure_ref_text_sidecar(str(wav), transcribe=lambda _p: "hello pj") == "hello pj"
+    assert (tmp_path / "pj.txt").read_text(encoding="utf-8") == "hello pj"
+    assert ensure_ref_text_sidecar(str(wav), transcribe=lambda _p: "ignored") == "hello pj"

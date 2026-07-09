@@ -240,15 +240,29 @@ def register_agent_routes(app) -> None:
         return {"ok": True, "deleted_messages": deleted, "player_cleared": player_cleared}
 
     @app.post(f"{prefix}/chat")
-    def agent_chat(request: Request, data: dict = Body(...)) -> dict:
+    async def agent_chat(request: Request, data: dict = Body(...)) -> dict:
+        import asyncio
+
         text = str((data or {}).get("text", ""))
         oid = _operator_id(request) or None
-        from services.cmd.chat_bridge import try_dispatch_chat_cmd
+        from services.cmd.chat_bridge import try_dispatch_chat_cmd_async
 
-        cmd_response = try_dispatch_chat_cmd(text, operator_id=oid)
+        cmd_response = await try_dispatch_chat_cmd_async(text, operator_id=oid)
         if cmd_response is not None:
             return cmd_response
-        return hub.chat_text(text, operator_id=oid)
+        return await asyncio.to_thread(hub.chat_text, text, operator_id=oid)
+
+    @app.post(f"{prefix}/collaborate")
+    async def agent_collaborate(request: Request, data: dict = Body(...)) -> dict:
+        import asyncio
+
+        sender = str((data or {}).get("sender", "Agent")).strip()
+        text = str((data or {}).get("text", "")).strip()
+        if not text:
+            return {"ok": False, "error": "empty text"}
+        formatted_text = f"[{sender}] {text}"
+        oid = _operator_id(request) or None
+        return await asyncio.to_thread(hub.chat_text, formatted_text, operator_id=oid)
 
     @app.post(f"{prefix}/vision/frame")
     def agent_vision_frame(request: Request, data: dict = Body(...)) -> dict:
@@ -532,7 +546,10 @@ def register_agent_routes(app) -> None:
         return hub.import_personality_png(data)
 
     @app.post(f"{prefix}/personalities/build")
-    def build_character_card(data: dict = Body(...)) -> dict:
+    def build_character_card(request: Request, data: dict = Body(...)) -> dict:
+        oid = _operator_id(request)
+        if oid:
+            hub.apply_operator_context(oid)
         return hub.build_character_card(str((data or {}).get("prompt", "")))
 
     @app.get(f"{prefix}/personalities/export")
@@ -691,13 +708,39 @@ def register_agent_routes(app) -> None:
             return {"ok": False, "error": "Clip too short; use ~10-20s of clean speech."}
 
         fname = os.path.basename(dest)
-        return {
+        ref_text = ""
+        try:
+            from config import CONFIG
+            from ref_text import ensure_ref_text_sidecar
+
+            if not CONFIG.tts.xvec_only:
+                voice_log = logging.getLogger("maya-unified.voice")
+                if hub.ready and hub.agent is not None:
+                    ref_text = await asyncio.to_thread(hub.agent.ensure_ref_text, dest)
+                else:
+                    ref_text = await asyncio.to_thread(
+                        ensure_ref_text_sidecar,
+                        dest,
+                        log=voice_log,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "reference transcription on upload failed: %s", exc
+            )
+
+        result: dict = {
             "ok": True,
             "file": fname,
             "name": os.path.splitext(fname)[0],
             "voices": _list_voices(),
             "duration": round(dur, 1),
+            "ref_text": ref_text,
         }
+        if hub.ready and hub.agent is not None:
+            activation = await asyncio.to_thread(hub.set_voice, dest)
+            if not activation.get("ok"):
+                result["activation_error"] = activation.get("error")
+        return result
 
     @app.get(f"{prefix}/vrm/models")
     def list_vrm_models() -> dict:

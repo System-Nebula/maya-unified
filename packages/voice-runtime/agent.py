@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -320,7 +322,7 @@ class OrchestratorPlan:
     params: dict[str, Any] = field(default_factory=dict)
 
 
-_ORCHESTRATOR_PROMPT = """\
+_ORCHESTRATOR_PROMPT_HEAD = """\
 You are the voice-agent orchestrator. Read the transcript (may be garbled), \
 conversation, and pending actions. Output ONLY one JSON object — no markdown, \
 no explanation.
@@ -344,7 +346,14 @@ Intents:
 params: animation_name when known (macarena, wave, bow, etc.)
 - web_search — params: query
 - weather — params: location
+"""
 
+_ORCHESTRATOR_PROMPT_GAME = """\
+- game_play — video game / emulator (Pokemon, mGBA, etc.). NOT Discord music. \
+params: goal (win condition), profile_id (optional, default pokemon_gba)
+"""
+
+_ORCHESTRATOR_PROMPT_TAIL = """\
 JSON shape:
 {"intent":"...","user_meant":"clear restatement of what user wants","params":{...}}
 
@@ -354,13 +363,49 @@ If confirming, intent=confirm_pending and user_meant="go ahead and do it".
 When the user wants the avatar to dance, wave, greet the audience, gesture, or perform \
 any physical emote (e.g. "let's wave to chat", "do the Macarena"), use intent=avatar_animation \
 with animation_name when obvious — not chat.
+"""
 
+_ORCHESTRATOR_PROMPT_GAME_RULES = """\
+CRITICAL for video games:
+- "play Pokemon", "beat the game", "until end of game", mGBA/emulator → intent=game_play, \
+NOT discord_play.
+"""
+
+_ORCHESTRATOR_PROMPT_DISABLED_GAME_RULES = """\
+CRITICAL for video games:
+- "play Pokemon", "beat the game", mGBA/emulator requests → intent=chat (game mode unavailable). \
+NOT discord_play.
+"""
+
+_ORCHESTRATOR_PROMPT_DISCORD = """\
 CRITICAL for Discord:
 - channel_name must be an EXACT name from Known channels (e.g. shit-talking), \
 NEVER generic words like chat, channel, or discord.
 - target_user is ONE person's name only (e.g. Alexei), never include channel \
 names or "and shit-talking" in target_user.\
+- discord_play is ONLY for music/songs on Discord/YouTube.\
 """
+
+
+def _orchestrator_prompt() -> str:
+    try:
+        from services.game.enabled import GAME_MODE_ENABLED
+    except ImportError:
+        GAME_MODE_ENABLED = False
+    parts = [_ORCHESTRATOR_PROMPT_HEAD]
+    if GAME_MODE_ENABLED:
+        parts.append(_ORCHESTRATOR_PROMPT_GAME)
+    parts.append(_ORCHESTRATOR_PROMPT_TAIL)
+    parts.append(
+        _ORCHESTRATOR_PROMPT_GAME_RULES
+        if GAME_MODE_ENABLED
+        else _ORCHESTRATOR_PROMPT_DISABLED_GAME_RULES
+    )
+    parts.append(_ORCHESTRATOR_PROMPT_DISCORD)
+    return "".join(parts)
+
+
+_ORCHESTRATOR_PROMPT = _orchestrator_prompt()
 
 
 def _parse_json_object(text: str) -> Optional[dict]:
@@ -488,6 +533,8 @@ class VoiceAgent:
         # Web-session control.
         self._session_stop = threading.Event()
         self._session_thread: Optional[threading.Thread] = None
+        self._turn_queue: queue.Queue[Optional[str]] = queue.Queue()
+        self._turn_worker_thread: Optional[threading.Thread] = None
         self._pending_user_text: Optional[str] = None
         self._turn_active = threading.Event()
         self._mic = None
@@ -562,6 +609,8 @@ class VoiceAgent:
         self.tool_loop = None
         self.registry = None
         self._session_prefix = ""
+        self._monologue_recent_modes: deque[str] = deque(maxlen=4)
+        self._pending_monologue_mode = ""
         self._setup_tools_and_memory()
         self._load_active_personality_meta()
 
@@ -735,6 +784,19 @@ class VoiceAgent:
             log.warning("dashboard player tools disabled: %s", exc)
 
         try:
+            from services.game.enabled import GAME_MODE_ENABLED
+        except ImportError:
+            GAME_MODE_ENABLED = False
+        if GAME_MODE_ENABLED:
+            try:
+                from tools.game_mode import build_game_mode_tools
+
+                registry.register_many(build_game_mode_tools(emit=self._emit))
+                log.info("game mode tools enabled")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("game mode tools disabled: %s", exc)
+
+        try:
             from tools.bandcamp import build_bandcamp_tools
 
             registry.register_many(build_bandcamp_tools(emit=self._emit))
@@ -797,35 +859,83 @@ class VoiceAgent:
             messages.extend(self.history[-keep:])
 
         if self._post_history_instructions:
-            messages.append({"role": "system", "content": self._post_history_instructions})
+            if user_text == "__monologue__":
+                from stream_monologue import STREAM_MONOLOGUE_POST_HISTORY
 
-        user_content = user_text
-        if self.memory is not None:
-            pre = self.memory.prefetch_context(user_text)
-            if pre:
-                user_content = f"{pre}\n\n{user_text}"
-        hint = self._discord_tool_hint(user_text)
-        if not hint:
-            hint = self._dashboard_music_tool_hint(user_text)
-        if not hint:
-            hint = self._web_tool_hint(user_text)
-        if hint:
-            user_content = f"{hint}\n\n{user_content}"
-        reasoning = getattr(self, "_vision_reasoning", None) or {}
-        operator_id = getattr(self, "_vision_operator_id", None)
-        user_content = resolve_vision_user_content(
-            user_content,
-            user_text,
-            operator_id,
-            reasoning,
-            model=CONFIG.llm.model,
-        )
+                messages.append({"role": "system", "content": STREAM_MONOLOGUE_POST_HISTORY})
+            elif self.is_session_running():
+                from stream_monologue import STREAM_VOICE_POST_HISTORY
+
+                messages.append({"role": "system", "content": self._post_history_instructions})
+                messages.append({"role": "system", "content": STREAM_VOICE_POST_HISTORY})
+            else:
+                messages.append({"role": "system", "content": self._post_history_instructions})
+        elif self.is_session_running() and user_text != "__monologue__":
+            from stream_monologue import STREAM_VOICE_POST_HISTORY
+
+            messages.append({"role": "system", "content": STREAM_VOICE_POST_HISTORY})
+
+        if user_text == "__monologue__":
+            from stream_monologue import pick_monologue_prompt
+
+            recent_assistant = self._recent_assistant_texts(limit=4)
+            mode_id, bit_system = pick_monologue_prompt(
+                recent_assistant,
+                recent_mode_ids=self._monologue_recent_modes,
+            )
+            self._pending_monologue_mode = mode_id
+            messages.append({"role": "system", "content": bit_system})
+            user_content = "Continue the stream bit now."
+        else:
+            user_content = user_text
+            if self.memory is not None:
+                pre = self.memory.prefetch_context(user_text)
+                if pre:
+                    user_content = f"{pre}\n\n{user_text}"
+            hint = getattr(self, "_discord_tool_hint", lambda t: "")(user_text)
+            if not hint:
+                hint = getattr(self, "_game_tool_hint", lambda t: "")(user_text)
+            if not hint:
+                hint = getattr(self, "_dashboard_music_tool_hint", lambda t: "")(user_text)
+            if not hint:
+                hint = getattr(self, "_web_tool_hint", lambda t: "")(user_text)
+            if hint:
+                user_content = f"{hint}\n\n{user_content}"
+            reasoning = getattr(self, "_vision_reasoning", None) or {}
+            operator_id = getattr(self, "_vision_operator_id", None)
+            user_content = resolve_vision_user_content(
+                user_content,
+                user_text,
+                operator_id,
+                reasoning,
+                model=CONFIG.llm.model,
+            )
         messages.append({"role": "user", "content": user_content})
         return messages
+
+    def _recent_assistant_texts(self, *, limit: int = 4) -> list[str]:
+        """Recent spoken replies for monologue anti-repeat."""
+        rows: list[str] = []
+        if self.memory is not None:
+            for msg in reversed(self.memory.recent_history()):
+                if msg.get("role") == "assistant":
+                    rows.append(str(msg.get("content") or ""))
+        else:
+            for msg in reversed(self.history):
+                if msg.get("role") == "assistant":
+                    rows.append(str(msg.get("content") or ""))
+        return rows[:limit]
 
     def _is_discord_context_turn(self, user_text: str) -> bool:
         if self.discord is None:
             return False
+        try:
+            from services.game.intent import is_game_play_request
+
+            if is_game_play_request(user_text):
+                return False
+        except ImportError:
+            pass
         if self._classify_discord_command(user_text):
             return True
         if self._has_pending_action() or self._last_discord_intent:
@@ -998,6 +1108,8 @@ class VoiceAgent:
     def _interpret_user_turn(self, user_text: str) -> str:
         """Recover intent from empty/garbled STT using pending actions + context."""
         raw = (user_text or "").strip()
+        if raw == "__monologue__":
+            return raw
         if not raw:
             if self._pending_channel_reply or self._pending_channel_post:
                 return "go ahead"
@@ -1029,6 +1141,30 @@ class VoiceAgent:
         if self._webllm_direct_chat():
             return False
         return bool(self._tools_active() and CONFIG.llm.orchestrator_enabled)
+
+    def _should_orchestrate_turn(self, raw_text: str, user_text: str) -> bool:
+        """Skip the extra orchestrator LLM round-trip for clear chat turns."""
+        if not self._should_orchestrate():
+            return False
+        if raw_text == "__monologue__":
+            return False
+        if self._has_pending_action() or self._last_discord_intent:
+            return True
+        if _is_weak_transcript(raw_text):
+            return True
+        low = (user_text or raw_text or "").lower()
+        tool_hints = (
+            "discord", "youtube", "play ", "queue", "imagine", "memory",
+            "weather", "search", "animation", "macarena", "bandcamp", "radio",
+        )
+        return any(h in low for h in tool_hints)
+
+    @staticmethod
+    def _llm_response_text(resp) -> str:
+        content = (getattr(resp, "content", None) or "").strip()
+        if content:
+            return content
+        return (getattr(resp, "reasoning_content", None) or "").strip()
 
     def _should_use_tool_loop(self) -> bool:
         if not self._tools_active():
@@ -1080,8 +1216,13 @@ class VoiceAgent:
             },
         ]
         try:
-            resp = self.llm.complete(messages, max_tokens=240)
-            obj = _parse_json_object(sanitize_llm_output(resp.content or ""))
+            resp = self.llm.complete(
+                messages,
+                max_tokens=240,
+                enable_thinking=False,
+                reasoning_effort="none",
+            )
+            obj = _parse_json_object(sanitize_llm_output(self._llm_response_text(resp)))
             if not obj:
                 return None
             intent = str(obj.get("intent") or "chat").strip().lower()
@@ -1196,8 +1337,27 @@ class VoiceAgent:
                     fail="I couldn't change the volume.",
                 )
 
+        if intent == "game_play":
+            try:
+                from services.game.enabled import GAME_MODE_ENABLED
+            except ImportError:
+                GAME_MODE_ENABLED = False
+            if GAME_MODE_ENABLED:
+                from services.game.intent import extract_game_goal, extract_game_profile
+
+                goal = (
+                    str(p.get("goal") or "").strip()
+                    or extract_game_goal(original)
+                    or "beat the game"
+                )
+                profile_id = str(p.get("profile_id") or extract_game_profile(original))
+                return self._run_game_play_until_goal(goal, profile_id=profile_id)
+
         cmd = self._orchestrator_plan_to_command(plan)
         if cmd:
+            result = self._try_game_direct(cmd)
+            if result is not None:
+                return result
             result = self._try_discord_direct(cmd)
             if result is not None:
                 return result
@@ -1245,6 +1405,14 @@ class VoiceAgent:
         if intent == "discord_read_channel":
             ch = p.get("channel_name")
             return f"summarize {ch}" if ch else None
+        if intent == "game_play":
+            try:
+                from services.game.enabled import GAME_MODE_ENABLED
+            except ImportError:
+                GAME_MODE_ENABLED = False
+            if GAME_MODE_ENABLED:
+                goal = p.get("goal")
+                return f"play pokemon until {goal}" if goal else "play pokemon"
         return plan.user_meant or None
 
     def _try_pending_action_direct(self, user_text: str) -> Optional[str]:
@@ -1574,6 +1742,55 @@ class VoiceAgent:
             parts.append(f"Up next: {preview}.")
         return " ".join(parts)
 
+    def _run_game_play_until_goal(self, goal: str, *, profile_id: str = "pokemon_gba") -> Optional[str]:
+        if not CONFIG.tools.enabled or self.registry is None:
+            return None
+        spec = self.registry.get("game_play_until_goal")
+        if spec is None:
+            return None
+        args = {"goal": goal, "profile_id": profile_id}
+        from services.voice.hub import hub as voice_hub
+
+        if voice_hub._active_operator_id:
+            args["operator_id"] = voice_hub._active_operator_id
+
+        def _run() -> dict:
+            return spec.handler(args)
+
+        return self._direct_tool_reply(
+            "game_play_until_goal",
+            args,
+            _run,
+            ok=lambda r: str(r.get("message") or "Game mode started."),
+            fail="Could not start game mode.",
+        )
+
+    def _try_game_direct(self, user_text: str) -> Optional[str]:
+        """Start autonomous emulator play — not Discord music."""
+        try:
+            from services.game.enabled import GAME_MODE_ENABLED
+        except ImportError:
+            return None
+        if not GAME_MODE_ENABLED:
+            return None
+        try:
+            from services.game.intent import (
+                extract_game_goal,
+                extract_game_profile,
+                is_game_play_request,
+            )
+        except ImportError:
+            return None
+        if not is_game_play_request(user_text):
+            return None
+        goal = extract_game_goal(user_text)
+        if not goal:
+            return None
+        return self._run_game_play_until_goal(
+            goal,
+            profile_id=extract_game_profile(user_text),
+        )
+
     def _classify_dashboard_music_command(self, user_text: str) -> Optional[str]:
         if self._is_discord_context_turn(user_text):
             return None
@@ -1717,6 +1934,13 @@ class VoiceAgent:
     def _classify_discord_command(self, user_text: str) -> Optional[str]:
         if self.discord is None:
             return None
+        try:
+            from services.game.intent import is_game_play_request
+
+            if is_game_play_request(user_text):
+                return None
+        except ImportError:
+            pass
         tl = (user_text or "").lower().strip()
         original = (user_text or "").strip()
         stop_phrases = (
@@ -2252,6 +2476,13 @@ class VoiceAgent:
 
     @staticmethod
     def _extract_play_query(tl: str, original: str) -> Optional[str]:
+        try:
+            from services.game.intent import is_game_play_request
+
+            if is_game_play_request(original):
+                return None
+        except ImportError:
+            pass
         for prefix in (
             "play ", "put on ", "switch to ", "change to ",
             "swap to ", "play me ",
@@ -2663,6 +2894,29 @@ class VoiceAgent:
         query = re.sub(r"\?$", "", query).strip()
         return query if len(query) >= 4 else original
 
+    def _game_tool_hint(self, user_text: str) -> str:
+        try:
+            from services.game.enabled import GAME_MODE_ENABLED
+        except ImportError:
+            return ""
+        if not GAME_MODE_ENABLED:
+            return ""
+        if not CONFIG.tools.enabled or self.registry is None:
+            return ""
+        if self.registry.get("game_play_until_goal") is None:
+            return ""
+        try:
+            from services.game.intent import is_game_play_request
+        except ImportError:
+            return ""
+        if not is_game_play_request(user_text):
+            return ""
+        return (
+            "[System: the user wants VIDEO GAME play (emulator/mGBA/Pokemon), NOT Discord "
+            "music. Call game_play_until_goal immediately with a clear goal from their "
+            "request. Do not ask about Discord voice channels.]"
+        )
+
     def _dashboard_music_tool_hint(self, user_text: str) -> str:
         if not CONFIG.tools.enabled or self.registry is None:
             return ""
@@ -2836,12 +3090,16 @@ class VoiceAgent:
         instruct = self._effective_instruct()
         self._express(self._turn_instruct or "", text)
         log.info("AI: %s", text)
-        for audio, sr in self.voice.stream(
-            text, stop=self._barge_in_flag, instruct=instruct, xvec_only=use_xvec
-        ):
-            if self._barge_in_flag.is_set():
-                break
-            self.playback.submit(audio, sr)
+        self.playback.set_tts_generating(True)
+        try:
+            for audio, sr in self.voice.stream(
+                text, stop=self._barge_in_flag, instruct=instruct, xvec_only=use_xvec
+            ):
+                if self._barge_in_flag.is_set():
+                    break
+                self.playback.submit(audio, sr)
+        finally:
+            self.playback.set_tts_generating(False)
 
     def speak_preview(self, text: str, *, instruct: str | None = None) -> None:
         """Speak arbitrary text through TTS (no LLM). For dashboard preview / tag testing."""
@@ -2880,6 +3138,13 @@ class VoiceAgent:
                 self.playback.submit(audio, sr)
             while self.playback.is_playing() and not self._barge_in_flag.is_set():
                 time.sleep(0.05)
+            if not self._barge_in_flag.is_set():
+                tail_s = 0.75 if getattr(self.playback, "_output_sink", "") == "browser" else 0.12
+                end = time.monotonic() + tail_s
+                while time.monotonic() < end and not self._barge_in_flag.is_set():
+                    if self.playback.is_playing():
+                        end = time.monotonic() + tail_s
+                    time.sleep(0.05)
             if was_session and self.is_session_running():
                 self._emit(type="status", value="listening")
             else:
@@ -2918,6 +3183,13 @@ class VoiceAgent:
             self._speak(cleaned)
             while self.playback.is_playing() and not self._barge_in_flag.is_set():
                 time.sleep(0.05)
+            if not self._barge_in_flag.is_set():
+                tail_s = 0.75 if getattr(self.playback, "_output_sink", "") == "browser" else 0.12
+                end = time.monotonic() + tail_s
+                while time.monotonic() < end and not self._barge_in_flag.is_set():
+                    if self.playback.is_playing():
+                        end = time.monotonic() + tail_s
+                    time.sleep(0.05)
             self._turn_instruct = None
             if emit_final_status:
                 if was_session and self.is_session_running():
@@ -2942,9 +3214,9 @@ class VoiceAgent:
         cleaned = _clean_text((text or "").strip())
         if not cleaned:
             raise ValueError("Nothing to speak")
-        use_xvec = self._clone_xvec_for_speak()
+        use_xvec = getattr(self, "_clone_xvec_for_speak", lambda: None)()
         if use_xvec is False or (use_xvec is None and not CONFIG.tts.xvec_only):
-            self._ensure_icl_ref_text()
+            getattr(self, "_ensure_icl_ref_text", lambda: None)()
         eff_instruct = self._resolve_render_instruct(instruct)
         log.info("TTS stream: %s", cleaned)
 
@@ -2975,9 +3247,9 @@ class VoiceAgent:
         cleaned = _clean_text((text or "").strip())
         if not cleaned:
             raise ValueError("Nothing to speak")
-        use_xvec = self._clone_xvec_for_speak()
+        use_xvec = getattr(self, "_clone_xvec_for_speak", lambda: None)()
         if use_xvec is False or (use_xvec is None and not CONFIG.tts.xvec_only):
-            self._ensure_icl_ref_text()
+            getattr(self, "_ensure_icl_ref_text", lambda: None)()
         eff_instruct = self._resolve_render_instruct(instruct)
         log.info("TTS render: %s", cleaned)
         return self._synthesize_wav_bytes(cleaned, instruct=eff_instruct, xvec_only=use_xvec)
@@ -3113,6 +3385,22 @@ class VoiceAgent:
                 sp.set_attribute("completion_id", str(completion_id))
         record_turn()
 
+    def _wait_playback_finished(self) -> None:
+        """Block until speakers/browser audio are actually done (not just TTS submitted)."""
+        while self.playback.is_playing() and not self._barge_in_flag.is_set():
+            time.sleep(0.05)
+        if self._barge_in_flag.is_set():
+            return
+        # Browser Web Audio trails the server deadline — avoid opening the mic too soon.
+        tail_s = 0.75 if getattr(self.playback, "_output_sink", "") == "browser" else 0.12
+        end = time.monotonic() + tail_s
+        while time.monotonic() < end:
+            if self._barge_in_flag.is_set():
+                return
+            if self.playback.is_playing():
+                end = time.monotonic() + tail_s
+            time.sleep(0.05)
+
     def _respond_turn(
         self,
         user_text: str,
@@ -3125,10 +3413,14 @@ class VoiceAgent:
         user_text = self._interpret_user_turn(user_text)
         if user_text != (raw_text or "").strip():
             log.info("interpreted: %r -> %r", raw_text, user_text)
-        display_text = user_text or "[unclear audio]"
-        log.info("user: %s", display_text)
+        if raw_text == "__monologue__":
+            display_text = "[silence]"
+            log.info("user: [silence]")
+        else:
+            display_text = user_text or "[unclear audio]"
+            log.info("user: %s", display_text)
+            self._emit(type="user", text=display_text, corr_id=corr_id, message_id=user_message_id)
         self._turn_corr_id = corr_id
-        self._emit(type="user", text=display_text, corr_id=corr_id, message_id=user_message_id)
         self.playback.stop()
         self.playback.begin_turn()
         self._barge_in_flag.clear()
@@ -3143,9 +3435,14 @@ class VoiceAgent:
         full_reply = ""
         self._emit(type="status", value="thinking")
         delivery = (CONFIG.tts.delivery or "full").lower()
+        monologue_turn = raw_text == "__monologue__"
+        old_max_tokens: int | None = None
+        if monologue_turn:
+            old_max_tokens = int(CONFIG.llm.max_tokens)
+            CONFIG.llm.max_tokens = max(old_max_tokens, 420)
         try:
             plan: Optional[OrchestratorPlan] = None
-            if self._should_orchestrate():
+            if self._should_orchestrate_turn(raw_text, user_text):
                 plan = self._llm_orchestrate(raw_text, user_text)
                 if plan and plan.user_meant:
                     if plan.user_meant != (user_text or "").strip():
@@ -3157,6 +3454,10 @@ class VoiceAgent:
                 direct = self._execute_orchestrator_plan(plan, user_text, raw_text)
             if direct is None:
                 direct = self._try_pending_action_direct(user_text)
+            if direct is None and not self._maybe_motion_request(
+                user_text, plan=plan, raw_text=raw_text,
+            ):
+                direct = self._try_game_direct(user_text)
             if direct is None and not self._maybe_motion_request(
                 user_text, plan=plan, raw_text=raw_text,
             ):
@@ -3211,12 +3512,13 @@ class VoiceAgent:
             )
 
             # Let queued audio finish unless interrupted.
-            while self.playback.is_playing() and not self._barge_in_flag.is_set():
-                time.sleep(0.05)
+            self._wait_playback_finished()
         except Exception as exc:  # noqa: BLE001
             log.exception("turn failed: %s", exc)
             self._emit(type="error", text=str(exc))
         finally:
+            if old_max_tokens is not None:
+                CONFIG.llm.max_tokens = old_max_tokens
             self._turn_corr_id = None
             self._turn_active.clear()
             self._stop_barge_listener(monitor)
@@ -3246,14 +3548,15 @@ class VoiceAgent:
             self._emit(**listen_ev)
 
         # Record the exchange for context.
-        self.history.append(
-            {
-                "role": "user",
-                "content": display_text,
-                "message_id": user_message_id,
-                "corr_id": corr_id,
-            }
-        )
+        if raw_text != "__monologue__":
+            self.history.append(
+                {
+                    "role": "user",
+                    "content": display_text,
+                    "message_id": user_message_id,
+                    "corr_id": corr_id,
+                }
+            )
         if full_reply:
             completion_id = getattr(self.llm, "last_completion_id", None)
             self.history.append(
@@ -3266,9 +3569,12 @@ class VoiceAgent:
                 }
             )
             self._maybe_emit_avatar_mood(full_reply)
+            if raw_text == "__monologue__" and self._pending_monologue_mode:
+                self._monologue_recent_modes.append(self._pending_monologue_mode)
+                self._pending_monologue_mode = ""
 
         # Persist to the session log and let the background review adapt memory.
-        if self.memory is not None:
+        if self.memory is not None and raw_text != "__monologue__":
             try:
                 turn_scope = self._derive_memory_scope(display_text)
                 self.memory.set_turn_scope(turn_scope)
@@ -3307,8 +3613,17 @@ class VoiceAgent:
                 if not chunk:
                     continue
                 parts.append(chunk)
+            for i, chunk in enumerate(parts):
+                if self._barge_in_flag.is_set():
+                    break
                 mark_speaking()
-                self._emit(type="ai", text=chunk, corr_id=corr_id, message_id=reply_message_id)
+                self._emit(
+                    type="ai",
+                    text=chunk,
+                    final=(i == len(parts) - 1),
+                    corr_id=corr_id,
+                    message_id=reply_message_id,
+                )
                 self._speak(chunk)
             return " ".join(parts)
 
@@ -3317,13 +3632,25 @@ class VoiceAgent:
             first_spoken = False
             first_text = ""
             rest_parts: list[str] = []
+            buffered: list[str] = []
             for chunk in sentence_chunks(token_stream):
                 if self._barge_in_flag.is_set():
                     break
                 chunk = _clean_text(chunk)
                 if not chunk:
                     continue
-                self._emit(type="ai", text=chunk, corr_id=corr_id, message_id=reply_message_id)
+                buffered.append(chunk)
+            for i, chunk in enumerate(buffered):
+                if self._barge_in_flag.is_set():
+                    break
+                is_last = i == len(buffered) - 1
+                self._emit(
+                    type="ai",
+                    text=chunk,
+                    final=is_last,
+                    corr_id=corr_id,
+                    message_id=reply_message_id,
+                )
                 if not first_spoken:
                     first_text = chunk
                     mark_speaking()
@@ -4026,33 +4353,11 @@ class VoiceAgent:
             self._emit(type="expression", emotion=fired)
 
     def ensure_ref_text(self, path: str) -> str:
-        """Return the reference transcript for clip `path`, creating a '<name>.txt'
-        sidecar by transcribing the clip if one doesn't already exist (cached for
-        next time). Returns '' if STT is unavailable or transcription fails."""
-        sidecar = os.path.splitext(path)[0] + ".txt"
-        if os.path.exists(sidecar):
-            try:
-                with open(sidecar, encoding="utf-8") as fh:
-                    return fh.read().strip()
-            except OSError:
-                pass
+        """Return the reference transcript for clip `path`, creating a sidecar if needed."""
+        from ref_text import ensure_ref_text_sidecar
+
         self._ensure_stt_for_ref_text()
-        if self.stt is None:
-            return ""
-        log.info("transcribing reference for ICL: %s", os.path.basename(path))
-        try:
-            text = (self.stt.transcribe_file(path) or "").strip()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("reference transcription failed: %s", exc)
-            return ""
-        if text:
-            try:
-                with open(sidecar, "w", encoding="utf-8") as fh:
-                    fh.write(text)
-                log.info("saved transcript -> %s", os.path.basename(sidecar))
-            except OSError:
-                pass
-        return text
+        return ensure_ref_text_sidecar(path, stt=self.stt, log=log)
 
     def _deliver_greeting_if_needed(self) -> None:
         """Speak first_mes when a session starts or personality changes."""
@@ -4090,6 +4395,34 @@ class VoiceAgent:
     def is_session_running(self) -> bool:
         return self._session_thread is not None and self._session_thread.is_alive()
 
+    def _enqueue_turn(self, text: str) -> None:
+        if self._session_stop.is_set():
+            return
+        self._turn_queue.put(text)
+
+    def _turn_worker_loop(self) -> None:
+        """Process voice turns off the VAD thread so STT can keep listening."""
+        while not self._session_stop.is_set():
+            text: Optional[str]
+            try:
+                text = self._turn_queue.get(timeout=0.25)
+            except queue.Empty:
+                pending = self._pending_user_text
+                if pending and not self._turn_active.is_set():
+                    self._pending_user_text = None
+                    text = pending
+                else:
+                    continue
+            else:
+                if text is None:
+                    break
+            try:
+                self.respond(text)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("turn worker failed: %s", exc)
+            finally:
+                self._turn_queue.task_done()
+
     def start_session(self) -> None:
         """Start a hands-free VAD conversation loop on a background thread."""
         if self.is_session_running():
@@ -4110,6 +4443,14 @@ class VoiceAgent:
             self._duplex_thread = threading.Thread(target=self._duplex_worker, daemon=True)
             self._duplex_thread.start()
             log.info("session duplex barge listener started")
+        if self._turn_worker_thread is None or not self._turn_worker_thread.is_alive():
+            self._turn_worker_thread = threading.Thread(
+                target=self._turn_worker_loop,
+                daemon=True,
+                name="voice-turn-worker",
+            )
+            self._turn_worker_thread.start()
+            log.info("session turn worker started")
         self._session_thread = threading.Thread(target=self._vad_session, daemon=True)
         self._session_thread.start()
 
@@ -4118,6 +4459,14 @@ class VoiceAgent:
         self._barge_in_flag.set()
         self._turn_active.clear()
         self.playback.stop()
+        try:
+            self._turn_queue.put(None)
+        except Exception:  # noqa: BLE001
+            pass
+        worker = self._turn_worker_thread
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=5.0)
+        self._turn_worker_thread = None
         thread = self._session_thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=3.0)
@@ -4150,30 +4499,46 @@ class VoiceAgent:
 
                     with self._mic.capture_lock():
                         self._mic.flush()
+                        # Don't listen while TTS is still playing — speaker bleed starts a new turn
+                        # and playback.stop() at turn start cuts her off mid-sentence.
+                        while (
+                            self.playback.is_playing()
+                            or self.playback.tts_generating()
+                        ) and not self._session_stop.is_set():
+                            time.sleep(0.05)
+                        if CONFIG.audio.monologue_enabled:
+                            import random
+                            timeout = CONFIG.audio.monologue_timeout * random.uniform(0.65, 1.35)
+                        else:
+                            timeout = -1.0
                         audio = record_until_silence(
                             on_speech_start=lambda: self._emit(type="status", value="hearing"),
                             should_stop=self._session_stop.is_set,
                             mic=self._mic,
                             frame_processor=_process_idle if self.aec is not None else None,
+                            timeout_seconds=timeout,
                         )
                     if self._session_stop.is_set():
                         break
                     if audio.size == 0:
-                        continue
-                    self._emit(type="status", value="transcribing")
-                    text = (self.stt.transcribe_array(audio, CONFIG.stt.sample_rate) or "").strip()
-                    if not text:
-                        if (
-                            self._has_pending_action()
-                            or self._last_discord_intent
-                        ):
-                            text = ""
+                        if CONFIG.audio.monologue_enabled and not self._session_stop.is_set():
+                            text = "__monologue__"
                         else:
                             continue
-                self.respond(text)
-                if self._pending_user_text:
-                    pending = self._pending_user_text
-                    self._pending_user_text = None
+                    else:
+                        self._emit(type="status", value="transcribing")
+                        text = (self.stt.transcribe_array(audio, CONFIG.stt.sample_rate) or "").strip()
+                        if not text:
+                            if (
+                                self._has_pending_action()
+                                or self._last_discord_intent
+                            ):
+                                text = ""
+                            else:
+                                continue
+                self._enqueue_turn(text)
+                if not self._session_stop.is_set():
+                    time.sleep(0.3)
         except Exception as exc:  # noqa: BLE001
             self._emit(type="error", text=str(exc))
         finally:

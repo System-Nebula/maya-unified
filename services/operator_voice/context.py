@@ -40,6 +40,25 @@ def _sync_operator_files_from_data(
     seed_operator_dirs(operator_id)
     copy_global_memory_to_operator(str(operator_id))
 
+def resolve_active_personality_id(
+    personalities: dict[str, Any],
+    *,
+    file_active: str = "",
+    settings_active_id: str = "",
+) -> str:
+    """Pick the personality slug to activate from file state and settings."""
+    if not personalities:
+        return ""
+    if settings_active_id and settings_active_id in personalities:
+        return settings_active_id
+    if file_active and file_active in personalities:
+        return file_active
+    candidate = settings_active_id or file_active
+    if candidate in personalities:
+        return candidate
+    return next(iter(personalities))
+
+
 __all__ = [
     "ensure_operator_seeded",
     "import_legacy_global_to_admin",
@@ -54,6 +73,7 @@ __all__ = [
     "sync_operator_files",
     "reconcile_operator_personalities",
     "persist_operator_personalities_from_file",
+    "resolve_active_personality_id",
 ]
 
 
@@ -182,15 +202,39 @@ def reconcile_operator_personalities(operator_id: str | uuid.UUID) -> dict[str, 
     db_pers = db_data.get("personalities") if isinstance(db_data.get("personalities"), dict) else {}
     db_active = str(db_data.get("active") or "")
 
+    settings = load_settings(operator_id)
+    settings_active = str(settings.get("personality", {}).get("active_id") or "")
+
     if file_pers and not db_pers:
-        active = file_active or db_active or "default"
+        active = resolve_active_personality_id(
+            file_pers,
+            file_active=file_active or db_active,
+            settings_active_id=settings_active,
+        )
         save_personalities(operator_id, active=active, personalities=file_pers)
         return {"active": active, "personalities": file_pers}
 
     if db_pers:
-        active = db_active or file_active or "default"
+        active = resolve_active_personality_id(
+            db_pers,
+            file_active=db_active or file_active,
+            settings_active_id=settings_active,
+        )
         sync_personalities_file(operator_id, active, db_pers)
+        if active != db_active:
+            save_personalities(operator_id, active=active, personalities=db_pers)
         return {"active": active, "personalities": db_pers}
+
+    legacy = load_legacy_global_personalities()
+    leg_pers = legacy.get("personalities") if isinstance(legacy.get("personalities"), dict) else {}
+    if leg_pers:
+        active = resolve_active_personality_id(
+            leg_pers,
+            file_active=str(legacy.get("active") or "default"),
+            settings_active_id=settings_active,
+        )
+        save_personalities(operator_id, active=active, personalities=leg_pers)
+        return {"active": active, "personalities": leg_pers}
 
     return {"active": file_active or db_active, "personalities": {}}
 
@@ -224,6 +268,19 @@ async def ensure_operator_seeded(session, operator_id: str | uuid.UUID) -> bool:
             active = str(file_data.get("active") or pers_row.get("active") or "default")
             await op_store.save_personalities(session, oid, active=active, personalities=file_pers)
             pers_row = {"active": active, "personalities": file_pers}
+        if not db_pers and not file_pers:
+            legacy = load_legacy_global_personalities()
+            leg_pers = legacy.get("personalities") if isinstance(legacy.get("personalities"), dict) else {}
+            if leg_pers:
+                settings_row = existing.settings if isinstance(existing.settings, dict) else {}
+                settings_active = str(settings_row.get("personality", {}).get("active_id") or "")
+                active = resolve_active_personality_id(
+                    leg_pers,
+                    file_active=str(legacy.get("active") or "default"),
+                    settings_active_id=settings_active,
+                )
+                await op_store.save_personalities(session, oid, active=active, personalities=leg_pers)
+                pers_row = {"active": active, "personalities": leg_pers}
         _sync_operator_files_from_data(
             operator_id,
             existing.settings if isinstance(existing.settings, dict) else {},

@@ -8,7 +8,14 @@ from dataclasses import dataclass, field
 from typing import Iterator
 
 from config import CONFIG, LLMConfig
-from llm import AUTO_INSTRUCT_GUIDE, LLMResponse, ToolCall, ToolsUnsupported, sanitize_llm_output
+from llm import (
+    AUTO_INSTRUCT_GUIDE,
+    LLMClient,
+    LLMResponse,
+    ToolCall,
+    ToolsUnsupported,
+    sanitize_llm_output,
+)
 
 from services.llm.api_keys import is_placeholder_api_key, resolve_reasoning_api_key
 
@@ -84,7 +91,17 @@ class LiteLLMAdapter:
           pass
       return self.litellm_model or self.cfg.model
 
-  def _completion_kwargs(self, messages: list[dict], *, stream: bool, max_tokens: int | None, model: str | None):
+  def _completion_kwargs(
+      self,
+      messages: list[dict],
+      *,
+      stream: bool,
+      max_tokens: int | None,
+      model: str | None,
+      enable_thinking: bool | None = None,
+      reasoning_effort: str | None = None,
+      response_format: dict | None = None,
+  ):
       resolved_model = model or self._effective_model()
       kwargs = dict(
           model=resolved_model,
@@ -96,17 +113,22 @@ class LiteLLMAdapter:
           api_key=_effective_api_key(self.cfg.api_key),
       )
       model_lc = resolved_model.lower()
-      effort = (self.cfg.reasoning_effort or "").strip().lower()
-      if "deepseek-v4" in model_lc:
+      thinking_off = self.cfg.disable_thinking if enable_thinking is None else (not enable_thinking)
+      effort = (reasoning_effort or self.cfg.reasoning_effort or "").strip().lower()
+      if "deepseek-v4" in model_lc or enable_thinking is True or effort:
           extra = dict(kwargs.get("extra_body") or {})
           reasoning = dict(extra.get("reasoning") or {})
           if effort in ("none", "minimal", "low", "medium", "high", "xhigh"):
               reasoning["effort"] = effort
-          elif self.cfg.disable_thinking:
+          elif enable_thinking is True:
+              reasoning["effort"] = "medium"
+          elif thinking_off:
               reasoning["effort"] = "none"
           if reasoning:
               extra["reasoning"] = reasoning
               kwargs["extra_body"] = extra
+      if response_format:
+          kwargs["response_format"] = response_format
       return kwargs
 
   def stream_reply(self, user_text: str, history: list[dict] | None = None) -> Iterator[str]:
@@ -157,10 +179,25 @@ class LiteLLMAdapter:
       tools: list[dict] | None = None,
       model: str | None = None,
       max_tokens: int | None = None,
+      *,
+      enable_thinking: bool | None = None,
+      reasoning_effort: str | None = None,
+      response_format: dict | None = None,
   ) -> LLMResponse:
+      import logging
+
       import litellm
 
-      kwargs = self._completion_kwargs(messages, stream=False, max_tokens=max_tokens, model=model)
+      log = logging.getLogger("llm")
+      kwargs = self._completion_kwargs(
+          messages,
+          stream=False,
+          max_tokens=max_tokens,
+          model=model,
+          enable_thinking=enable_thinking,
+          reasoning_effort=reasoning_effort,
+          response_format=response_format,
+      )
       if tools:
           kwargs["tools"] = tools
           kwargs["tool_choice"] = "auto"
@@ -171,9 +208,20 @@ class LiteLLMAdapter:
               raise ToolsUnsupported(str(exc)) from exc
           raise
       if not resp.choices:
+          log.warning("LLM complete returned no choices")
           return LLMResponse()
       msg = resp.choices[0].message
-      out = LLMResponse(content=sanitize_llm_output((getattr(msg, "content", None) or "").strip()))
+      content = sanitize_llm_output(LLMClient._message_text(msg))
+      reasoning_raw = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
+      reasoning_content = (
+          sanitize_llm_output(reasoning_raw.strip())
+          if isinstance(reasoning_raw, str) and reasoning_raw.strip()
+          else ""
+      )
+      if not content:
+          finish = getattr(resp.choices[0], "finish_reason", None)
+          log.warning("LLM complete returned empty content (finish_reason=%s)", finish)
+      out = LLMResponse(content=content, reasoning_content=reasoning_content)
       for tc in getattr(msg, "tool_calls", None) or []:
           raw = tc.function.arguments or "{}"
           try:

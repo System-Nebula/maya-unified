@@ -188,6 +188,10 @@ export class VrmLipSync {
     this._speaking = this._rawLevel > 0.002 || !!frame.speaking;
 
     if (!this._speaking) {
+      for (const id of VISEME_ORDER) {
+        this._target[id] = 0;
+      }
+      this._bands = [];
       return;
     }
 

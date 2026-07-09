@@ -77,7 +77,7 @@ def test_iter_speech_yields_incrementally() -> None:
     class _FakeVoice:
         available = True
 
-        def stream_timed(self, text, stop=None, instruct=None):
+        def stream_timed(self, text, stop=None, instruct=None, **kwargs):
             yield from chunks
 
     agent = SimpleNamespace(
@@ -128,13 +128,14 @@ def test_render_speech_returns_timing_dict() -> None:
     class _FakeVoice:
         available = True
 
-        def stream_timed(self, text, stop=None, instruct=None):
+        def stream_timed(self, text, stop=None, instruct=None, **kwargs):
             yield pcm, 24000, {"prefill_ms": 100, "decode_ms": 50}
 
     agent = SimpleNamespace(
         voice=_FakeVoice(),
         _ensure_icl_ref_text=lambda: None,
         _resolve_render_instruct=lambda instruct: instruct,
+        _synthesize_wav_bytes=lambda *args, **kwargs: VoiceAgent._synthesize_wav_bytes(agent, *args, **kwargs),
     )
 
     wav_bytes, sr, timing = VoiceAgent.render_speech(agent, "hello")

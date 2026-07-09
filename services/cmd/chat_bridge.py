@@ -210,6 +210,23 @@ def _broadcast_cmd_turn(
             ),
             operator_id=operator_id,
         )
+        reply_text = (reply.text or "").strip()
+        if reply_text:
+            try:
+                from agent import finalize_reply_text
+
+                body, cue = finalize_reply_text(reply_text)
+                if body:
+                    idle_event = _chat_event({"type": "status", "value": "idle"}, corr_id=corr_id)
+                    hub._schedule_chat_tts(  # noqa: SLF001
+                        body,
+                        instruct=cue,
+                        operator_id=operator_id,
+                        corr_id=corr_id,
+                        idle_event=idle_event,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
     else:
         err_text = _resolve_cmd_error_text(reply, cmd_id=cmd_id)
         err_payload: dict = {
@@ -390,7 +407,75 @@ async def _run_long_cmd_async(
             otel_context_mod.detach(token)
 
 
+async def try_dispatch_chat_cmd_async(
+    text: str, *, operator_id: str | None = None,
+) -> dict | None:
+    """Return a chat-shaped response when text is a registered cmd, else None."""
+    ensure_cmds_registered()
+    if not is_cmd_input(text):
+        return None
+    parsed = parse_cmd_input(text)
+    if parsed is None:
+        return None
+    corr_id = new_corr_id()
+    ctx = CmdContext(
+        operator_id=operator_id,
+        surface=CmdSurface.DASHBOARD,
+        raw_text=text,
+        metadata={"corr_id": corr_id},
+    )
+    long_running = parsed.cmd_id in _LONG_RUNNING_CMDS
+    if long_running:
+        from opentelemetry import context as otel_context_mod
+        from services.async_bridge import schedule_coro
+        from services.voice.hub import hub
+
+        hub.broadcast(
+            _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
+            operator_id=operator_id,
+        )
+        schedule_coro(
+            _run_long_cmd_async(
+                parsed=parsed,
+                ctx=ctx,
+                text=text,
+                corr_id=corr_id,
+                operator_id=operator_id,
+                otel_context=otel_context_mod.get_current(),
+            )
+        )
+        return _immediate_pending_response(corr_id=corr_id, cmd_id=parsed.cmd_id, parsed=parsed)
+
+    result = await dispatch_cmd_async(parsed, ctx)
+    result = _ensure_cmd_result(result, cmd_id=parsed.cmd_id)
+    return _broadcast_cmd_turn(
+        text=text,
+        reply=result,
+        operator_id=operator_id,
+        corr_id=corr_id,
+        cmd_id=parsed.cmd_id,
+    )
+
+
 def try_dispatch_chat_cmd(text: str, *, operator_id: str | None = None) -> dict | None:
+    """Sync wrapper — prefer try_dispatch_chat_cmd_async from async routes."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        from services.async_bridge import run_sync
+
+        return try_dispatch_chat_cmd_sync(text, operator_id=operator_id)
+
+    import concurrent.futures
+
+    def _run() -> dict | None:
+        return asyncio.run(try_dispatch_chat_cmd_async(text, operator_id=operator_id))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_run).result(timeout=120)
+
+
+def try_dispatch_chat_cmd_sync(text: str, *, operator_id: str | None = None) -> dict | None:
     """Return a chat-shaped response when text is a registered cmd, else None."""
     ensure_cmds_registered()
     if not is_cmd_input(text):

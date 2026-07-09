@@ -291,7 +291,7 @@ class VoiceHub(Hub):
             event = {**event, "room_id": ev_room}
         with self._lock:
             subs = list(self._scoped_subscribers)
-        global_types = frozenset({"ready", "status", "error", "audio", "audio_begin", "audio_stop"})
+        global_types = frozenset({"ready", "status", "error", "audio", "audio_begin", "audio_stop", "lip"})
         for sub in subs:
             if ev_room:
                 if sub.room_id and sub.room_id != ev_room:
@@ -346,14 +346,12 @@ class VoiceHub(Hub):
     # ----- Operator / room context ------------------------------------------
 
     def apply_operator_context(self, operator_id: str) -> None:
+        from services.operator_voice.context import reconcile_operator_personalities
         from services.operator_voice.memory_migration import (
             copy_global_memory_to_operator,
             seed_operator_skills_from_examples,
         )
-        from services.operator_voice.paths import (
-            load_operator_personalities_file,
-            seed_operator_dirs,
-        )
+        from services.operator_voice.paths import seed_operator_dirs
 
         oid = str(operator_id)
         operator_changed = oid != (self._active_operator_id or "")
@@ -376,18 +374,46 @@ class VoiceHub(Hub):
         if self.ready and self.agent is not None:
             self.agent._vision_operator_id = oid  # noqa: SLF001
             self.agent._vision_reasoning = dict(settings.get("reasoning") or {})  # noqa: SLF001
-        pers = load_operator_personalities_file(operator_id)
-        active = str(pers.get("active") or "")
-        if active and self.ready and self.agent is not None:
-            try:
-                self.agent.activate_personality(active)
-            except Exception:  # noqa: BLE001
-                pass
+        self._activate_effective_personality(operator_id, settings)
         if operator_changed and self.ready and self.agent is not None:
             want = _saved_tts_model_id(settings)
             loaded = _loaded_tts_model_id(self.agent)
             if want and loaded and want != loaded:
                 self._reload_tts_engine(settings, operator_id=oid)
+
+    def _activate_effective_personality(
+        self,
+        operator_id: str | None,
+        settings: dict[str, Any] | None = None,
+    ) -> None:
+        if not self.ready or self.agent is None:
+            return
+        from services.operator_voice.context import (
+            reconcile_operator_personalities,
+            resolve_active_personality_id,
+        )
+        from services.operator_voice.paths import load_legacy_global_personalities
+
+        active = ""
+        if operator_id:
+            pers_data = reconcile_operator_personalities(operator_id)
+            active = str(pers_data.get("active") or "")
+        else:
+            effective = settings if settings is not None else load_effective_settings(None)
+            legacy = load_legacy_global_personalities()
+            personalities = legacy.get("personalities") if isinstance(legacy.get("personalities"), dict) else {}
+            settings_active = str(effective.get("personality", {}).get("active_id") or "")
+            active = resolve_active_personality_id(
+                personalities,
+                file_active=str(legacy.get("active") or ""),
+                settings_active_id=settings_active,
+            )
+        if not active:
+            return
+        try:
+            self.agent.activate_personality(active)
+        except Exception:  # noqa: BLE001
+            log.exception("failed to activate personality %s", active)
 
     def apply_room_context(self, room_id: str, snapshot: dict[str, Any]) -> None:
         from services.operator_voice.paths import room_data_dir
@@ -471,6 +497,10 @@ class VoiceHub(Hub):
             self.current_voice = os.path.basename(CONFIG.tts.ref_audio)
             self.ready = True
             self._apply_voice_settings_hot_swap(settings)
+            if oid:
+                self._activate_effective_personality(oid, settings)
+            else:
+                self._activate_effective_personality(None, settings)
             self.broadcast({"type": "ready", "value": True})
             if agent.voice is not None and not getattr(agent.voice, "available", True):
                 reason = getattr(agent.voice, "degrade_reason", "TTS unavailable")
@@ -492,7 +522,7 @@ class VoiceHub(Hub):
 
     def _agent_event(self, event: dict) -> None:
         # PCM chunks must reach every dashboard tab for the active operator.
-        if event.get("type") in ("audio", "audio_begin", "audio_stop"):
+        if event.get("type") in ("audio", "audio_begin", "audio_stop", "lip"):
             op = self._active_operator_id
             self.broadcast(event, operator_id=op, room_id=None)
             return
@@ -1086,6 +1116,15 @@ class VoiceHub(Hub):
                     if direct is None and not self.agent._maybe_motion_request(  # noqa: SLF001
                         text, plan=plan, raw_text=text,
                     ):
+                        try:
+                            from services.game.enabled import GAME_MODE_ENABLED
+                        except ImportError:
+                            GAME_MODE_ENABLED = False
+                        if GAME_MODE_ENABLED:
+                            direct = self.agent._try_game_direct(text)  # noqa: SLF001
+                    if direct is None and not self.agent._maybe_motion_request(  # noqa: SLF001
+                        text, plan=plan, raw_text=text,
+                    ):
                         if self.agent._is_discord_context_turn(text):  # noqa: SLF001
                             direct = self.agent._try_discord_direct(text)  # noqa: SLF001
                         else:
@@ -1167,6 +1206,22 @@ class VoiceHub(Hub):
                                 guarded = self.agent._try_dashboard_queue_direct(text)  # noqa: SLF001
                                 if guarded:
                                     reply = guarded
+                            try:
+                                from services.game.enabled import GAME_MODE_ENABLED
+                            except ImportError:
+                                GAME_MODE_ENABLED = False
+                            if GAME_MODE_ENABLED:
+                                try:
+                                    from services.game.intent import is_game_play_request
+                                except ImportError:
+                                    is_game_play_request = lambda _t: False  # noqa: E731
+                                if (
+                                    is_game_play_request(text)
+                                    and not _trace_has_tool(tool_trace, "game_play_until_goal")
+                                ):
+                                    guarded = self.agent._try_game_direct(text)  # noqa: SLF001
+                                    if guarded:
+                                        reply = guarded
                             if (
                                 imagine_nl
                                 and not trace_has_imagine_success(tool_trace)

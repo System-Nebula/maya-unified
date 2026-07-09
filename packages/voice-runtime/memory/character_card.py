@@ -297,20 +297,23 @@ def strip_roleplay_actions(text: str) -> str:
     raw = (text or "").strip()
     if not raw:
         return ""
-    blocks = [m.group(1).strip() for m in re.finditer(r"\*([^*]+)\*", raw)]
-    out = _ASTERISK_BLOCK_RE.sub(" ", raw)
+        
+    def replace_block(match: re.Match) -> str:
+        block_content = match.group(1).strip()
+        # If it matches an action start word (e.g. *waves*, *giggles*), strip it.
+        if _ACTION_START_RE.match(block_content):
+            return " "
+        # If it is a common single-word action cue (like sighs, laughs, chuckles, gasps, pauses):
+        lowercase_block = block_content.lower()
+        if lowercase_block in {"sigh", "sighs", "gasp", "gasps", "laughter", "laughs", "giggle", "giggles", "chuckle", "chuckles", "pause", "snicker", "snickers", "groan", "groans"}:
+            return " "
+        # Otherwise, it's likely emphasized text (like *really* or *need to raise my taxes*), so keep the text without the asterisks!
+        return " " + block_content + " "
+
+    out = re.sub(r"\*([^*]+)\*", replace_block, raw)
     out = re.sub(r"\s+", " ", out).strip()
     if out:
         return out
-    for block in reversed(blocks):
-        if len(block) < 8 or _ACTION_START_RE.match(block):
-            continue
-        if re.search(
-            r'[.!?"]|^(?:Hey|Hello|Hi|Oh|Well|So|I[''`]?m|You )',
-            block,
-            re.IGNORECASE,
-        ):
-            return block
     return ""
 
 

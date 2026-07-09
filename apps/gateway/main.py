@@ -37,6 +37,7 @@ from apps.gateway.music_ontology_routes import router as music_ontology_router  
 from apps.gateway.cmd_routes import router as cmd_router  # noqa: E402
 from apps.gateway.room_routes import router as room_router  # noqa: E402
 from apps.gateway.browser_capture_routes import router as browser_capture_router  # noqa: E402
+from apps.gateway.game_routes import router as game_router  # noqa: E402
 from apps.gateway.voice_routes import register_agent_routes  # noqa: E402
 from services.auth.deps import resolve_operator_from_token  # noqa: E402
 from services.auth.operator_store import any_operators_exist, get_db_session  # noqa: E402
@@ -241,6 +242,10 @@ app.include_router(music_ontology_router)
 app.include_router(browser_capture_router)
 app.include_router(room_router)
 app.include_router(cmd_router)
+from services.game.enabled import GAME_MODE_ENABLED  # noqa: E402
+
+if GAME_MODE_ENABLED:
+    app.include_router(game_router)
 register_agent_routes(app)
 
 # --- static: voice SDK ----------------------------------------------------------
@@ -379,6 +384,14 @@ def vrm_popout_page():
     if page.is_file():
         return FileResponse(page)
     raise HTTPException(404, "vrm-popout.html not found")
+
+
+@app.get("/avatar/overlay")
+def vrm_overlay_page():
+    page = _dashboard_dir / "vrm-overlay.html"
+    if page.is_file():
+        return FileResponse(page)
+    raise HTTPException(404, "vrm-overlay.html not found")
 
 
 @app.get("/rooms")

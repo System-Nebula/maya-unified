@@ -59,7 +59,8 @@ class StreamPlayer:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._idle = threading.Event()
-        self._idle.set()
+        self._set_idle()
+        self._idle_time = 0.0
 
         self._stream = None
         self._sample_rate: Optional[int] = None
@@ -94,6 +95,8 @@ class StreamPlayer:
         self._browser_deadline = 0.0
         self._browser_deadline_lock = threading.Lock()
         self._browser_idle_timer: Optional[threading.Timer] = None
+        self._tts_generating = False
+        self._tts_generating_lock = threading.Lock()
 
         # Optional AEC — we feed it a copy of every block we send to the DAC
         # so the echo canceller knows what the speakers are outputting.
@@ -110,6 +113,31 @@ class StreamPlayer:
     def set_emitter(self, fn: Optional[Callable[[dict], None]]) -> None:
         self._emitter = fn
 
+    def set_tts_generating(self, active: bool) -> None:
+        """True while the TTS engine is still decoding (between PCM chunks)."""
+        with self._tts_generating_lock:
+            self._tts_generating = bool(active)
+        if active:
+            self._clear_idle()
+        elif not self.is_playing():
+            self._set_idle()
+            self._level = 0.0
+
+    def _tts_active(self) -> bool:
+        with self._tts_generating_lock:
+            return self._tts_generating
+
+    def tts_generating(self) -> bool:
+        return self._tts_active()
+
+    def _set_idle(self) -> None:
+        if not self._idle.is_set():
+            self._idle.set()
+            self._idle_time = time.monotonic()
+
+    def _clear_idle(self) -> None:
+        self._idle.clear()
+
     def _process_for_output(self, chunk: np.ndarray) -> np.ndarray:
         out = self._eq.process(np.array(chunk, dtype=np.float32, copy=True))
         if self._gain < 0.999:
@@ -122,8 +150,11 @@ class StreamPlayer:
         dur = float(samples) / max(int(sample_rate), 1)
         with self._browser_deadline_lock:
             now = time.monotonic()
-            base = max(now, self._browser_deadline)
-            self._browser_deadline = base + dur
+            if self._browser_deadline == 0.0:
+                base = now + 0.55  # Web Audio startup + scheduling slack
+            else:
+                base = max(now, self._browser_deadline)
+            self._browser_deadline = base + dur + 0.28
             delay = self._browser_deadline - now
         self._schedule_browser_idle(delay)
 
@@ -136,13 +167,19 @@ class StreamPlayer:
         timer.start()
 
     def _browser_idle_fire(self) -> None:
+        if self._tts_active():
+            self._schedule_browser_idle(0.15)
+            return
         with self._browser_deadline_lock:
             if time.monotonic() < self._browser_deadline - 0.02:
                 delay = self._browser_deadline - time.monotonic()
                 self._schedule_browser_idle(delay)
                 return
             self._browser_deadline = 0.0
-        self._idle.set()
+        if self.is_playing():
+            self._schedule_browser_idle(0.15)
+            return
+        self._set_idle()
         self._level = 0.0
 
     def _emit_browser(self, event: dict) -> None:
@@ -192,7 +229,7 @@ class StreamPlayer:
 
         if self._stop.is_set():
             outdata[:] = 0
-            self._idle.set()
+            self._set_idle()
             self._level = 0.0
             return
 
@@ -207,7 +244,7 @@ class StreamPlayer:
                             np.array(outdata[:written], dtype=np.float32, copy=True)
                         )
                     outdata[written:] = 0
-                    self._idle.set()
+                    self._set_idle()
                     self._update_meters(outdata[:written] if written else None)
                     return
             take = min(frames - written, self._pending.shape[0])
@@ -248,7 +285,7 @@ class StreamPlayer:
                 self._drain()
                 with self._lock:
                     self._pending = np.zeros((0, self.channels), dtype=np.float32)
-                self._idle.set()
+                self._set_idle()
                 self._level = 0.0
                 return
         elif self._gain < 0.999:
@@ -288,6 +325,8 @@ class StreamPlayer:
 
     def level(self) -> float:
         """Latest output RMS amplitude (0 when idle/stopped). Cheap; thread-safe."""
+        if self.is_playing():
+            return self._level
         return self._level if not self._idle.is_set() else 0.0
 
     def spectrum(self, n_bands: int = 56) -> list[dict]:
@@ -297,7 +336,7 @@ class StreamPlayer:
         post-EQ buffer via a windowed FFT. Empty while idle. Reference assignment
         of the buffer in the callback makes this safe to read without a lock.
         """
-        if self._idle.is_set():
+        if not self.is_playing() and self._idle.is_set():
             return []
         buf = self._spec_buf
         if buf is None or buf.size == 0:
@@ -345,7 +384,7 @@ class StreamPlayer:
         with self._lock:
             self._pending = np.zeros((0, self.channels), dtype=np.float32)
         self._stop.clear()
-        self._idle.set()
+        self._set_idle()
         with self._browser_deadline_lock:
             self._browser_deadline = 0.0
         if self._browser_idle_timer is not None:
@@ -368,17 +407,25 @@ class StreamPlayer:
         self._sample_rate = int(sample_rate)
         self._eq.set_sample_rate(self._sample_rate)
         processed = self._process_for_output(chunk)
-        self._idle.clear()
+        self._clear_idle()
         self._update_meters(processed)
 
         if self._output_sink == "browser":
             mono = processed[:, 0] if processed.ndim == 2 else processed.reshape(-1)
+            if self._aec is not None and self._sample_rate:
+                self._aec.push_reference(mono.copy(), self._sample_rate)
             self._emit_browser({
                 "type": "audio",
                 "format": "f32le",
                 "sr": self._sample_rate,
                 "channels": 1,
                 "data": base64.b64encode(mono.astype(np.float32, copy=False).tobytes()).decode("ascii"),
+            })
+            self._emit_browser({
+                "type": "lip",
+                "speaking": True,
+                "level": float(self._level),
+                "bands": self.spectrum(),
             })
             self._extend_browser_deadline(int(mono.shape[0]), self._sample_rate)
             return
@@ -388,6 +435,7 @@ class StreamPlayer:
 
     def stop(self) -> None:
         """Hard stop: discard queued audio and silence the current output now."""
+        self.set_tts_generating(False)
         self._gain = 1.0
         self._target_gain = 1.0
         self._gain_step = 0.0
@@ -403,7 +451,13 @@ class StreamPlayer:
             self._browser_idle_timer = None
         if self._output_sink == "browser":
             self._emit_browser({"type": "audio_stop"})
-        self._idle.set()
+            self._emit_browser({
+                "type": "lip",
+                "speaking": False,
+                "level": 0.0,
+                "bands": [],
+            })
+        self._set_idle()
         self._level = 0.0
 
     flush = stop
@@ -460,12 +514,17 @@ class StreamPlayer:
             pass
 
     def is_playing(self) -> bool:
+        if self._tts_active():
+            return True
         if self._output_sink == "browser":
             if self._stop.is_set():
                 return False
             with self._browser_deadline_lock:
-                return time.monotonic() < self._browser_deadline
-        return not self._idle.is_set()
+                # Web Audio schedules ahead of server clock — keep a grace tail.
+                return time.monotonic() < self._browser_deadline + 0.75
+        if self._idle.is_set():
+            return time.monotonic() - self._idle_time < 0.25  # Keep playing for 250ms sound card buffer trailing padding
+        return True
 
     def wait_until_idle(self, timeout: Optional[float] = None) -> bool:
         return self._idle.wait(timeout=timeout)

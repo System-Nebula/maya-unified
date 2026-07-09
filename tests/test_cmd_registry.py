@@ -74,9 +74,14 @@ def test_validate_missing_required_parameter():
 
 
 def test_registry_discovery_by_surface():
+    from services.game.enabled import GAME_MODE_ENABLED
+
     dashboard_cmds = registry.discovery(surface=CmdSurface.DASHBOARD)
     ids = {item["id"] for item in dashboard_cmds}
-    assert {"help", "status", "imagine", "blend", "play"}.issubset(ids)
+    expected = {"help", "status", "imagine", "blend", "play"}
+    if GAME_MODE_ENABLED:
+        expected.add("game")
+    assert expected.issubset(ids)
 
 
 @pytest.mark.asyncio

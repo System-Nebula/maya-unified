@@ -211,6 +211,10 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
         CONFIG.audio.eq_preset = str(audio["eq_preset"])
     if audio.get("aec_enabled") is not None:
         CONFIG.audio.aec_enabled = bool(audio["aec_enabled"])
+    if audio.get("monologue_enabled") is not None:
+        CONFIG.audio.monologue_enabled = bool(audio["monologue_enabled"])
+    if audio.get("monologue_timeout") is not None:
+        CONFIG.audio.monologue_timeout = float(audio["monologue_timeout"])
 
     mem = settings.get("memory", {})
     CONFIG.memory.data_dir = str(agent_data_dir(operator_id))
@@ -444,4 +448,5 @@ def load_effective_settings(operator_id: str | None = None) -> dict[str, Any]:
     op_disc = operator.get("discord") if isinstance(operator.get("discord"), dict) else {}
     if not str((op_disc or {}).get("token") or "").strip():
         merged["discord"] = deepcopy(base.get("discord") or merged.get("discord") or {})
+    merged["reasoning"] = normalize_reasoning(merged.get("reasoning") or {})
     return merged

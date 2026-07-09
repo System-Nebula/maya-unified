@@ -1676,6 +1676,7 @@ function _applyAgentEvent(store, ev) {
     const chunk = String(ev.text || "");
     const isFinal = ev.final === true;
     const isCmd = ev.mode === "cmd";
+    const isGame = ev.mode === "game";
     const last = store.turns[store.turns.length - 1];
     if (last && last.role === "maya" && !last._streaming && chunk.trim() === (last.text || "").trim()) {
       if (ev.artifacts?.length && !last.artifacts?.length) {
@@ -1699,9 +1700,26 @@ function _applyAgentEvent(store, ev) {
       store._expectingReply ||
       store._chatPendingAt != null ||
       isCmd ||
+      isGame ||
       isFinal ||
       (ev.artifacts?.length > 0);
     if (!allowReply) return;
+
+    if (isGame && chunk.trim()) {
+      store.turns.push({
+        messageId: ev.message_id || _nextMessageId(),
+        corrId,
+        role: "maya",
+        text: chunk,
+        mode: "game",
+        gameAction: ev.game_action || null,
+        gameTurn: ev.game_turn ?? null,
+        sentAt: Date.now(),
+      });
+      _persistConversation(store);
+      _scrollTranscript();
+      return;
+    }
 
     if (isCmd) {
       _upsertCmdMayaTurn(store, {

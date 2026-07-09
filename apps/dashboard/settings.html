@@ -228,6 +228,17 @@
                 <div class="lhs"><div class="mv-row-label">Echo cancellation (AEC)</div><div class="mv-row-sub">Recommended for speakers</div></div>
                 <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.audio.aec_enabled" @change="save()" /><span class="slider"></span></label></div>
               </div>
+              <div class="mv-list-row">
+                <div class="lhs"><div class="mv-row-label">Proactive monologue</div><div class="mv-row-sub">Speak autonomously when chat is quiet</div></div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.audio.monologue_enabled" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row" x-show="s.audio.monologue_enabled">
+                <div class="lhs"><div class="mv-row-label">Monologue silent timeout</div><div class="mv-row-sub">Seconds of silence before speaking</div></div>
+                <div class="rhs">
+                  <input type="range" class="mv-range" min="5" max="60" step="1" x-model.number="s.audio.monologue_timeout" @change="save()" />
+                  <span class="mv-num" x-text="s.audio.monologue_timeout + 's'"></span>
+                </div>
+              </div>
             </div>
           </div>
 

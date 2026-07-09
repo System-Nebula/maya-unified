@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Maya OBS Overlay</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&family=Lilita+One&display=swap" rel="stylesheet">
+    <style>
+      body, html {
+        margin: 0;
+        padding: 0;
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+        background: transparent !important;
+      }
+      #vo-stage {
+        width: 100vw;
+        height: 100vh;
+        position: relative;
+        background: transparent !important;
+      }
+      #vo-canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        background: transparent !important;
+      }
+      #vo-loading {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-family: system-ui, -apple-system, sans-serif;
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 1.2rem;
+        pointer-events: none;
+      }
+      #vo-error {
+        position: absolute;
+        bottom: 20px;
+        left: 20px;
+        font-family: system-ui, -apple-system, sans-serif;
+        color: #ff4444;
+        background: rgba(0, 0, 0, 0.6);
+        padding: 8px 12px;
+        border-radius: 4px;
+        margin: 0;
+        font-size: 0.9rem;
+      }
+      #vo-subtitle-container {
+        position: absolute;
+        bottom: 8%;
+        left: 50%;
+        transform: translate(-50%, 0);
+        width: 90%;
+        max-width: 1000px;
+        min-height: 60px;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        padding: 0;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: opacity 0.25s ease;
+        opacity: 0;
+        pointer-events: none;
+        z-index: 100;
+      }
+      #vo-subtitle-container.visible {
+        opacity: 1;
+      }
+      #vo-subtitle-text {
+        font-family: 'Lilita One', 'Fredoka', 'Comic Neue', sans-serif;
+        color: #ffffff;
+        font-size: 2.8rem;
+        font-weight: 400;
+        text-align: center;
+        line-height: 1.2;
+        -webkit-text-stroke: 3px #000000;
+        text-shadow: 
+           3px  3px 0px #000000,
+          -3px  3px 0px #000000,
+           3px -3px 0px #000000,
+          -3px -3px 0px #000000,
+           0px  4px 8px rgba(0, 0, 0, 0.7);
+        word-break: break-word;
+        margin: 0;
+        letter-spacing: 0.02em;
+      }
+      .word {
+        display: inline-block;
+        opacity: 0;
+        transform: scale(0.9);
+        transition: opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+        margin-right: 0.25em;
+      }
+      .word.visible {
+        opacity: 1;
+        transform: scale(1);
+      }
+      .word.faded {
+        opacity: 0;
+        transform: translateY(-10px);
+        transition: opacity 0.5s ease, transform 0.5s ease;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+          "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.4.2/lib/three-vrm.module.min.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="vo-stage">
+      <canvas id="vo-canvas"></canvas>
+      <div id="vo-loading">Loading overlay avatar…</div>
+      <p id="vo-error" hidden></p>
+      
+      <div id="vo-subtitle-container">
+        <p id="vo-subtitle-text"></p>
+      </div>
+    </div>
+    <script type="module" src="/dashboard/js/mayaVrmOverlay.js"></script>
+  </body>
+</html>

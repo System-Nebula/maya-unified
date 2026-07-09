@@ -78,7 +78,10 @@ document.addEventListener("alpine:init", () => {
       personas: ["maya", "operator", "assistant", "technical"],
     },
     s: {
-      audio: { output_sink: "browser", output_volume: 1, eq_enabled: true, eq_preset: "off", aec_enabled: true },
+      audio: {
+        output_sink: "browser", output_volume: 1, eq_enabled: true, eq_preset: "off", aec_enabled: true,
+        monologue_enabled: true, monologue_timeout: 15.0
+      },
       detection: {
         barge_mode: "smart", barge_in: true, vad_aggressiveness: 2,
         silence_ms: 500, min_speech_ms: 250, detection_mode: "vad",
@@ -912,7 +915,7 @@ document.addEventListener("alpine:init", () => {
         if (uploaded) {
           const fname = String(uploaded).includes(".") ? uploaded : `${uploaded}.wav`;
           this.s.voice.ref_audio = fname.includes("/") ? fname : `voices/${fname}`;
-          this.s.voice.ref_text = "";
+          this.s.voice.ref_text = data.ref_text || "";
           this.syncVoiceCatalogSelection();
           await this._saveNow();
           this.currentVoice = data.name || fname.replace(/\.[^.]+$/, "");

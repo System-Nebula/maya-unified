@@ -9,6 +9,7 @@ from services.cmd.executors.play import exec_play
 from services.cmd.executors.queue import exec_queue
 from services.cmd.models import CmdDefinition, CmdParameter, CmdSurface
 from services.cmd.registry import registry
+from services.game.enabled import GAME_MODE_ENABLED
 
 _bootstrapped = False
 
@@ -193,3 +194,42 @@ def ensure_cmds_registered() -> None:
             executor=exec_queue,
         )
     )
+
+    if GAME_MODE_ENABLED:
+        from services.cmd.executors.game import exec_game
+
+        registry.register(
+            CmdDefinition(
+                id="game",
+                name="game",
+                description=(
+                    "Play a video game on the emulator autonomously until a goal is reached "
+                    "(Pokemon/mGBA). Maya narrates each step and keeps playing on her own."
+                ),
+                category="Games",
+                aliases=["gamegoal", "playgame"],
+                icon="gamepad",
+                tags=["pokemon", "emulator", "mgba", "game", "autonomous"],
+                surfaces=[CmdSurface.CHAT, CmdSurface.DASHBOARD],
+                parameters=[
+                    CmdParameter(
+                        name="goal",
+                        type="string",
+                        required=True,
+                        description="Clear win condition visible on screen",
+                    ),
+                    CmdParameter(
+                        name="profile_id",
+                        type="string",
+                        default="pokemon_gba",
+                        description="Game profile id (default pokemon_gba)",
+                    ),
+                ],
+                examples=[
+                    "/game get through Professor Oak intro",
+                    "/game reach the end of the game",
+                    "/game choose starter Pokemon",
+                ],
+                executor=exec_game,
+            )
+        )
