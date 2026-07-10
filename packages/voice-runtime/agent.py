@@ -3324,7 +3324,7 @@ class VoiceAgent:
 
     def _synthesize_wav_bytes(
         self, text: str, *, instruct: str | None = None, xvec_only: bool | None = None
-    ) -> tuple[bytes, int]:
+    ) -> tuple[bytes, int, dict[str, float]]:
         """Render TTS to WAV bytes without dashboard side effects."""
         import io
         import time
@@ -3403,7 +3403,7 @@ class VoiceAgent:
             log.info("discord voice clip skipped — inference busy (voice swap or live session)")
             return None
         try:
-            wav, _ = self.render_speech(clipped)
+            wav, *_ = self.render_speech(clipped)
             return wav
         except Exception as exc:  # noqa: BLE001
             log.warning("discord voice clip failed: %s", exc)

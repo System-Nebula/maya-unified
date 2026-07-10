@@ -33,6 +33,40 @@ from .registry import ToolSpec
 log = get_logger("discord")
 
 FFMPEG_PIPE_BEFORE = "-nostdin"
+
+# Mirror local smart-barge filters (avoid importing agent → circular).
+_VC_FILLER = {
+    "um", "uh", "uhm", "hm", "hmm", "mm", "mmm", "ah", "er", "erm", "huh",
+    "oh", "eh", "umm", "uhh", "mhm", "uh-huh",
+}
+_VC_BARGE_JUNK = {
+    "you", "the", "a", "an", "i", "it", "is", "be", "we", "me", "my", "he", "she",
+    "beep", "boop", "boom", "bang", "baa", "ba", "la", "ha", "uh", "um", "oh",
+    "wow", "huh", "what", "that", "this",
+}
+
+
+def _vc_meaningful_transcript(text: str) -> bool:
+    """True if STT looks like real user speech worth interrupting for."""
+    stripped = (text or "").strip()
+    if len(stripped) < 2:
+        return False
+    words = re.findall(r"[a-z']+", stripped.lower())
+    if not words or not any(w not in _VC_FILLER for w in words):
+        return False
+    if len(words) == 1:
+        w = words[0]
+        if w in _VC_BARGE_JUNK or len(w) <= 3:
+            return False
+        if len(w) >= 4 and len(set(w)) <= 2:
+            return False
+    for w in words:
+        if len(w) >= 4 and len(set(w)) == 1:
+            return False
+    if len(words) >= 2 and len(set(words)) == 1:
+        return False
+    return True
+
 FFMPEG_OPTS = "-vn"
 
 _YTDLP_EXTRACT_OPTS = {
@@ -306,10 +340,15 @@ class DiscordManager:
         self._on_vc_utterance = on_vc_utterance
         self._transcribe_fn = transcribe_fn
         self._reply_cooldown_sec = 2.5
-        self._vc_reply_cooldown_sec = 3.5
+        self._vc_reply_cooldown_sec = 0.6
         self._last_reply_at: dict[int, float] = {}
         self._last_vc_reply_at: dict[int, float] = {}
-        self._vc_busy = threading.Lock()
+        self._vc_payload_q: deque = deque()
+        self._vc_drain_scheduled = False
+        self._vc_turn_lock: Optional[asyncio.Lock] = None
+        self._vc_reply_gen = 0
+        self._vc_speaking = False
+        self._last_vc_bot_text = ""
         self._now_playing: Optional[str] = None
         self._queue: deque[_QueueItem] = deque()
         self._play_generation = 0
@@ -521,6 +560,7 @@ class DiscordManager:
         intents.voice_states = True
         intents.message_content = True
         intents.guild_messages = True
+        intents.members = True  # resolve VC speakers for DAVE SSRC mapping
         self._client = discord.Client(intents=intents)
         manager = self
 
@@ -1176,7 +1216,14 @@ class DiscordManager:
         if self._listening and getattr(voice, "recording", False):
             return True
         await self._stop_voice_listen()
+        from services.discord.dave_receive_patch import (
+            apply_dave_receive_patches,
+            wait_for_dave_ready,
+        )
         from tools.discord_vc_listen import build_utterance_sink
+
+        apply_dave_receive_patches()
+        await wait_for_dave_ready(voice)
 
         bot_id = self._client.user.id if self._client and self._client.user else None
 
@@ -1185,7 +1232,11 @@ class DiscordManager:
                 return
             asyncio.run_coroutine_threadsafe(self._handle_vc_utterance(payload), self._loop)
 
-        sink = build_utterance_sink(on_utterance=_on_raw, bot_user_id=bot_id)
+        sink = build_utterance_sink(
+            on_utterance=_on_raw,
+            bot_user_id=bot_id,
+            voice_client=voice,
+        )
         ch = voice.channel
         sink.set_channel_meta(
             channel_name=ch.name if ch else "",
@@ -1193,16 +1244,28 @@ class DiscordManager:
             guild_id=ch.guild.id if ch and ch.guild else None,
         )
 
-        def _finished(finished_sink, *args) -> None:  # noqa: ANN001, ARG001
-            log.info("discord vc listen finished")
+        def _finished(error: Exception | None = None) -> None:
+            if error:
+                log.warning("discord vc listen stopped with error: %s", error)
+            else:
+                log.info("discord vc listen finished")
             self._listening = False
 
         try:
-            voice.start_recording(sink, _finished)
+            # py-cord always warns about DAVE; receive may still work with davey.
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="Voice reception is currently broken.*",
+                    category=RuntimeWarning,
+                )
+                voice.start_recording(sink, _finished)
             self._listen_sink = sink
             self._listening = True
             log.info(
-                "discord vc listen started in #%s (DAVE/receive via py-cord)",
+                "discord vc listen started in #%s (py-cord receive)",
                 ch.name if ch else "?",
             )
             return True
@@ -1212,66 +1275,283 @@ class DiscordManager:
             log.warning("discord vc listen failed to start: %s", exc)
             return False
 
+    def _vc_barge_mode(self) -> str:
+        """Discord VC barge policy. ``off`` disables interrupt; else smart/instant."""
+        mode = str(getattr(CONFIG.audio, "barge_mode", "smart") or "smart").lower()
+        if mode == "off":
+            return "off"
+        if mode not in ("smart", "instant"):
+            return "smart"
+        return mode
+
+    def _vc_is_reply_playing(self) -> bool:
+        if self._now_playing:
+            return False
+        voice = self._sync_active_voice()
+        if voice is None:
+            return False
+        return bool(self._vc_speaking or voice.is_playing() or voice.is_paused())
+
+    def _vc_looks_like_bot_echo(self, text: str) -> bool:
+        last = (self._last_vc_bot_text or "").lower()
+        t = (text or "").lower().strip()
+        if not last or len(t) < 4:
+            return False
+        tw = set(re.findall(r"[a-z']+", t))
+        lw = set(re.findall(r"[a-z']+", last))
+        if not tw:
+            return False
+        overlap = len(tw & lw) / float(len(tw))
+        return overlap >= 0.72 and len(tw) <= 14
+
+    def _interrupt_vc_reply(self, reason: str = "barge-in") -> bool:
+        """Stop current spoken VC reply (never music). Returns True if stopped."""
+        if self._now_playing:
+            return False
+        voice = self._sync_active_voice()
+        if voice is None:
+            return False
+        if not (self._vc_speaking or voice.is_playing() or voice.is_paused()):
+            return False
+        self._vc_reply_gen += 1
+        self._vc_speaking = False
+        self._force_stop_playback(voice)
+        log.info("vc reply interrupted (%s)", reason)
+        return True
+
     async def _handle_vc_utterance(self, payload: dict[str, Any]) -> None:
         if not self._voice_listen_enabled() or not self._on_vc_utterance:
             return
-        author_id = int(payload.get("author_id") or 0)
-        now = time.monotonic()
-        if now - self._last_vc_reply_at.get(author_id, 0) < self._vc_reply_cooldown_sec:
+        self._vc_payload_q.append(payload)
+        if self._loop is None:
             return
-        if not self._vc_busy.acquire(blocking=False):
+        if self._vc_drain_scheduled:
             return
+        self._vc_drain_scheduled = True
+        asyncio.run_coroutine_threadsafe(self._drain_vc_utterances(), self._loop)
+
+    async def _drain_vc_utterances(self) -> None:
+        """Process VC clips concurrently with playback (duplex).
+
+        Each clip is STT'd in its own task so listening continues while a reply
+        is composing/playing. Meaningful transcripts barge in and cancel audio.
+        """
         try:
-            pcm = payload.get("pcm_mono_16k")
-            sr = int(payload.get("sample_rate") or 16000)
-            if pcm is None or self._transcribe_fn is None:
-                return
-            loop = asyncio.get_event_loop()
-            try:
-                text = await loop.run_in_executor(
-                    None, lambda: self._transcribe_fn(pcm, sr),
+            if self._vc_turn_lock is None:
+                self._vc_turn_lock = asyncio.Lock()
+            tasks: list[asyncio.Task] = []
+            while self._vc_payload_q:
+                payload = self._merge_queued_vc_payloads(self._vc_payload_q.popleft())
+                tasks.append(
+                    asyncio.create_task(
+                        self._process_vc_utterance(payload),
+                        name="discord-vc-utterance",
+                    )
                 )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("vc STT failed: %s", exc)
-                return
-            text = (text or "").strip()
-            if len(text) < 2:
-                return
-            context = {
-                "trigger": "vc_speech",
-                "channel": payload.get("channel") or "",
-                "guild": payload.get("guild"),
-                "guild_id": payload.get("guild_id"),
-                "author": payload.get("author") or str(author_id),
-                "author_id": author_id,
-                "content": text,
-                "duration_sec": payload.get("duration_sec"),
-            }
-            log.info(
-                "vc transcript [%s]: %s",
-                context["author"],
-                text[:160],
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception):
+                        log.warning("vc utterance task failed: %s", result)
+        finally:
+            self._vc_drain_scheduled = False
+            if self._vc_payload_q and self._loop is not None:
+                self._vc_drain_scheduled = True
+                self._loop.create_task(self._drain_vc_utterances())
+
+    def _merge_queued_vc_payloads(self, first: dict[str, Any]) -> dict[str, Any]:
+        """Concatenate back-to-back clips from the same speaker before STT."""
+        import numpy as np
+
+        author_id = int(first.get("author_id") or 0)
+        chunks = [first.get("pcm_mono_16k")]
+        dur = float(first.get("duration_sec") or 0)
+        while self._vc_payload_q:
+            nxt = self._vc_payload_q[0]
+            if int(nxt.get("author_id") or 0) != author_id:
+                break
+            nxt_dur = float(nxt.get("duration_sec") or 0)
+            if dur + nxt_dur > 12.0:
+                break
+            if dur >= 2.5 and nxt_dur >= 2.0:
+                break
+            self._vc_payload_q.popleft()
+            chunks.append(nxt.get("pcm_mono_16k"))
+            dur += nxt_dur
+        valid = [c for c in chunks if c is not None]
+        if len(valid) <= 1:
+            return first
+        merged = dict(first)
+        try:
+            mono = np.concatenate(
+                [np.asarray(c, dtype=np.int16).reshape(-1) for c in valid]
             )
+        except Exception:  # noqa: BLE001
+            return first
+        merged["pcm_mono_16k"] = mono
+        merged["duration_sec"] = round(
+            float(mono.size) / float(first.get("sample_rate") or 16000), 3
+        )
+        log.info(
+            "vc queue-merge author=%s parts=%s dur=%.2fs",
+            author_id,
+            len(valid),
+            merged["duration_sec"],
+        )
+        return merged
+
+    async def _process_vc_utterance(self, payload: dict[str, Any]) -> None:
+        if not self._voice_listen_enabled() or not self._on_vc_utterance:
+            return
+        author_id = int(payload.get("author_id") or 0)
+        pcm = payload.get("pcm_mono_16k")
+        sr = int(payload.get("sample_rate") or 16000)
+        if pcm is None or self._transcribe_fn is None:
+            return
+        loop = asyncio.get_event_loop()
+        try:
+            text = await loop.run_in_executor(
+                None, lambda: self._transcribe_fn(pcm, sr),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("vc STT failed: %s", exc)
+            return
+        text = (text or "").strip()
+        if len(text) < 2:
+            log.info(
+                "vc STT empty/short author=%s dur=%s text=%r",
+                payload.get("author") or author_id,
+                payload.get("duration_sec"),
+                text,
+            )
+            return
+
+        # Cutoff hold — wait for follow-up audio before committing.
+        if text.endswith(("-", "…", "...", ",")) or text.rstrip(".").endswith(
+            (" that's", " I'm", " I said")
+        ):
+            await asyncio.sleep(0.75)
+            if self._vc_payload_q and int(self._vc_payload_q[0].get("author_id") or 0) == author_id:
+                self._vc_payload_q.appendleft(payload)
+                merged = self._merge_queued_vc_payloads(self._vc_payload_q.popleft())
+                if float(merged.get("duration_sec") or 0) > float(payload.get("duration_sec") or 0) + 0.2:
+                    await self._process_vc_utterance(merged)
+                    return
+
+        barge_mode = self._vc_barge_mode()
+        playing = self._vc_is_reply_playing()
+        barged = False
+        if playing:
+            if barge_mode == "off":
+                # Half-duplex: ignore user speech until bot finishes.
+                log.info("vc speech ignored while speaking (barge_mode=off): %r", text[:80])
+                return
+            if self._vc_looks_like_bot_echo(text):
+                log.info("vc barge ignored (bot echo): %r", text[:80])
+                return
+            if barge_mode == "smart" and not _vc_meaningful_transcript(text):
+                log.info("vc barge ignored (weak transcript): %r", text[:80])
+                return
+            if barge_mode == "instant" and not _vc_meaningful_transcript(text) and len(text) < 4:
+                return
+            barged = self._interrupt_vc_reply("barge-in")
+            if barged:
+                log.info("vc barge-in [%s]: %s", payload.get("author") or author_id, text[:160])
+
+        if not barged:
+            wait = self._vc_reply_cooldown_sec - (
+                time.monotonic() - self._last_vc_reply_at.get(author_id, 0)
+            )
+            if wait > 0:
+                await asyncio.sleep(wait)
+
+        if not _vc_meaningful_transcript(text) and len(text.split()) < 2:
+            log.info("vc transcript skipped (not meaningful): %r", text[:80])
+            return
+
+        context = {
+            "trigger": "vc_barge" if barged else "vc_speech",
+            "channel": payload.get("channel") or "",
+            "guild": payload.get("guild"),
+            "guild_id": payload.get("guild_id"),
+            "author": payload.get("author") or str(author_id),
+            "author_id": author_id,
+            "content": text,
+            "duration_sec": payload.get("duration_sec"),
+            "barged": barged,
+        }
+        log.info(
+            "vc transcript [%s]%s: %s",
+            context["author"],
+            " (barge)" if barged else "",
+            text[:160],
+        )
+
+        if self._vc_turn_lock is None:
+            self._vc_turn_lock = asyncio.Lock()
+
+        async with self._vc_turn_lock:
+            # Re-check after waiting — bot may have started speaking since STT.
+            if not barged and self._vc_is_reply_playing() and barge_mode != "off":
+                if self._vc_looks_like_bot_echo(text):
+                    log.info("vc barge ignored under lock (bot echo): %r", text[:80])
+                    return
+                if barge_mode == "smart" and not _vc_meaningful_transcript(text):
+                    log.info("vc barge ignored under lock (weak): %r", text[:80])
+                    return
+                barged = self._interrupt_vc_reply("barge-in-locked")
+                if barged:
+                    context["trigger"] = "vc_barge"
+                    context["barged"] = True
+                    log.info(
+                        "vc barge-in [%s]: %s",
+                        context["author"],
+                        text[:160],
+                    )
+
             reply_raw = await loop.run_in_executor(
                 None, lambda: self._on_vc_utterance(context),
             )
             reply, prebuilt = self._parse_incoming_reply(reply_raw)
             if not reply:
                 return
+            gen_at_compose = self._vc_reply_gen
             self._last_vc_reply_at[author_id] = time.monotonic()
+            self._last_vc_bot_text = reply
             wav = prebuilt
             if not wav and getattr(CONFIG.discord, "attach_voice", True) and self._voice_clip_fn:
                 wav = await loop.run_in_executor(None, lambda: self._voice_clip_fn(reply))
-            played = False
-            if wav:
-                played = await self._play_wav_bytes(wav)
-            if not played:
-                # Fall back: post text to the first text channel of the guild.
-                await self._announce_vc_reply(context, reply)
-            else:
-                log.info("vc reply spoken to %s: %s", context["author"], reply[:120])
-        finally:
-            self._vc_busy.release()
+            if gen_at_compose != self._vc_reply_gen:
+                log.info("vc reply superseded after compose — not playing")
+                return
+            play_gen = self._vc_reply_gen
+
+        # Schedule playback without blocking the drain loop (duplex STT).
+        if wav:
+            asyncio.create_task(
+                self._finish_vc_reply(wav, play_gen, context, reply),
+                name="discord-vc-reply-play",
+            )
+        else:
+            await self._announce_vc_reply(context, reply)
+
+    async def _finish_vc_reply(
+        self,
+        wav: bytes,
+        play_gen: int,
+        context: dict[str, Any],
+        reply: str,
+    ) -> None:
+        if play_gen != self._vc_reply_gen:
+            log.info("vc reply superseded before play")
+            return
+        played = await self._play_wav_bytes(wav, generation=play_gen)
+        if play_gen != self._vc_reply_gen:
+            return
+        if played:
+            log.info("vc reply spoken to %s: %s", context["author"], reply[:120])
+        else:
+            await self._announce_vc_reply(context, reply)
 
     async def _announce_vc_reply(self, context: dict[str, Any], reply: str) -> None:
         voice = self._sync_active_voice()
@@ -1296,13 +1576,15 @@ class DiscordManager:
         except Exception as exc:  # noqa: BLE001
             log.debug("vc text announce failed: %s", exc)
 
-    async def _play_wav_bytes(self, wav: bytes) -> bool:
+    async def _play_wav_bytes(self, wav: bytes, *, generation: int | None = None) -> bool:
         import tempfile
 
         import discord
 
         voice = self._sync_active_voice()
         if voice is None or not voice.is_connected():
+            return False
+        if generation is not None and generation != self._vc_reply_gen:
             return False
         if voice.is_playing() and self._now_playing:
             # Don't interrupt music with a spoken reply.
@@ -1330,16 +1612,27 @@ class DiscordManager:
                 if self._loop:
                     self._loop.call_soon_threadsafe(done.set)
 
+            self._vc_speaking = True
             voice.play(source, after=_after)
             try:
-                await asyncio.wait_for(done.wait(), timeout=90.0)
+                while not done.is_set():
+                    if generation is not None and generation != self._vc_reply_gen:
+                        self._force_stop_playback(voice)
+                        return False
+                    try:
+                        await asyncio.wait_for(done.wait(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        continue
             except asyncio.TimeoutError:
                 self._force_stop_playback(voice)
-            return True
+                return False
+            return generation is None or generation == self._vc_reply_gen
         except Exception as exc:  # noqa: BLE001
             log.warning("vc reply play failed: %s", exc)
             return False
         finally:
+            if generation is None or generation == self._vc_reply_gen:
+                self._vc_speaking = False
             if path:
                 try:
                     import os

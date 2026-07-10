@@ -74,6 +74,12 @@ def patch_voice_agent(agent: Any) -> None:
 
     patch_youtube_tools()
     if agent.discord is not None:
+        try:
+            from services.discord.dave_receive_patch import apply_dave_receive_patches
+
+            apply_dave_receive_patches()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("dave receive patch deferred: %s", exc)
         patch_discord_manager(agent.discord)
         wire_discord_voice_clip(agent)
 
