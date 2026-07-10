@@ -123,6 +123,7 @@ document.addEventListener("alpine:init", () => {
       imagine: { enabled: false, comfyui_url: "http://127.0.0.1:3030", default_model: "zit", remark_enabled: true, remark_vision_model: "openrouter/minimax/minimax-m3", director_enabled: true, director_max_iterations: 3, director_multi_critic: true, critique_vision_model: "" },
       discord: {
         enabled: false, token: "", guild_id: "", auto_reply: true, attach_voice: true,
+        voice_listen: false,
         music_volume: 0.85,
         default_voice_channel: "", voice_channel_aliases: {},
         youtube_cookies_browser: "", youtube_cookies_file: "",

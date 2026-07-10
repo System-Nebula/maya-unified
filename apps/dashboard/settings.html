@@ -1054,6 +1054,13 @@
                 <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.discord.attach_voice" @change="save()" /><span class="slider"></span></label></div>
               </div>
               <div class="mv-list-row">
+                <div class="lhs">
+                  <div class="mv-row-label">Listen in voice channels</div>
+                  <div class="mv-row-hint">Pycord receive — transcribe speakers in VC and reply with TTS. Requires Connect + Speak; DAVE encryption needs py-cord 2.8+.</div>
+                </div>
+                <div class="rhs"><label class="mv-switch"><input type="checkbox" x-model="s.discord.voice_listen" @change="save()" /><span class="slider"></span></label></div>
+              </div>
+              <div class="mv-list-row">
                 <div class="lhs"><div class="mv-row-label">Music volume</div></div>
                 <div class="rhs">
                   <input type="range" class="mv-range" min="0" max="2" step="0.05" x-model.number="s.discord.music_volume" @change="save()" />

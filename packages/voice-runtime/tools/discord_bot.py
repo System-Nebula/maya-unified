@@ -1,6 +1,6 @@
 """Discord voice tools: connect, join a channel, play YouTube audio.
 
-Runs a discord.py client on a background thread so synchronous tool handlers
+Runs a py-cord (Pycord) client on a background thread so synchronous tool handlers
 can schedule coroutines safely. Requires:
 
   - Bot token in VA_DISCORD_TOKEN (Bot scope; enable Voice + Connect intents)
@@ -8,6 +8,7 @@ can schedule coroutines safely. Requires:
   - Bot invited to your server with Connect + Speak permissions
   - Read Message History on text channels you want to summarize
   - Message Content intent enabled in the Discord Developer Portal (for reliable reads)
+  - Optional VC listen/transcribe via Pycord sinks (discord.voice_listen)
 """
 
 from __future__ import annotations
@@ -263,6 +264,10 @@ class _QueueItem:
 
 IncomingMessageHandler = Callable[[dict[str, Any]], Optional[str] | tuple[str, Optional[bytes]]]
 VoiceClipHandler = Callable[[str], Optional[bytes]]
+# Returns reply text (and optional prebuilt WAV) for a transcribed VC utterance.
+VCUtteranceHandler = Callable[[dict[str, Any]], Optional[str] | tuple[str, Optional[bytes]]]
+# (mono int16 ndarray, sample_rate) -> transcript text
+TranscribeHandler = Callable[[Any, int], str]
 
 
 def _discord_files_from_wav(wav: Optional[bytes]) -> list:
@@ -281,7 +286,7 @@ def _discord_files_from_wav(wav: Optional[bytes]) -> list:
 
 
 class DiscordManager:
-    """Thread-hosted discord.py client with voice + YouTube playback."""
+    """Thread-hosted py-cord client with voice playback + optional VC listen."""
 
     def __init__(
         self,
@@ -290,14 +295,21 @@ class DiscordManager:
         music_volume: float = 0.85,
         on_incoming_message: IncomingMessageHandler | None = None,
         voice_clip_fn: VoiceClipHandler | None = None,
+        on_vc_utterance: VCUtteranceHandler | None = None,
+        transcribe_fn: TranscribeHandler | None = None,
     ):
         self.token = token.strip()
         self._default_guild_id = int(default_guild_id) if default_guild_id else None
         self._music_volume = max(0.0, min(2.0, float(music_volume)))
         self._on_incoming_message = on_incoming_message
         self._voice_clip_fn = voice_clip_fn
+        self._on_vc_utterance = on_vc_utterance
+        self._transcribe_fn = transcribe_fn
         self._reply_cooldown_sec = 2.5
+        self._vc_reply_cooldown_sec = 3.5
         self._last_reply_at: dict[int, float] = {}
+        self._last_vc_reply_at: dict[int, float] = {}
+        self._vc_busy = threading.Lock()
         self._now_playing: Optional[str] = None
         self._queue: deque[_QueueItem] = deque()
         self._play_generation = 0
@@ -309,6 +321,8 @@ class DiscordManager:
         self._thread: Optional[threading.Thread] = None
         self._client = None
         self._voice = None
+        self._listen_sink = None
+        self._listening = False
         self._ready = threading.Event()
         self._start_error: Optional[str] = None
         self._lock = threading.Lock()
@@ -532,6 +546,7 @@ class DiscordManager:
         self._queue.clear()
         self._queue_halted = True
         self._play_generation += 1
+        await self._stop_voice_listen()
         if self._voice and self._voice.is_connected():
             if self._voice.is_playing():
                 self._voice.stop()
@@ -566,6 +581,7 @@ class DiscordManager:
                 "volume_percent": int(round(self._music_volume * 100)),
                 "queue_length": len(self._queue),
                 "queue": [item.query for item in list(self._queue)[:5]],
+                "listening": self._listening,
             }
         return {
             "connected": True,
@@ -573,6 +589,8 @@ class DiscordManager:
             "guilds": guilds,
             "voice": voice_info,
             "music_volume": self._music_volume,
+            "voice_listen": self._voice_listen_enabled(),
+            "listening": self._listening,
         }
 
     def _sync_active_voice(self):
@@ -1117,6 +1135,219 @@ class DiscordManager:
             "messages": messages,
         }
 
+    def _voice_listen_enabled(self) -> bool:
+        return bool(getattr(CONFIG.discord, "voice_listen", False))
+
+    async def _stop_voice_listen(self) -> None:
+        voice = self._sync_active_voice()
+        sink = self._listen_sink
+        self._listen_sink = None
+        self._listening = False
+        if voice is None:
+            if sink is not None:
+                try:
+                    sink.cleanup()
+                except Exception:  # noqa: BLE001
+                    pass
+            return
+        try:
+            if getattr(voice, "recording", False) or getattr(voice, "listening", False):
+                if hasattr(voice, "stop_recording"):
+                    voice.stop_recording()
+                elif hasattr(voice, "stop_listening"):
+                    voice.stop_listening()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("stop_recording: %s", exc)
+        if sink is not None:
+            try:
+                sink.cleanup()
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _ensure_voice_listen(self) -> bool:
+        if not self._voice_listen_enabled():
+            return False
+        if not self._on_vc_utterance or not self._transcribe_fn:
+            log.debug("vc listen skipped — missing utterance/transcribe handlers")
+            return False
+        voice = self._sync_active_voice()
+        if voice is None or not voice.is_connected():
+            return False
+        if self._listening and getattr(voice, "recording", False):
+            return True
+        await self._stop_voice_listen()
+        from tools.discord_vc_listen import build_utterance_sink
+
+        bot_id = self._client.user.id if self._client and self._client.user else None
+
+        def _on_raw(payload: dict[str, Any]) -> None:
+            if self._loop is None:
+                return
+            asyncio.run_coroutine_threadsafe(self._handle_vc_utterance(payload), self._loop)
+
+        sink = build_utterance_sink(on_utterance=_on_raw, bot_user_id=bot_id)
+        ch = voice.channel
+        sink.set_channel_meta(
+            channel_name=ch.name if ch else "",
+            guild_name=ch.guild.name if ch and ch.guild else "",
+            guild_id=ch.guild.id if ch and ch.guild else None,
+        )
+
+        def _finished(finished_sink, *args) -> None:  # noqa: ANN001, ARG001
+            log.info("discord vc listen finished")
+            self._listening = False
+
+        try:
+            voice.start_recording(sink, _finished)
+            self._listen_sink = sink
+            self._listening = True
+            log.info(
+                "discord vc listen started in #%s (DAVE/receive via py-cord)",
+                ch.name if ch else "?",
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._listening = False
+            self._listen_sink = None
+            log.warning("discord vc listen failed to start: %s", exc)
+            return False
+
+    async def _handle_vc_utterance(self, payload: dict[str, Any]) -> None:
+        if not self._voice_listen_enabled() or not self._on_vc_utterance:
+            return
+        author_id = int(payload.get("author_id") or 0)
+        now = time.monotonic()
+        if now - self._last_vc_reply_at.get(author_id, 0) < self._vc_reply_cooldown_sec:
+            return
+        if not self._vc_busy.acquire(blocking=False):
+            return
+        try:
+            pcm = payload.get("pcm_mono_16k")
+            sr = int(payload.get("sample_rate") or 16000)
+            if pcm is None or self._transcribe_fn is None:
+                return
+            loop = asyncio.get_event_loop()
+            try:
+                text = await loop.run_in_executor(
+                    None, lambda: self._transcribe_fn(pcm, sr),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("vc STT failed: %s", exc)
+                return
+            text = (text or "").strip()
+            if len(text) < 2:
+                return
+            context = {
+                "trigger": "vc_speech",
+                "channel": payload.get("channel") or "",
+                "guild": payload.get("guild"),
+                "guild_id": payload.get("guild_id"),
+                "author": payload.get("author") or str(author_id),
+                "author_id": author_id,
+                "content": text,
+                "duration_sec": payload.get("duration_sec"),
+            }
+            log.info(
+                "vc transcript [%s]: %s",
+                context["author"],
+                text[:160],
+            )
+            reply_raw = await loop.run_in_executor(
+                None, lambda: self._on_vc_utterance(context),
+            )
+            reply, prebuilt = self._parse_incoming_reply(reply_raw)
+            if not reply:
+                return
+            self._last_vc_reply_at[author_id] = time.monotonic()
+            wav = prebuilt
+            if not wav and getattr(CONFIG.discord, "attach_voice", True) and self._voice_clip_fn:
+                wav = await loop.run_in_executor(None, lambda: self._voice_clip_fn(reply))
+            played = False
+            if wav:
+                played = await self._play_wav_bytes(wav)
+            if not played:
+                # Fall back: post text to the first text channel of the guild.
+                await self._announce_vc_reply(context, reply)
+            else:
+                log.info("vc reply spoken to %s: %s", context["author"], reply[:120])
+        finally:
+            self._vc_busy.release()
+
+    async def _announce_vc_reply(self, context: dict[str, Any], reply: str) -> None:
+        voice = self._sync_active_voice()
+        guild = voice.guild if voice else None
+        if guild is None and context.get("guild_id") and self._client:
+            guild = self._client.get_guild(int(context["guild_id"]))
+        if guild is None:
+            return
+        channel = None
+        for ch in guild.text_channels:
+            if ch.permissions_for(guild.me).send_messages:
+                channel = ch
+                break
+        if channel is None:
+            return
+        author = context.get("author") or "someone"
+        body = f"**{author}** (VC): {context.get('content', '')}\n**Maya:** {reply}"
+        if len(body) > 1900:
+            body = body[:1897] + "..."
+        try:
+            await channel.send(body)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("vc text announce failed: %s", exc)
+
+    async def _play_wav_bytes(self, wav: bytes) -> bool:
+        import tempfile
+
+        import discord
+
+        voice = self._sync_active_voice()
+        if voice is None or not voice.is_connected():
+            return False
+        if voice.is_playing() and self._now_playing:
+            # Don't interrupt music with a spoken reply.
+            log.info("vc reply deferred — music is playing")
+            return False
+        if voice.is_playing():
+            self._force_stop_playback(voice)
+        path = None
+        try:
+            fd, path = tempfile.mkstemp(suffix=".wav")
+            import os
+
+            os.close(fd)
+            with open(path, "wb") as fh:
+                fh.write(wav)
+            source = discord.PCMVolumeTransformer(
+                discord.FFmpegPCMAudio(path),
+                volume=self._music_volume,
+            )
+            done = asyncio.Event()
+
+            def _after(err: Optional[Exception]) -> None:
+                if err:
+                    log.warning("vc reply playback error: %s", err)
+                if self._loop:
+                    self._loop.call_soon_threadsafe(done.set)
+
+            voice.play(source, after=_after)
+            try:
+                await asyncio.wait_for(done.wait(), timeout=90.0)
+            except asyncio.TimeoutError:
+                self._force_stop_playback(voice)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("vc reply play failed: %s", exc)
+            return False
+        finally:
+            if path:
+                try:
+                    import os
+
+                    os.remove(path)
+                except OSError:
+                    pass
+
     async def _join_voice(self, channel_name: str, guild_name: str | None) -> dict[str, Any]:
         import discord
 
@@ -1133,22 +1364,32 @@ class DiscordManager:
 
         if self._voice and self._voice.is_connected():
             if self._voice.channel and self._voice.channel.id == channel.id:
+                await self._ensure_voice_listen()
                 return {
                     "joined": channel.name,
                     "guild": guild.name,
                     "already": True,
+                    "listening": self._listening,
                 }
+            await self._stop_voice_listen()
             await self._voice.move_to(channel)
         else:
+            await self._stop_voice_listen()
             self._voice = await channel.connect(reconnect=True, timeout=30.0)
 
         self._voice = self._sync_active_voice() or self._voice
-        return {"joined": channel.name, "guild": guild.name}
+        await self._ensure_voice_listen()
+        return {
+            "joined": channel.name,
+            "guild": guild.name,
+            "listening": self._listening,
+        }
 
     async def _leave_voice(self) -> dict[str, Any]:
         voice = self._sync_active_voice()
         if not voice or not voice.is_connected():
             return {"left": False, "reason": "not in a voice channel"}
+        await self._stop_voice_listen()
         self._queue.clear()
         self._queue_halted = True
         self._invalidate_playback()

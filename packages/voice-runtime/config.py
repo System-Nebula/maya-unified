@@ -301,6 +301,8 @@ class DiscordConfig:
     auto_reply: bool = field(default_factory=lambda: _env_bool("VA_DISCORD_AUTO_REPLY", True))
     # Attach a TTS WAV clip alongside text replies in Discord channels.
     attach_voice: bool = field(default_factory=lambda: _env_bool("VA_DISCORD_ATTACH_VOICE", True))
+    # Listen to Discord VC audio (py-cord sinks), transcribe speakers, and reply.
+    voice_listen: bool = field(default_factory=lambda: _env_bool("VA_DISCORD_VOICE_LISTEN", False))
 
 
 @dataclass

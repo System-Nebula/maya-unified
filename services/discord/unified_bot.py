@@ -26,6 +26,8 @@ def apply_discord_env(settings: dict) -> None:
             os.environ["VA_DISCORD_AUTO_REPLY"] = "1" if disc.get("auto_reply") else "0"
         if disc.get("attach_voice") is not None:
             os.environ["VA_DISCORD_ATTACH_VOICE"] = "1" if disc.get("attach_voice") else "0"
+        if disc.get("voice_listen") is not None:
+            os.environ["VA_DISCORD_VOICE_LISTEN"] = "1" if disc.get("voice_listen") else "0"
     imagine = get_imagine_settings(settings)
     if imagine.get("comfyui_url"):
         os.environ["COMFYUI_API_URL"] = str(imagine["comfyui_url"])

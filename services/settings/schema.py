@@ -93,6 +93,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "guild_id": "",
         "auto_reply": True,
         "attach_voice": True,
+        "voice_listen": False,
         "music_volume": 0.85,
         "voice_channel_aliases": {},
         "default_voice_channel": "",

@@ -40,7 +40,7 @@ mcp
 fastembed
 
 # Discord voice + YouTube playback tools (optional; set VA_DISCORD_TOKEN).
-discord.py[voice]>=2.3.2
+py-cord[voice]>=2.8.0
 yt-dlp>=2024.1.0
 
 # Web search + weather tools (optional; VA_WEB_TOOLS_ENABLED=1 by default).

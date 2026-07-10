@@ -718,6 +718,8 @@ class VoiceAgent:
                     music_volume=CONFIG.discord.music_volume,
                     on_incoming_message=self._compose_discord_incoming_reply,
                     voice_clip_fn=self._discord_voice_clip,
+                    on_vc_utterance=self._compose_discord_vc_reply,
+                    transcribe_fn=self._discord_transcribe_pcm,
                 )
                 registry.register_many(build_discord_tools(self.discord))
                 if CONFIG.discord.auto_reply:
@@ -2367,6 +2369,72 @@ class VoiceAgent:
                 return text
         except Exception as exc:  # noqa: BLE001
             log.warning("discord incoming reply failed: %s", exc)
+        return None
+
+    def _discord_transcribe_pcm(self, audio, sample_rate: int) -> str:
+        """STT bridge for Discord VC utterances (runs off the Discord loop)."""
+        if self.stt is None:
+            return ""
+        try:
+            return self.stt.transcribe_array(audio, sample_rate) or ""
+        except Exception as exc:  # noqa: BLE001
+            log.warning("discord vc STT failed: %s", exc)
+            return ""
+
+    def _compose_discord_vc_reply(self, context: dict) -> Optional[str]:
+        """Compose a spoken Discord VC reply from a transcribed utterance."""
+        author = (context.get("author") or "someone").strip()
+        content = (context.get("content") or "").strip()
+        if not content:
+            return None
+        scope = self._memory_scope_from_discord_context(context)
+        if self.memory is not None:
+            self.memory.set_turn_scope(scope)
+        channel = context.get("channel") or "voice"
+        user_turn = (
+            f"Discord voice channel #{channel}: {author} said: {content}\n\n"
+            f"Reply to {author} out loud in character. Keep it under 280 characters."
+        )
+        if self.memory is not None:
+            pre = self.memory.prefetch_context(user_turn, scope=scope)
+            if pre:
+                user_turn = f"{pre}\n\n{user_turn}"
+        messages = [
+            {
+                "role": "system",
+                "content": self._discord_compose_system(
+                    "You are in a Discord voice call. Someone just spoke. "
+                    "Output ONLY the spoken reply — no quotes, labels, markdown, "
+                    "or stage directions. Keep it to one or two short sentences."
+                ),
+            },
+            {"role": "user", "content": user_turn},
+        ]
+        try:
+            resp = self.llm.complete(messages, max_tokens=180)
+            text = self._clean_discord_text(resp.content or "")
+            if text:
+                text = text[:800]
+                try:
+                    self._emit({
+                        "type": "user",
+                        "text": f"[Discord VC | {author}] {content}",
+                    })
+                    self._emit({"type": "assistant", "text": text})
+                except Exception:  # noqa: BLE001
+                    pass
+                if self.memory is not None:
+                    try:
+                        self.memory.schedule_review(
+                            f"[VC {author}]: {content}",
+                            text,
+                            scope=scope,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("discord vc review failed: %s", exc)
+                return text
+        except Exception as exc:  # noqa: BLE001
+            log.warning("discord vc reply compose failed: %s", exc)
         return None
 
     def _summarize_channel_messages(

@@ -262,6 +262,8 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
         CONFIG.discord.auto_reply = bool(disc["auto_reply"])
     if disc.get("attach_voice") is not None:
         CONFIG.discord.attach_voice = bool(disc["attach_voice"])
+    if disc.get("voice_listen") is not None:
+        CONFIG.discord.voice_listen = bool(disc["voice_listen"])
     if disc.get("music_volume") is not None:
         CONFIG.discord.music_volume = float(disc["music_volume"])
 
@@ -360,6 +362,13 @@ def _overlay_env_vars(settings: dict[str, Any]) -> None:
         )
     if os.environ.get("VA_DISCORD_ATTACH_VOICE") is not None:
         discord["attach_voice"] = os.environ.get("VA_DISCORD_ATTACH_VOICE", "1").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    if os.environ.get("VA_DISCORD_VOICE_LISTEN") is not None:
+        discord["voice_listen"] = os.environ.get("VA_DISCORD_VOICE_LISTEN", "0").strip().lower() in (
             "1",
             "true",
             "yes",
