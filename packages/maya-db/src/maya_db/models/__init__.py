@@ -69,8 +69,12 @@ from maya_db.models.research import (
     ResearchTopicEmbedding,
 )
 from maya_db.models.capture import BrowserCaptureOutbox, Capture
+from maya_db.models.kb import AtomicNote, NoteEdge, NoteImage
 
 __all__ = [
+    "AtomicNote",
+    "NoteEdge",
+    "NoteImage",
     "BrowserCaptureOutbox",
     "Capture",
     "GoogleConnection",

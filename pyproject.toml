@@ -41,6 +41,7 @@ dependencies = [
     "maya-graph",
     "json-repair>=0.61.2",
     "maya-feeds",
+    "mia-docs[embed]",
 ]
 
 [project.optional-dependencies]
@@ -109,6 +110,7 @@ maya-graph = { workspace = true }
 maya-research = { workspace = true }
 maya-image = { workspace = true }
 maya-spider = { workspace = true }
+mia-docs = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

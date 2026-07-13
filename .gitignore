@@ -55,3 +55,6 @@ docs/.quartz-cache/
 
 # runtime-generated research artifacts
 apps/maya-gateway/src/maya_gateway/static/artifacts/
+
+# cookbook media extracted by sk mine --images (regenerable from source PDFs)
+docs/content/Recipes/media/
