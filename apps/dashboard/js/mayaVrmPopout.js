@@ -68,7 +68,12 @@ async function boot() {
 }
 
 bus.on((msg) => {
-  if (!msg || !engine) return;
+  if (!msg) return;
+  if (msg.type === "popout-probe") {
+    bus.post({ type: "popout-ready" });
+    return;
+  }
+  if (!engine) return;
   if (msg.type === "lip") {
     engine.setAudioFrame({
       speaking: !!msg.speaking,

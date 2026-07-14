@@ -180,7 +180,7 @@ document.addEventListener("alpine:init", () => {
       this._bus = createVrmBus();
       this._bus.on((msg) => {
         if (msg?.type === "popout-close") this.onPopoutClosed();
-        if (msg?.type === "popout-ready" && this._popout && !this._popout.closed) {
+        if (msg?.type === "popout-ready") {
           this.poppedOut = true;
           this._engine?.dispose();
           this._engine = null;
@@ -197,28 +197,13 @@ document.addEventListener("alpine:init", () => {
       this._syncToStore();
       await this.$nextTick();
       this._unsub = window.mayaAgentEvents?.subscribe((ev) => this.onAgentEvent(ev));
-      this._attachExistingPopout();
+      // Ask an existing popout to identify itself over BroadcastChannel. Calling
+      // window.open("", name) here used to create an about:blank tab on every load.
+      this._bus.post({ type: "popout-probe" });
+      await new Promise((resolve) => setTimeout(resolve, 75));
       if (this.enabled && !this.poppedOut) {
         await this.bootViewer();
       }
-    },
-
-    _attachExistingPopout() {
-      try {
-        const w = window.open("", POPOUT_NAME);
-        if (!w || w.closed) return;
-        const path = w.location?.pathname || "";
-        if (!path.includes("/avatar/popout")) return;
-        this._popout = w;
-        this.poppedOut = true;
-        this._syncToStore();
-        const timer = setInterval(() => {
-          if (!this._popout || this._popout.closed) {
-            clearInterval(timer);
-            this.onPopoutClosed();
-          }
-        }, 500);
-      } catch (_) {}
     },
 
     destroy() {
