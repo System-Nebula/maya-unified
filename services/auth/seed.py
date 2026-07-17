@@ -1,4 +1,8 @@
-"""Auto-seed a default operator when the table is empty."""
+"""Auto-seed a default operator — disabled by default (SEC-008).
+
+First-run ownership uses POST /api/operators via /setup when the table is empty.
+Set MAYA_SEED_DEFAULT_OPERATOR=1 only for explicit local bootstrap (unsafe).
+"""
 
 from __future__ import annotations
 
@@ -28,8 +32,19 @@ def default_display_name() -> str:
     return os.getenv("OPERATOR_DEFAULT_DISPLAY", DEFAULT_OPERATOR_DISPLAY).strip()
 
 
+def seed_default_operator_enabled(environ: dict[str, str] | None = None) -> bool:
+    env = environ if environ is not None else os.environ
+    return str(env.get("MAYA_SEED_DEFAULT_OPERATOR", "") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 async def seed_default_operator_if_needed(session: AsyncSession) -> bool:
-    """Create default admin when operator_users is empty. Returns True if seeded."""
+    """Create default admin when explicitly enabled and table is empty."""
+    if not seed_default_operator_enabled():
+        return False
     if await any_operators_exist(session):
         return False
 
@@ -42,8 +57,9 @@ async def seed_default_operator_if_needed(session: AsyncSession) -> bool:
         role="admin",
         skip_password_validation=True,
     )
-    log.info(
-        "seeded default operator %s (change password in Settings → Account)",
+    log.warning(
+        "seeded default operator %s via MAYA_SEED_DEFAULT_OPERATOR "
+        "(change password immediately; prefer /setup first-run)",
         username,
     )
     return True

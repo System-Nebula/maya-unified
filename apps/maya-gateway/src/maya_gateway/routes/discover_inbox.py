@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import os
-from typing import Optional
+import html
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -20,6 +17,8 @@ from maya_gateway.services.artifact_store import (
     store_html,
 )
 from maya_gateway.services.email_parse import parse_email_newsletter
+from maya_gateway.services.email_sanitize import ARTIFACT_CSP, sanitize_email_html
+from maya_gateway.services.mailgun_webhook import verify_mailgun_signature
 from maya_gateway.services.music_projector import (
     notify_followed_operators,
     project_to_ontology,
@@ -29,7 +28,6 @@ from maya_gateway.services.music_projector import (
 router = APIRouter(prefix="/api/discover", tags=["discover-inbox"])
 
 DEFAULT_OPERATOR_ID = "local"
-_WEBHOOK_SECRET = os.getenv("DISCOVER_INBOX_WEBHOOK_SECRET", "")
 
 
 def _to_contract(row: KnowledgeItemDB) -> KnowledgeItem:
@@ -58,24 +56,6 @@ def _to_contract(row: KnowledgeItemDB) -> KnowledgeItem:
     )
 
 
-def _verify_mailgun_signature(
-    token: str | None,
-    timestamp: str | None,
-    signature: str | None,
-) -> None:
-    if not _WEBHOOK_SECRET:
-        return
-    if not token or not timestamp or not signature:
-        raise HTTPException(status_code=401, detail="missing mailgun signature")
-    digest = hmac.new(
-        _WEBHOOK_SECRET.encode(),
-        f"{timestamp}{token}".encode(),
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(digest, signature):
-        raise HTTPException(status_code=401, detail="invalid mailgun signature")
-
-
 @router.post("/inbox/webhook", response_model=KnowledgeItem)
 async def inbox_webhook(
     request: Request,
@@ -91,21 +71,26 @@ async def inbox_webhook(
     operator_id: str = DEFAULT_OPERATOR_ID,
     session: AsyncSession = Depends(get_async_session),
 ):
-    _verify_mailgun_signature(token, timestamp, signature)
+    verify_mailgun_signature(token, timestamp, signature)
     from_header = From or sender
-    html = body_html
-    if not html:
-        html = f"<html><body><pre>{body_plain}</pre></body></html>"
+    if body_html:
+        html_doc = sanitize_email_html(body_html)
+    else:
+        html_doc = (
+            "<html><body><pre>"
+            + html.escape(body_plain or "")
+            + "</pre></body></html>"
+        )
 
     parsed = parse_email_newsletter(
         from_header=from_header,
         subject=subject,
-        html=html,
+        html=html_doc,
         text=body_plain or None,
         date_header=Date or None,
     )
 
-    artifact_id, artifact_key = await store_html(html)
+    artifact_id, artifact_key = await store_html(html_doc)
     ontology_id = await project_to_ontology(parsed)
     row = await save_knowledge_item(
         session,
@@ -146,7 +131,8 @@ async def get_artifact(artifact_id: str) -> Response:
         content=body.decode("utf-8", errors="replace"),
         media_type=content_type,
         headers={
-            "Content-Security-Policy": "sandbox allow-scripts allow-same-origin",
-            "X-Frame-Options": "SAMEORIGIN",
+            "Content-Security-Policy": ARTIFACT_CSP,
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
         },
     )

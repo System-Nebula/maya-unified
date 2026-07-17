@@ -139,6 +139,9 @@ async def update_operator(
     if password is not None:
         validate_password(password)
         op.password_hash = hash_password(password)
+        from services.auth.session_version import bump_session_version
+
+        bump_session_version(str(op.id))
     await session.flush()
     return op
 
@@ -165,6 +168,9 @@ async def set_operator_banned(
         if await count_admins(session) <= 1:
             raise ValueError("cannot ban last admin")
     op.is_banned = banned
+    from services.auth.session_version import bump_session_version
+
+    bump_session_version(str(op.id))
     await session.flush()
     return op
 

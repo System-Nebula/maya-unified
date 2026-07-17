@@ -23,7 +23,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from config import CONFIG
 from observability import get_logger, span
@@ -46,6 +46,32 @@ _VC_BARGE_JUNK = {
 }
 
 
+_VC_ASR_JUNK = {
+    "okay", "ok", "the", "you", "thank you", "thanks", "hmm", "um", "uh", "yeah",
+    "yes", "no", "oh", "ah", "bye", "hello", "hi",
+}
+
+
+def _vc_should_accept_transcript(text: str, *, peak_energy: float, duration_sec: float) -> bool:
+    """Reject silence hallucinations and weak noise (muted mic / bot bleed)."""
+    from config import CONFIG
+
+    min_peak = float(getattr(CONFIG.discord, "vc_min_peak_energy", 350.0) or 350.0)
+    if peak_energy < min_peak:
+        return False
+    if not _vc_meaningful_transcript(text):
+        return False
+    norm = (text or "").strip().lower().strip(".!?")
+    if not norm:
+        return False
+    words = norm.split()
+    if len(words) <= 2 and words[0] in _VC_ASR_JUNK and peak_energy < 900:
+        return False
+    if duration_sec < 0.45 and len(norm) < 8 and peak_energy < 600:
+        return False
+    return True
+
+
 def _vc_meaningful_transcript(text: str) -> bool:
     """True if STT looks like real user speech worth interrupting for."""
     stripped = (text or "").strip()
@@ -66,6 +92,59 @@ def _vc_meaningful_transcript(text: str) -> bool:
     if len(words) >= 2 and len(set(words)) == 1:
         return False
     return True
+
+
+_VC_INCOMPLETE_TAILS = (
+    " about",
+    " about the",
+    " tell me about",
+    " tell me",
+    " what about",
+    " what's",
+    " whats",
+    " the last",
+    " the latest",
+    " posted in",
+    " posted",
+    " the",
+    " a",
+    " an",
+    " in",
+    " on",
+    " for",
+    " to",
+    " of",
+    " and",
+    " or",
+    " with",
+    " from",
+    " last",
+    " latest",
+)
+
+
+def _vc_transcript_looks_incomplete(text: str) -> bool:
+    """True when STT looks cut off mid-thought (pause before finishing)."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if raw.endswith(("-", "…", "...", ",", ";", ":")):
+        return True
+    bare = raw.rstrip(".!?…").rstrip()
+    tl = bare.lower()
+    if not tl:
+        return True
+    if tl in {
+        "can you",
+        "could you",
+        "hey can you",
+        "hey could you",
+        "tell me about",
+        "can you tell me about",
+        "could you tell me about",
+    }:
+        return True
+    return any(tl.endswith(tail) for tail in _VC_INCOMPLETE_TAILS)
 
 FFMPEG_OPTS = "-vn"
 
@@ -297,9 +376,14 @@ class _QueueItem:
 
 
 IncomingMessageHandler = Callable[[dict[str, Any]], Optional[str] | tuple[str, Optional[bytes]]]
-VoiceClipHandler = Callable[[str], Optional[bytes]]
-# Returns reply text (and optional prebuilt WAV) for a transcribed VC utterance.
-VCUtteranceHandler = Callable[[dict[str, Any]], Optional[str] | tuple[str, Optional[bytes]]]
+VoiceClipHandler = Callable[[str, Optional[str]], Optional[bytes]]
+VoiceHybridHandler = Callable[[str, Optional[str], str], Optional[bytes]]
+VoiceStreamHandler = Callable[[str, Optional[str]], Iterator[bytes]]
+# Second tuple element: prebuilt WAV bytes, or str delivery instruct for TTS.
+VCUtteranceHandler = Callable[
+    [dict[str, Any]],
+    Optional[str] | tuple[str, Optional[bytes]] | tuple[str, Optional[str]],
+]
 # (mono int16 ndarray, sample_rate) -> transcript text
 TranscribeHandler = Callable[[Any, int], str]
 
@@ -329,6 +413,8 @@ class DiscordManager:
         music_volume: float = 0.85,
         on_incoming_message: IncomingMessageHandler | None = None,
         voice_clip_fn: VoiceClipHandler | None = None,
+        voice_hybrid_fn: VoiceHybridHandler | None = None,
+        voice_stream_fn: VoiceStreamHandler | None = None,
         on_vc_utterance: VCUtteranceHandler | None = None,
         transcribe_fn: TranscribeHandler | None = None,
     ):
@@ -337,17 +423,24 @@ class DiscordManager:
         self._music_volume = max(0.0, min(2.0, float(music_volume)))
         self._on_incoming_message = on_incoming_message
         self._voice_clip_fn = voice_clip_fn
+        self._voice_hybrid_fn = voice_hybrid_fn
+        self._voice_stream_fn = voice_stream_fn
         self._on_vc_utterance = on_vc_utterance
         self._transcribe_fn = transcribe_fn
         self._reply_cooldown_sec = 2.5
-        self._vc_reply_cooldown_sec = 0.6
+        self._vc_reply_cooldown_sec = 0.25
         self._last_reply_at: dict[int, float] = {}
         self._last_vc_reply_at: dict[int, float] = {}
         self._vc_payload_q: deque = deque()
         self._vc_drain_scheduled = False
+        # author_id -> {"text", "pcm", "sr", "ts"} for mid-sentence STT fragments
+        self._vc_incomplete_hold: dict[int, dict[str, Any]] = {}
         self._vc_turn_lock: Optional[asyncio.Lock] = None
         self._vc_reply_gen = 0
         self._vc_speaking = False
+        self._vc_ducked = False
+        self._vc_pre_duck_volume: float | None = None
+        self._vc_reply_task: Optional[asyncio.Task] = None
         self._last_vc_bot_text = ""
         self._now_playing: Optional[str] = None
         self._queue: deque[_QueueItem] = deque()
@@ -375,7 +468,8 @@ class DiscordManager:
     def join_voice(self, channel_name: str, guild_name: str | None = None) -> dict[str, Any]:
         with self._lock:
             self._ensure_started()
-            return self._run(self._join_voice(channel_name, guild_name))
+            # DAVE + channel moves often exceed 30s; allow a clean reconnect cycle.
+            return self._run(self._join_voice(channel_name, guild_name), timeout=75.0)
 
     def send_channel_message(
         self,
@@ -433,6 +527,13 @@ class DiscordManager:
             if not self.is_ready():
                 return {"left": False, "reason": "not connected"}
             return self._run(self._leave_voice())
+
+    def speak_vc_followup(self, text: str) -> dict[str, Any]:
+        """Speak a background companion follow-up into the current voice channel."""
+        with self._lock:
+            if not self.is_ready():
+                return {"ok": False, "reason": "not connected"}
+            return self._run(self._speak_vc_followup(text), timeout=120.0)
 
     def play_youtube(self, query: str) -> dict[str, Any]:
         with self._lock:
@@ -898,9 +999,18 @@ class DiscordManager:
         if content:
             parts.append(content)
         for emb in msg.embeds or []:
+            url = (getattr(emb, "url", None) or "").strip()
             bit = (emb.title or emb.description or "").strip()
+            if url:
+                parts.append(url)
             if bit:
                 parts.append(f"[embed: {bit[:240]}]")
+            # Some clients put the watch link only in author/url fields.
+            for attr in ("thumbnail", "video", "author", "provider"):
+                obj = getattr(emb, attr, None)
+                nested = getattr(obj, "url", None) if obj is not None else None
+                if nested and str(nested) not in parts:
+                    parts.append(str(nested))
         if msg.attachments:
             names = ", ".join(a.filename for a in msg.attachments[:3])
             extra = len(msg.attachments) - 3
@@ -930,7 +1040,7 @@ class DiscordManager:
         loop = asyncio.get_event_loop()
         try:
             wav = await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: self._voice_clip_fn(text)),
+                loop.run_in_executor(None, lambda: self._voice_clip_fn(text, None)),
                 timeout=120.0,
             )
         except asyncio.TimeoutError:
@@ -945,15 +1055,21 @@ class DiscordManager:
         return files
 
     @staticmethod
-    def _parse_incoming_reply(raw) -> tuple[Optional[str], Optional[bytes]]:
+    def _parse_incoming_reply(
+        raw,
+    ) -> tuple[Optional[str], Optional[bytes], Optional[str]]:
         if raw is None:
-            return None, None
+            return None, None, None
         if isinstance(raw, tuple) and raw:
             text = str(raw[0] or "").strip()
-            wav = raw[1] if len(raw) > 1 and isinstance(raw[1], (bytes, bytearray)) else None
-            return text or None, bytes(wav) if wav else None
+            second = raw[1] if len(raw) > 1 else None
+            if isinstance(second, (bytes, bytearray)):
+                return text or None, bytes(second), None
+            if isinstance(second, str):
+                return text or None, None, second.strip() or None
+            return text or None, None, None
         text = str(raw).strip()
-        return text or None, None
+        return text or None, None, None
 
     def _auto_reply_enabled(self) -> bool:
         return bool(getattr(CONFIG.discord, "auto_reply", True))
@@ -983,7 +1099,7 @@ class DiscordManager:
             reply_raw = await loop.run_in_executor(
                 None, lambda: self._on_incoming_message(context),
             )
-            text, _prebuilt_wav = self._parse_incoming_reply(reply_raw)
+            text, _prebuilt_wav, _instruct = self._parse_incoming_reply(reply_raw)
             if not text:
                 return
             if len(text) > 2000:
@@ -1023,11 +1139,15 @@ class DiscordManager:
 
     async def _build_incoming_message_context(self, message, trigger: str) -> dict[str, Any]:
         recent: list[dict[str, Any]] = []
-        async for msg in message.channel.history(limit=12, before=message.created_at):
+        async for msg in message.channel.history(limit=20, before=message.created_at):
+            if getattr(msg.author, "bot", False):
+                continue
             recent.append({
                 "author": getattr(msg.author, "display_name", str(msg.author)),
                 "content": self._message_snippet(msg),
             })
+            if len(recent) >= 12:
+                break
         recent.reverse()
         return {
             "trigger": trigger,
@@ -1178,6 +1298,35 @@ class DiscordManager:
     def _voice_listen_enabled(self) -> bool:
         return bool(getattr(CONFIG.discord, "voice_listen", False))
 
+    async def _wait_recording_stopped(self, voice: Any, *, timeout: float = 2.5) -> bool:
+        """Best-effort wait until py-cord clears voice.recording after stop."""
+        if voice is None:
+            return True
+        deadline = time.monotonic() + max(0.25, timeout)
+        while time.monotonic() < deadline:
+            if not getattr(voice, "recording", False) and not getattr(
+                voice, "listening", False
+            ):
+                return True
+            try:
+                if getattr(voice, "recording", False) and hasattr(voice, "stop_recording"):
+                    voice.stop_recording()
+                elif getattr(voice, "listening", False) and hasattr(voice, "stop_listening"):
+                    voice.stop_listening()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("wait_recording_stopped: %s", exc)
+            await asyncio.sleep(0.08)
+        still = bool(
+            getattr(voice, "recording", False) or getattr(voice, "listening", False)
+        )
+        if still:
+            log.warning(
+                "voice recording flag still set after stop (recording=%s listening=%s)",
+                getattr(voice, "recording", False),
+                getattr(voice, "listening", False),
+            )
+        return not still
+
     async def _stop_voice_listen(self) -> None:
         voice = self._sync_active_voice()
         sink = self._listen_sink
@@ -1203,6 +1352,7 @@ class DiscordManager:
                 sink.cleanup()
             except Exception:  # noqa: BLE001
                 pass
+        await self._wait_recording_stopped(voice)
 
     async def _ensure_voice_listen(self) -> bool:
         if not self._voice_listen_enabled():
@@ -1213,17 +1363,37 @@ class DiscordManager:
         voice = self._sync_active_voice()
         if voice is None or not voice.is_connected():
             return False
-        if self._listening and getattr(voice, "recording", False):
+        if (
+            self._listening
+            and self._listen_sink is not None
+            and getattr(voice, "recording", False)
+        ):
             return True
         await self._stop_voice_listen()
+        voice = self._sync_active_voice() or voice
+        if voice is None or not voice.is_connected():
+            return False
         from services.discord.dave_receive_patch import (
             apply_dave_receive_patches,
+            reset_recv_stats,
             wait_for_dave_ready,
         )
         from tools.discord_vc_listen import build_utterance_sink
 
         apply_dave_receive_patches()
+        reset_recv_stats()
         await wait_for_dave_ready(voice)
+
+        try:
+            from config import CONFIG
+            from services.voice.hushmic import get_hushmic_processor
+
+            if CONFIG.audio.hushmic_enabled:
+                hm = get_hushmic_processor()
+                if hm.ready():
+                    log.info("discord vc HushMic enabled model=%s", CONFIG.audio.hushmic_model)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("discord vc HushMic preload skipped: %s", exc)
 
         bot_id = self._client.user.id if self._client and self._client.user else None
 
@@ -1232,10 +1402,26 @@ class DiscordManager:
                 return
             asyncio.run_coroutine_threadsafe(self._handle_vc_utterance(payload), self._loop)
 
+        def _bot_speaking() -> bool:
+            if self._vc_speaking:
+                return True
+            v = self._sync_active_voice()
+            return bool(v and v.is_playing() and not self._now_playing)
+
         sink = build_utterance_sink(
             on_utterance=_on_raw,
             bot_user_id=bot_id,
             voice_client=voice,
+            silence_ms=float(
+                getattr(CONFIG.discord, "vc_silence_ms", None) or CONFIG.vad.silence_ms
+            ),
+            min_ms=float(CONFIG.vad.min_speech_ms),
+            merge_ms=float(CONFIG.discord.vc_merge_ms),
+            energy_threshold=float(CONFIG.discord.vc_energy_threshold),
+            min_peak_energy=float(CONFIG.discord.vc_min_peak_energy),
+            barge_onset_ms=float(CONFIG.discord.vc_barge_onset_ms),
+            bot_speaking_fn=_bot_speaking,
+            on_barge_onset=self._vc_barge_onset,
         )
         ch = voice.channel
         sink.set_channel_meta(
@@ -1250,6 +1436,30 @@ class DiscordManager:
             else:
                 log.info("discord vc listen finished")
             self._listening = False
+            # py-cord often ends the recorder when playback is interrupted / DAVE
+            # glitches. Restart listen while we remain in the voice channel.
+            if self._loop is None or not self._voice_listen_enabled():
+                return
+
+            async def _restart_listen() -> None:
+                await asyncio.sleep(0.2)
+                voice = self._sync_active_voice()
+                if voice is None or not voice.is_connected():
+                    return
+                if self._listening and self._listen_sink is not None and getattr(
+                    voice, "recording", False
+                ):
+                    return
+                ok = await self._ensure_voice_listen()
+                if ok:
+                    log.info("discord vc listen restarted after recorder stop")
+                else:
+                    log.warning("discord vc listen failed to restart after recorder stop")
+
+            try:
+                asyncio.run_coroutine_threadsafe(_restart_listen(), self._loop)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("vc listen restart schedule failed: %s", exc)
 
         try:
             # py-cord always warns about DAVE; receive may still work with davey.
@@ -1261,7 +1471,27 @@ class DiscordManager:
                     message="Voice reception is currently broken.*",
                     category=RuntimeWarning,
                 )
-                voice.start_recording(sink, _finished)
+                for attempt in range(2):
+                    try:
+                        voice.start_recording(sink, _finished)
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        msg = str(exc).lower()
+                        if attempt == 0 and "already recording" in msg:
+                            log.warning(
+                                "discord vc listen stale recorder — forcing restart (%s)",
+                                exc,
+                            )
+                            await self._stop_voice_listen()
+                            voice = self._sync_active_voice() or voice
+                            await self._wait_recording_stopped(voice)
+                            sink.set_channel_meta(
+                                channel_name=ch.name if ch else "",
+                                guild_name=ch.guild.name if ch and ch.guild else "",
+                                guild_id=ch.guild.id if ch and ch.guild else None,
+                            )
+                            continue
+                        raise
             self._listen_sink = sink
             self._listening = True
             log.info(
@@ -1304,8 +1534,31 @@ class DiscordManager:
         overlap = len(tw & lw) / float(len(tw))
         return overlap >= 0.72 and len(tw) <= 14
 
-    def _interrupt_vc_reply(self, reason: str = "barge-in") -> bool:
-        """Stop current spoken VC reply (never music). Returns True if stopped."""
+    def _vc_barge_onset(self, user_id: int, energy: float) -> None:
+        """React to sustained barge onset while Maya is speaking."""
+        if self._vc_barge_mode() == "off":
+            return
+        if self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self._vc_barge_onset_async(user_id, energy),
+            self._loop,
+        )
+
+    async def _vc_barge_onset_async(self, user_id: int, energy: float) -> None:
+        """instant: stop; smart: duck gain until transcript decides stop/restore."""
+        mode = self._vc_barge_mode()
+        if mode == "off":
+            return
+        if mode == "instant":
+            if self._interrupt_vc_reply("barge-onset"):
+                log.info("vc barge interrupt user=%s energy=%.1f mode=instant", user_id, energy)
+            return
+        if self._duck_vc_reply():
+            log.info("vc barge duck user=%s energy=%.1f mode=smart", user_id, energy)
+
+    def _duck_vc_reply(self, factor: float = 0.12) -> bool:
+        """Lower reply playback gain without stopping (smart barge)."""
         if self._now_playing:
             return False
         voice = self._sync_active_voice()
@@ -1313,10 +1566,119 @@ class DiscordManager:
             return False
         if not (self._vc_speaking or voice.is_playing() or voice.is_paused()):
             return False
+        src = getattr(voice, "source", None)
+        try:
+            import discord as _discord
+
+            if not isinstance(src, _discord.PCMVolumeTransformer):
+                return False
+            if not self._vc_ducked:
+                self._vc_pre_duck_volume = float(src.volume)
+            base = (
+                self._vc_pre_duck_volume
+                if self._vc_pre_duck_volume is not None
+                else float(src.volume)
+            )
+            src.volume = max(0.02, float(base) * float(factor))
+            self._vc_ducked = True
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _unduck_vc_reply(self) -> None:
+        """Restore reply playback gain after a rejected smart barge."""
+        if not self._vc_ducked:
+            return
+        try:
+            voice = self._sync_active_voice()
+            src = getattr(voice, "source", None) if voice is not None else None
+            import discord as _discord
+
+            if (
+                isinstance(src, _discord.PCMVolumeTransformer)
+                and self._vc_pre_duck_volume is not None
+            ):
+                src.volume = float(self._vc_pre_duck_volume)
+        except Exception:  # noqa: BLE001
+            pass
+        self._vc_ducked = False
+        self._vc_pre_duck_volume = None
+
+    def _cancel_vc_reply_task(self) -> None:
+        task = self._vc_reply_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._vc_reply_task = None
+
+    def _spawn_vc_reply_task(self, coro, *, name: str) -> asyncio.Task:
+        """One authoritative VC reply task — cancel any prior playback worker."""
+        self._cancel_vc_reply_task()
+        task = asyncio.create_task(coro, name=name)
+        self._vc_reply_task = task
+
+        def _clear(done: asyncio.Task) -> None:
+            if self._vc_reply_task is done:
+                self._vc_reply_task = None
+            try:
+                exc = done.exception()
+            except asyncio.CancelledError:
+                return
+            except Exception:  # noqa: BLE001
+                return
+            if exc is not None:
+                log.warning("vc reply task failed: %s", exc)
+
+        task.add_done_callback(_clear)
+        return task
+
+    def _begin_vc_reply(self) -> int:
+        """Retire in-flight reply work and allocate a generation for this turn.
+
+        Music (``_now_playing``) is never interrupted here — spoken replies
+        defer to music in ``_play_wav_bytes``.
+        """
+        self._cancel_vc_reply_task()
+        if self._now_playing:
+            self._unduck_vc_reply()
+            self._vc_reply_gen += 1
+            return self._vc_reply_gen
+        if self._vc_is_reply_playing():
+            self._interrupt_vc_reply("new-turn")
+        else:
+            self._unduck_vc_reply()
+            self._vc_reply_gen += 1
+        return self._vc_reply_gen
+
+    def _vc_gen_alive(self, play_gen: int) -> bool:
+        return play_gen == self._vc_reply_gen
+
+    def _interrupt_vc_reply(self, reason: str = "barge-in") -> bool:
+        """Stop current spoken VC reply (never music). Returns True if stopped."""
+        self._unduck_vc_reply()
+        if self._now_playing:
+            return False
+        voice = self._sync_active_voice()
+        if voice is None:
+            return False
+        if not (self._vc_speaking or voice.is_playing() or voice.is_paused()):
+            return False
+        self._cancel_vc_reply_task()
         self._vc_reply_gen += 1
         self._vc_speaking = False
         self._force_stop_playback(voice)
         log.info("vc reply interrupted (%s)", reason)
+        # Ensure mic listen survives playback interrupt (py-cord/DAVE can drop it).
+        if self._loop is not None and self._voice_listen_enabled():
+
+            async def _rearm() -> None:
+                await asyncio.sleep(0.05)
+                if not self._listening or self._listen_sink is None:
+                    await self._ensure_voice_listen()
+
+            try:
+                asyncio.run_coroutine_threadsafe(_rearm(), self._loop)
+            except Exception:  # noqa: BLE001
+                pass
         return True
 
     async def _handle_vc_utterance(self, payload: dict[str, Any]) -> None:
@@ -1331,28 +1693,16 @@ class DiscordManager:
         asyncio.run_coroutine_threadsafe(self._drain_vc_utterances(), self._loop)
 
     async def _drain_vc_utterances(self) -> None:
-        """Process VC clips concurrently with playback (duplex).
-
-        Each clip is STT'd in its own task so listening continues while a reply
-        is composing/playing. Meaningful transcripts barge in and cancel audio.
-        """
+        """Process VC clips one at a time so compose/TTS are not starved."""
         try:
             if self._vc_turn_lock is None:
                 self._vc_turn_lock = asyncio.Lock()
-            tasks: list[asyncio.Task] = []
             while self._vc_payload_q:
                 payload = self._merge_queued_vc_payloads(self._vc_payload_q.popleft())
-                tasks.append(
-                    asyncio.create_task(
-                        self._process_vc_utterance(payload),
-                        name="discord-vc-utterance",
-                    )
-                )
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for result in results:
-                    if isinstance(result, Exception):
-                        log.warning("vc utterance task failed: %s", result)
+                try:
+                    await self._process_vc_utterance(payload)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("vc utterance failed: %s", exc)
         finally:
             self._vc_drain_scheduled = False
             if self._vc_payload_q and self._loop is not None:
@@ -1409,6 +1759,7 @@ class DiscordManager:
         if pcm is None or self._transcribe_fn is None:
             return
         loop = asyncio.get_event_loop()
+        stt_started = time.monotonic()
         try:
             text = await loop.run_in_executor(
                 None, lambda: self._transcribe_fn(pcm, sr),
@@ -1416,27 +1767,129 @@ class DiscordManager:
         except Exception as exc:  # noqa: BLE001
             log.warning("vc STT failed: %s", exc)
             return
+        asr_ms = (time.monotonic() - stt_started) * 1000.0
         text = (text or "").strip()
+        peak = float(payload.get("peak_energy") or 0)
+        dur = float(payload.get("duration_sec") or 0)
         if len(text) < 2:
+            self._unduck_vc_reply()
             log.info(
-                "vc STT empty/short author=%s dur=%s text=%r",
+                "vc STT empty/short author=%s dur=%s peak=%.1f asr_ms=%.0f text=%r",
                 payload.get("author") or author_id,
                 payload.get("duration_sec"),
+                peak,
+                asr_ms,
                 text,
             )
             return
+        log.info(
+            "vc STT author=%s dur=%s peak=%.1f asr_ms=%.0f text=%r",
+            payload.get("author") or author_id,
+            payload.get("duration_sec"),
+            peak,
+            asr_ms,
+            text[:120],
+        )
+        if not _vc_should_accept_transcript(text, peak_energy=peak, duration_sec=dur):
+            self._unduck_vc_reply()
+            log.info(
+                "vc STT rejected author=%s peak=%.1f text=%r",
+                payload.get("author") or author_id,
+                peak,
+                text[:80],
+            )
+            return
+
+        # Stitch a prior incomplete fragment from the same speaker.
+        held = self._vc_incomplete_hold.pop(author_id, None)
+        if held and (time.monotonic() - float(held.get("ts") or 0)) <= 6.0:
+            prefix = str(held.get("text") or "").strip()
+            if prefix and not text.lower().startswith(prefix.lower()[:24]):
+                stitched = f"{prefix.rstrip('.…,;:')} {text.lstrip()}".strip()
+                log.info(
+                    "vc STT stitch author=%s %r + %r -> %r",
+                    payload.get("author") or author_id,
+                    prefix[:80],
+                    text[:80],
+                    stitched[:120],
+                )
+                text = stitched
+                # Prefer re-STT of concatenated audio when both clips exist.
+                prev_pcm = held.get("pcm")
+                cur_pcm = payload.get("pcm_mono_16k")
+                if prev_pcm is not None and cur_pcm is not None and self._transcribe_fn:
+                    try:
+                        import numpy as np
+
+                        mono = np.concatenate(
+                            [
+                                np.asarray(prev_pcm, dtype=np.int16).reshape(-1),
+                                np.asarray(cur_pcm, dtype=np.int16).reshape(-1),
+                            ]
+                        )
+                        sr = int(payload.get("sample_rate") or held.get("sr") or 16000)
+                        re_text = await loop.run_in_executor(
+                            None, lambda: self._transcribe_fn(mono, sr),
+                        )
+                        re_text = (re_text or "").strip()
+                        if len(re_text) >= len(stitched) * 0.5:
+                            text = re_text
+                            payload = dict(payload)
+                            payload["pcm_mono_16k"] = mono
+                            payload["duration_sec"] = round(float(mono.size) / float(sr), 3)
+                            log.info(
+                                "vc STT re-transcribe after stitch author=%s text=%r",
+                                payload.get("author") or author_id,
+                                text[:120],
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        log.debug("vc stitch re-STT skipped: %s", exc)
 
         # Cutoff hold — wait for follow-up audio before committing.
-        if text.endswith(("-", "…", "...", ",")) or text.rstrip(".").endswith(
-            (" that's", " I'm", " I said")
-        ):
-            await asyncio.sleep(0.75)
+        if _vc_transcript_looks_incomplete(text):
+            hold_deadline = time.monotonic() + 2.0
+            while time.monotonic() < hold_deadline:
+                sink = self._listen_sink
+                capturing = False
+                if sink is not None and hasattr(sink, "user_capturing"):
+                    try:
+                        capturing = bool(sink.user_capturing(author_id))
+                    except Exception:  # noqa: BLE001
+                        capturing = False
+                queued = (
+                    self._vc_payload_q
+                    and int(self._vc_payload_q[0].get("author_id") or 0) == author_id
+                )
+                if queued:
+                    break
+                if not capturing:
+                    await asyncio.sleep(0.15)
+                    continue
+                await asyncio.sleep(0.2)
             if self._vc_payload_q and int(self._vc_payload_q[0].get("author_id") or 0) == author_id:
                 self._vc_payload_q.appendleft(payload)
                 merged = self._merge_queued_vc_payloads(self._vc_payload_q.popleft())
-                if float(merged.get("duration_sec") or 0) > float(payload.get("duration_sec") or 0) + 0.2:
+                if float(merged.get("duration_sec") or 0) > float(payload.get("duration_sec") or 0) + 0.15:
                     await self._process_vc_utterance(merged)
                     return
+            # Still incomplete and nothing queued — hold for the next flush.
+            if _vc_transcript_looks_incomplete(text):
+                self._vc_incomplete_hold[author_id] = {
+                    "text": text,
+                    "pcm": payload.get("pcm_mono_16k"),
+                    "sr": int(payload.get("sample_rate") or 16000),
+                    "ts": time.monotonic(),
+                }
+                self._unduck_vc_reply()
+                log.info(
+                    "vc STT incomplete hold author=%s text=%r",
+                    payload.get("author") or author_id,
+                    text[:120],
+                )
+                return
+
+        # Clear any stale incomplete hold once we have a complete transcript.
+        self._vc_incomplete_hold.pop(author_id, None)
 
         barge_mode = self._vc_barge_mode()
         playing = self._vc_is_reply_playing()
@@ -1447,12 +1900,15 @@ class DiscordManager:
                 log.info("vc speech ignored while speaking (barge_mode=off): %r", text[:80])
                 return
             if self._vc_looks_like_bot_echo(text):
+                self._unduck_vc_reply()
                 log.info("vc barge ignored (bot echo): %r", text[:80])
                 return
             if barge_mode == "smart" and not _vc_meaningful_transcript(text):
+                self._unduck_vc_reply()
                 log.info("vc barge ignored (weak transcript): %r", text[:80])
                 return
             if barge_mode == "instant" and not _vc_meaningful_transcript(text) and len(text) < 4:
+                self._unduck_vc_reply()
                 return
             barged = self._interrupt_vc_reply("barge-in")
             if barged:
@@ -1464,10 +1920,6 @@ class DiscordManager:
             )
             if wait > 0:
                 await asyncio.sleep(wait)
-
-        if not _vc_meaningful_transcript(text) and len(text.split()) < 2:
-            log.info("vc transcript skipped (not meaningful): %r", text[:80])
-            return
 
         context = {
             "trigger": "vc_barge" if barged else "vc_speech",
@@ -1494,9 +1946,11 @@ class DiscordManager:
             # Re-check after waiting — bot may have started speaking since STT.
             if not barged and self._vc_is_reply_playing() and barge_mode != "off":
                 if self._vc_looks_like_bot_echo(text):
+                    self._unduck_vc_reply()
                     log.info("vc barge ignored under lock (bot echo): %r", text[:80])
                     return
                 if barge_mode == "smart" and not _vc_meaningful_transcript(text):
+                    self._unduck_vc_reply()
                     log.info("vc barge ignored under lock (weak): %r", text[:80])
                     return
                 barged = self._interrupt_vc_reply("barge-in-locked")
@@ -1509,29 +1963,167 @@ class DiscordManager:
                         text[:160],
                     )
 
-            reply_raw = await loop.run_in_executor(
-                None, lambda: self._on_vc_utterance(context),
+        log.info("vc compose start [%s]: %s", context["author"], text[:120])
+        # Allocate generation before compose so barge/new speech during LLM
+        # retires this turn before any TTS/playback starts.
+        play_gen = self._begin_vc_reply()
+        compose_started = time.monotonic()
+        try:
+            reply_raw = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: self._on_vc_utterance(context)),
+                timeout=60.0,
             )
-            reply, prebuilt = self._parse_incoming_reply(reply_raw)
-            if not reply:
-                return
-            gen_at_compose = self._vc_reply_gen
-            self._last_vc_reply_at[author_id] = time.monotonic()
-            self._last_vc_bot_text = reply
-            wav = prebuilt
-            if not wav and getattr(CONFIG.discord, "attach_voice", True) and self._voice_clip_fn:
-                wav = await loop.run_in_executor(None, lambda: self._voice_clip_fn(reply))
-            if gen_at_compose != self._vc_reply_gen:
-                log.info("vc reply superseded after compose — not playing")
-                return
-            play_gen = self._vc_reply_gen
+        except asyncio.TimeoutError:
+            log.warning("vc compose timed out [%s]", context["author"])
+            return
+        if not self._vc_gen_alive(play_gen):
+            log.info("vc reply superseded during compose — not playing")
+            return
+        compose_ms = (time.monotonic() - compose_started) * 1000.0
+        reply, prebuilt, instruct = self._parse_incoming_reply(reply_raw)
+        if not reply:
+            log.info("vc compose empty [%s] ms=%.0f", context["author"], compose_ms)
+            return
+        log.info("vc compose done [%s] ms=%.0f reply=%s", context["author"], compose_ms, reply[:120])
+        self._last_vc_reply_at[author_id] = time.monotonic()
+        self._last_vc_bot_text = reply
+        if not self._vc_gen_alive(play_gen):
+            log.info("vc reply superseded after compose — not playing")
+            return
 
-        # Schedule playback without blocking the drain loop (duplex STT).
+        # Hybrid VC: first sentence fast, remainder as one clip (smooth, low latency).
+        if (
+            not prebuilt
+            and getattr(CONFIG.discord, "attach_voice", True)
+            and self._voice_hybrid_fn
+        ):
+            self._spawn_vc_reply_task(
+                self._play_vc_reply_hybrid(reply, instruct, play_gen, context),
+                name="discord-vc-reply-hybrid",
+            )
+            return
+
+        wav = prebuilt
+        if (
+            not wav
+            and getattr(CONFIG.discord, "attach_voice", True)
+            and self._voice_clip_fn
+        ):
+            wav = await loop.run_in_executor(
+                None, lambda: self._voice_clip_fn(reply, instruct),
+            )
+        if not self._vc_gen_alive(play_gen):
+            log.info("vc reply superseded after TTS — not playing")
+            return
+
         if wav:
-            asyncio.create_task(
+            self._spawn_vc_reply_task(
                 self._finish_vc_reply(wav, play_gen, context, reply),
                 name="discord-vc-reply-play",
             )
+            return
+
+        if (
+            getattr(CONFIG.discord, "attach_voice", True)
+            and self._voice_stream_fn
+        ):
+            self._spawn_vc_reply_task(
+                self._stream_vc_reply(reply, instruct, play_gen, context),
+                name="discord-vc-reply-stream",
+            )
+            return
+
+        await self._announce_vc_reply(context, reply)
+
+    async def _play_vc_reply_hybrid(
+        self,
+        reply: str,
+        instruct: str | None,
+        play_gen: int,
+        context: dict[str, Any],
+    ) -> None:
+        if play_gen != self._vc_reply_gen or not self._voice_hybrid_fn:
+            return
+        loop = asyncio.get_event_loop()
+        played_any = False
+        try:
+            first = await loop.run_in_executor(
+                None,
+                lambda: self._voice_hybrid_fn(reply, instruct, part="first"),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("vc hybrid first synth failed: %s", exc)
+            first = None
+        if not self._vc_gen_alive(play_gen):
+            return
+        if first and await self._play_wav_bytes(first, generation=play_gen):
+            played_any = True
+        if not self._vc_gen_alive(play_gen):
+            return
+        try:
+            rest = await loop.run_in_executor(
+                None,
+                lambda: self._voice_hybrid_fn(reply, instruct, part="rest"),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("vc hybrid rest synth failed: %s", exc)
+            rest = None
+        if not self._vc_gen_alive(play_gen):
+            return
+        if rest and await self._play_wav_bytes(rest, generation=play_gen):
+            played_any = True
+        if not self._vc_gen_alive(play_gen):
+            return
+        if played_any:
+            log.info("vc reply spoken to %s: %s", context["author"], reply[:120])
+        else:
+            await self._announce_vc_reply(context, reply)
+
+    async def _stream_vc_reply(
+        self,
+        reply: str,
+        instruct: str | None,
+        play_gen: int,
+        context: dict[str, Any],
+    ) -> None:
+        if play_gen != self._vc_reply_gen:
+            return
+        loop = asyncio.get_event_loop()
+        # Bound handoff so a slow player cannot unbounded-buffer TTS PCM.
+        q: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=3)
+
+        def _producer() -> None:
+            try:
+                for chunk in self._voice_stream_fn(reply, instruct):
+                    if play_gen != self._vc_reply_gen:
+                        break
+                    if chunk:
+                        fut = asyncio.run_coroutine_threadsafe(q.put(chunk), loop)
+                        fut.result(timeout=30.0)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("vc TTS stream failed: %s", exc)
+            finally:
+                asyncio.run_coroutine_threadsafe(q.put(None), loop)
+
+        threading.Thread(target=_producer, name="discord-vc-tts-stream", daemon=True).start()
+        played_any = False
+        while True:
+            wav = await q.get()
+            if wav is None:
+                break
+            if play_gen != self._vc_reply_gen:
+                log.info("vc reply stream superseded")
+                return
+            if await self._play_wav_bytes(wav, generation=play_gen):
+                played_any = True
+        if play_gen != self._vc_reply_gen:
+            return
+        if played_any:
+            log.info("vc reply spoken to %s: %s", context["author"], reply[:120])
         else:
             await self._announce_vc_reply(context, reply)
 
@@ -1657,26 +2249,56 @@ class DiscordManager:
 
         if self._voice and self._voice.is_connected():
             if self._voice.channel and self._voice.channel.id == channel.id:
+                await self._stop_voice_listen()
                 await self._ensure_voice_listen()
                 return {
                     "joined": channel.name,
                     "guild": guild.name,
                     "already": True,
                     "listening": self._listening,
+                    "dave_ready": self._dave_session_ready(),
                 }
+            # move_to often times out / leaves DAVE half-dead. Prefer hard reconnect.
             await self._stop_voice_listen()
-            await self._voice.move_to(channel)
-        else:
-            await self._stop_voice_listen()
-            self._voice = await channel.connect(reconnect=True, timeout=30.0)
+            try:
+                await self._voice.disconnect(force=True)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("voice disconnect before rejoin: %s", exc)
+            self._voice = None
+            await asyncio.sleep(0.4)
 
+        await self._stop_voice_listen()
+        self._voice = await channel.connect(reconnect=True, timeout=45.0)
         self._voice = self._sync_active_voice() or self._voice
-        await self._ensure_voice_listen()
+        listening = await self._ensure_voice_listen()
+        dave_ok = self._dave_session_ready()
+        if not dave_ok:
+            # One more listen pass — MLS keys sometimes land just after connect.
+            await asyncio.sleep(1.5)
+            listening = await self._ensure_voice_listen() or listening
+            dave_ok = self._dave_session_ready()
+        if not dave_ok:
+            log.warning(
+                "joined #%s but DAVE not ready — VC hear may be silent until rejoin",
+                channel.name,
+            )
         return {
             "joined": channel.name,
             "guild": guild.name,
-            "listening": self._listening,
+            "listening": bool(listening or self._listening),
+            "dave_ready": dave_ok,
         }
+
+    def _dave_session_ready(self) -> bool:
+        voice = self._sync_active_voice()
+        if voice is None:
+            return False
+        try:
+            conn = getattr(voice, "_connection", None)
+            dave = getattr(conn, "dave_session", None) if conn else None
+            return bool(dave is not None and getattr(dave, "ready", False))
+        except Exception:  # noqa: BLE001
+            return False
 
     async def _leave_voice(self) -> dict[str, Any]:
         voice = self._sync_active_voice()
@@ -1692,6 +2314,57 @@ class DiscordManager:
         self._voice = None
         self._now_playing = None
         return {"left": True, "channel": ch}
+
+    async def _speak_vc_followup(self, text: str) -> dict[str, Any]:
+        """TTS + play a companion follow-up while already in VC."""
+        reply = (text or "").strip()
+        if not reply:
+            return {"ok": False, "reason": "empty"}
+        if not self._voice_listen_enabled():
+            return {"ok": False, "reason": "voice_listen off"}
+        voice = self._sync_active_voice()
+        if voice is None or not voice.is_connected():
+            return {"ok": False, "reason": "not in voice"}
+        if not self._voice_clip_fn and not self._voice_hybrid_fn:
+            return {"ok": False, "reason": "no tts"}
+
+        context = {
+            "trigger": "companion_followup",
+            "channel": voice.channel.name if voice.channel else "",
+            "guild": voice.guild.name if voice.guild else None,
+            "guild_id": voice.guild.id if voice.guild else None,
+            "author": "maya",
+            "author_id": 0,
+            "content": reply,
+            "barged": False,
+        }
+        play_gen = self._begin_vc_reply()
+        loop = asyncio.get_event_loop()
+        clipped = reply[:800]
+        if (
+            getattr(CONFIG.discord, "attach_voice", True)
+            and self._voice_hybrid_fn
+        ):
+            self._spawn_vc_reply_task(
+                self._play_vc_reply_hybrid(clipped, None, play_gen, context),
+                name="discord-vc-followup-hybrid",
+            )
+            return {"ok": True, "mode": "hybrid", "text": clipped}
+        wav = None
+        if getattr(CONFIG.discord, "attach_voice", True) and self._voice_clip_fn:
+            wav = await loop.run_in_executor(
+                None, lambda: self._voice_clip_fn(clipped, None),
+            )
+        if not self._vc_gen_alive(play_gen):
+            return {"ok": False, "reason": "superseded"}
+        if wav:
+            self._spawn_vc_reply_task(
+                self._finish_vc_reply(wav, play_gen, context, clipped),
+                name="discord-vc-followup-play",
+            )
+            return {"ok": True, "mode": "clip", "text": clipped}
+        await self._announce_vc_reply(context, clipped)
+        return {"ok": True, "mode": "text", "text": clipped}
 
     async def _play_youtube(self, query: str) -> dict[str, Any]:
         voice = self._sync_active_voice()
@@ -1913,7 +2586,10 @@ def build_discord_tools(manager: DiscordManager) -> list[ToolSpec]:
             description=(
                 "Fetch recent messages from a Discord text channel by name. "
                 "Use when the user asks to read, recap, or summarize what has been "
-                "said in a channel. Summarize the returned messages for speech."
+                "said in a channel. Also use first when they ask about the last/"
+                "latest YouTube video posted in a channel — then call "
+                "youtube_transcript on the newest YouTube URL in those messages. "
+                "Summarize results for speech; never invent video titles."
             ),
             parameters={
                 "type": "object",

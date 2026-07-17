@@ -78,6 +78,9 @@ def _redact_reasoning_api_key(settings: dict[str, Any]) -> None:
 
 
 def save_settings(patch: dict[str, Any], *, operator_id: str | None = None) -> dict[str, Any]:
+    from services.settings.public import sanitize_settings_patch
+
+    patch = sanitize_settings_patch(patch, operator_id=operator_id)
     apply_reasoning_api_key_patch(patch, operator_id=operator_id)
     current = load_settings()
     merged = deep_merge(current, patch)
@@ -131,6 +134,12 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
         CONFIG.llm.disable_thinking = bool(r["disable_thinking"])
 
     d = settings.get("dictation", {})
+    if d.get("backend"):
+        CONFIG.stt.backend = str(d["backend"])
+    if d.get("asr_base_url"):
+        CONFIG.stt.asr_base_url = str(d["asr_base_url"])
+    if d.get("asr_model"):
+        CONFIG.stt.asr_model = str(d["asr_model"])
     if d.get("whisper_model"):
         CONFIG.stt.whisper_model = str(d["whisper_model"])
     if d.get("language"):
@@ -151,6 +160,8 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
         CONFIG.vad.silence_ms = int(det["silence_ms"])
     if det.get("min_speech_ms") is not None:
         CONFIG.vad.min_speech_ms = int(det["min_speech_ms"])
+    if det.get("vad_threshold") is not None:
+        CONFIG.vad.rms_threshold = float(det["vad_threshold"])
 
     deliv = settings.get("delivery", {})
     if deliv.get("tts_mode"):
@@ -215,6 +226,10 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
         CONFIG.audio.monologue_enabled = bool(audio["monologue_enabled"])
     if audio.get("monologue_timeout") is not None:
         CONFIG.audio.monologue_timeout = float(audio["monologue_timeout"])
+    if audio.get("hushmic_enabled") is not None:
+        CONFIG.audio.hushmic_enabled = bool(audio["hushmic_enabled"])
+    if audio.get("hushmic_model"):
+        CONFIG.audio.hushmic_model = str(audio["hushmic_model"])
 
     mem = settings.get("memory", {})
     CONFIG.memory.data_dir = str(agent_data_dir(operator_id))
@@ -264,6 +279,18 @@ def apply_to_config(settings: dict[str, Any], *, operator_id: str | None = None)
         CONFIG.discord.attach_voice = bool(disc["attach_voice"])
     if disc.get("voice_listen") is not None:
         CONFIG.discord.voice_listen = bool(disc["voice_listen"])
+    if disc.get("vc_fast") is not None:
+        CONFIG.discord.vc_fast = bool(disc["vc_fast"])
+    if disc.get("vc_silence_ms") is not None:
+        CONFIG.discord.vc_silence_ms = int(disc["vc_silence_ms"])
+    if disc.get("vc_merge_ms") is not None:
+        CONFIG.discord.vc_merge_ms = int(disc["vc_merge_ms"])
+    if disc.get("vc_energy_threshold") is not None:
+        CONFIG.discord.vc_energy_threshold = float(disc["vc_energy_threshold"])
+    if disc.get("vc_min_peak_energy") is not None:
+        CONFIG.discord.vc_min_peak_energy = float(disc["vc_min_peak_energy"])
+    if disc.get("vc_barge_onset_ms") is not None:
+        CONFIG.discord.vc_barge_onset_ms = float(disc["vc_barge_onset_ms"])
     if disc.get("music_volume") is not None:
         CONFIG.discord.music_volume = float(disc["music_volume"])
 

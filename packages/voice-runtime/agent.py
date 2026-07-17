@@ -19,14 +19,15 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from config import CONFIG
 from chunker import sentence_chunks
 from llm import LLMClient, sanitize_llm_output
 from observability import get_logger, record_turn, span
 from ref_text import clear_voice_prompt_cache, sync_clone_ref_text
-from services.ids import new_corr_id, new_message_id
+from services.ids import new_corr_id, new_message_id, new_session_id, new_turn_id
+from services.voice.turn_context import TurnContext, should_commit_turn, stamp_event
 from vision import resolve_vision_user_content
 
 log = get_logger("agent")
@@ -232,9 +233,11 @@ def finalize_reply_text(text: str, *, character_name: str = "") -> tuple[str, Op
 
 
 def _strip_voice_delivery_line(text: str) -> str:
-    """Drop VOICE: delivery cues anywhere in the text (spoken/TTS only)."""
+    """Drop VOICE: / Spoken: delivery labels from spoken text."""
     body, _ = extract_voice_cues_from_text(text)
-    return body
+    body = re.sub(r"(?i)\bSpoken:\s*", "", body or "")
+    body = re.sub(r"(?i)^\s*Spoken\s+", "", body)
+    return body.strip()
 
 
 _FILLER_WORDS = {
@@ -460,12 +463,19 @@ TOOL_GUIDE = (
     "asks to write, post, say, or type something in a channel — compose the full "
     "message body, then send it. Use discord_read_channel when the user asks to "
     "read, recap, or summarize recent messages in a Discord text channel. "
+    "When they ask about the last/latest YouTube video posted in a Discord channel "
+    "(e.g. YouTube(s)), call discord_read_channel first, take the newest YouTube URL "
+    "from those messages, then call youtube_transcript on that URL and summarize — "
+    "do not web-search and do not invent the video. "
     "Use discord_reply_to_user when they ask to respond or reply to a specific "
     "person in a channel — find their latest message and reply in-thread. "
     "Never web-search when the user asks about the Discord queue or "
     "why music stopped — use discord_show_queue instead. "
     "For weather use the weather tool with a city name. For facts/news/how-tos you "
     "MUST call web_search first — never guess headlines or current events from memory. "
+    "When the user shares a YouTube link and wants a summary, recap, or explanation of "
+    "the video, call youtube_transcript with that URL, then summarize the transcript in "
+    "your personality — do not play the video unless they asked to play or queue it. "
     "Summarize results in one to three spoken sentences — never read URLs "
     "or raw JSON aloud. After tools return, give a short spoken reply. If a tool "
     "fails, briefly acknowledge it and continue. Proactively save durable facts "
@@ -533,11 +543,13 @@ class VoiceAgent:
         # Web-session control.
         self._session_stop = threading.Event()
         self._session_thread: Optional[threading.Thread] = None
-        self._turn_queue: queue.Queue[Optional[str]] = queue.Queue()
+        self._turn_queue: queue.Queue[Optional[str]] = queue.Queue(maxsize=2)
+        self._turn_queue_dropped = 0
         self._turn_worker_thread: Optional[threading.Thread] = None
         self._pending_user_text: Optional[str] = None
         self._turn_active = threading.Event()
         self._mic = None
+        self._mic_source = "browser"
         self._duplex_thread: Optional[threading.Thread] = None
         self._barge_cooldown_until = 0.0
         # Auto-delivery cue chosen by the LLM for the current reply (e.g. "whispering").
@@ -550,7 +562,17 @@ class VoiceAgent:
         self._pending_channel_post: Optional[dict[str, str]] = None
         self._pending_channel_reply: Optional[dict[str, str]] = None
         self._last_discord_intent: Optional[dict[str, str]] = None
+        # Companion pattern: speak a quick ack, run slow tools in the background,
+        # then announce the result when ready.
+        self._bg_lock = threading.Lock()
+        self._bg_job_seq = 0
+        self._bg_jobs: dict[int, threading.Thread] = {}
         self._turn_corr_id: str | None = None
+        self._session_id: str | None = None
+        self._turn_ctx: TurnContext | None = None
+        self._event_audience = None  # services.voice.audience.Audience | None
+        self._event_sequence = 0
+        self._event_sequence_lock = threading.Lock()
 
         os.makedirs(CONFIG.audio.output_dir, exist_ok=True)
 
@@ -591,10 +613,15 @@ class VoiceAgent:
 
         self.stt = None
         if mode in {"ptt", "vad"}:
-            log.info("loading STT (faster-whisper %s)", CONFIG.stt.whisper_model)
+            backend = (CONFIG.stt.backend or "whisper").strip().lower()
+            if backend in {"qwen3-asr", "qwen3_asr", "asr"}:
+                log.info("loading STT (qwen3-asr %s)", CONFIG.stt.asr_base_url)
+            else:
+                log.info("loading STT (faster-whisper %s)", CONFIG.stt.whisper_model)
             from stt import create_stt
 
             self.stt = create_stt()
+            self._emit_stt_status()
 
         self._barge_in_flag = threading.Event()
         # Tracks whether we've already triggered a VTuber expression this turn.
@@ -718,6 +745,8 @@ class VoiceAgent:
                     music_volume=CONFIG.discord.music_volume,
                     on_incoming_message=self._compose_discord_incoming_reply,
                     voice_clip_fn=self._discord_voice_clip,
+                    voice_hybrid_fn=self._discord_vc_sentence_wav,
+                    voice_stream_fn=self._discord_voice_stream_wav,
                     on_vc_utterance=self._compose_discord_vc_reply,
                     transcribe_fn=self._discord_transcribe_pcm,
                 )
@@ -827,6 +856,127 @@ class VoiceAgent:
 
     def _tools_active(self) -> bool:
         return self.tool_loop is not None
+
+    @staticmethod
+    def _companion_ack(kind: str, detail: str = "") -> str:
+        """Short spoken acknowledgment while slow work runs in the background."""
+        d = (detail or "").strip()
+        if kind == "youtube_channel":
+            return f"On it — checking #{d or 'youtubes'} for the latest video."
+        if kind == "youtube":
+            return "On it — pulling that video for you."
+        if kind == "search":
+            return "One sec — looking that up."
+        if kind == "channel_read":
+            return f"Alright — reading #{d or 'that channel'}."
+        if kind == "weather":
+            return f"Checking the weather{f' in {d}' if d else ''}."
+        if kind == "tools":
+            return "On it."
+        return "On it."
+
+    def _defer_companion(
+        self,
+        *,
+        kind: str,
+        work: Callable[[], str],
+        detail: str = "",
+        corr_id: str | None = None,
+        ack: str | None = None,
+    ) -> str:
+        """Speak ``ack`` now; run ``work`` in a daemon thread and announce the result."""
+        spoken_ack = (ack or self._companion_ack(kind, detail)).strip() or "On it."
+        corr = corr_id or self._turn_corr_id
+        with self._bg_lock:
+            self._bg_job_seq += 1
+            job_id = self._bg_job_seq
+
+        def _run() -> None:
+            prev_corr = self._turn_corr_id
+            if corr:
+                self._turn_corr_id = corr
+            try:
+                result = work()
+            except Exception as exc:  # noqa: BLE001
+                log.exception("companion background job %s failed", kind)
+                result = f"That didn't work out: {exc}"
+            finally:
+                self._turn_corr_id = prev_corr
+            with self._bg_lock:
+                self._bg_jobs.pop(job_id, None)
+            text = (result or "").strip() or "Done."
+            try:
+                self._announce_companion_result(text, corr_id=corr, label=kind)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("companion announce failed (%s): %s", kind, exc)
+
+        thread = threading.Thread(
+            target=_run,
+            name=f"maya-companion-{kind}-{job_id}",
+            daemon=True,
+        )
+        with self._bg_lock:
+            self._bg_jobs[job_id] = thread
+        thread.start()
+        log.info("companion deferred kind=%s job=%s ack=%r", kind, job_id, spoken_ack[:80])
+        return spoken_ack
+
+    def _announce_companion_result(
+        self,
+        text: str,
+        *,
+        corr_id: str | None = None,
+        label: str = "",
+    ) -> None:
+        """Emit + speak a background job result (dashboard and/or Discord VC)."""
+        cleaned = _clean_text((text or "").strip())
+        if not cleaned:
+            return
+        mid = new_message_id()
+        status_extra: dict[str, Any] = {}
+        if corr_id:
+            status_extra["corr_id"] = corr_id
+        # Dashboard listens for type=ai (speak_chat_reply intentionally skips text).
+        self._emit(
+            type="ai",
+            text=cleaned,
+            final=True,
+            message_id=mid,
+            background=True,
+            label=label or "",
+            **status_extra,
+        )
+        self.history.append(
+            {
+                "role": "assistant",
+                "content": cleaned,
+                "message_id": mid,
+                "corr_id": corr_id,
+                "background": True,
+                "label": label,
+            }
+        )
+        # Prefer Discord VC if we're in a voice channel — companion lives there too.
+        if self._try_announce_discord_vc(cleaned):
+            return
+        try:
+            self.speak_chat_reply(cleaned, corr_id=corr_id, emit_final_status=True)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("companion TTS failed: %s", exc)
+
+    def _try_announce_discord_vc(self, text: str) -> bool:
+        """Play a follow-up line into Discord VC when connected. Returns True if queued."""
+        if self.discord is None:
+            return False
+        speak = getattr(self.discord, "speak_vc_followup", None)
+        if not callable(speak):
+            return False
+        try:
+            result = speak(text)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("discord vc followup skipped: %s", exc)
+            return False
+        return bool(isinstance(result, dict) and result.get("ok"))
 
     def _warm_discord(self) -> None:
         if self.discord is None:
@@ -938,10 +1088,17 @@ class VoiceAgent:
                 return False
         except ImportError:
             pass
+        # Shared-screen questions must not inherit a stale Discord pending state.
+        if self._looks_like_vision_screen_request(user_text):
+            if self._has_pending_action():
+                self._clear_pending_discord_actions(reason="vision/screen request")
+            return False
         if self._classify_discord_command(user_text):
             return True
-        if self._has_pending_action() or self._last_discord_intent:
+        if self._has_pending_action():
             return True
+        # Stale _last_discord_intent alone must not force Discord routing —
+        # that kept hijacking "look at the screen" after earlier channel talk.
         if self._extract_reply_to_user_request(user_text):
             return True
         tl = (user_text or "").lower()
@@ -1016,6 +1173,14 @@ class VoiceAgent:
     # ----- context orchestrator (bad STT / pending actions) -----------------
 
     def _has_pending_action(self) -> bool:
+        # Drop junk pending posts from STT/regex false positives (channel="and").
+        for pending in (self._pending_channel_post, self._pending_channel_reply):
+            if not pending:
+                continue
+            ch = str(pending.get("channel") or "")
+            if ch and not self._is_plausible_discord_channel(ch):
+                self._clear_pending_discord_actions(reason=f"implausible channel {ch!r}")
+                break
         return bool(self._pending_channel_post or self._pending_channel_reply)
 
     def _pending_context_summary(self) -> str:
@@ -1100,6 +1265,12 @@ class VoiceAgent:
                 "channel": posted[1],
             }
             return
+        if self._wants_discord_youtube_summary(original):
+            self._last_discord_intent = {
+                "kind": "channel_youtube_summary",
+                "channel": self._extract_discord_youtube_channel(original),
+            }
+            return
         read_req = self._extract_channel_read_request(tl, original)
         if read_req:
             self._last_discord_intent = {
@@ -1150,14 +1321,32 @@ class VoiceAgent:
             return False
         if raw_text == "__monologue__":
             return False
-        if self._has_pending_action() or self._last_discord_intent:
+        # Screen/vision questions are chat+vision, not Discord tool planning.
+        if self._looks_like_vision_screen_request(user_text or raw_text):
+            if self._has_pending_action():
+                self._clear_pending_discord_actions(reason="vision/screen before orchestrate")
+            return False
+        # Pending post/reply confirmations need the orchestrator; a stale
+        # _last_discord_intent alone must not (it was adding ~2–3s to "hell yeah").
+        if self._has_pending_action():
+            # Weak barge fragments must not keep the pending Discord loop alive.
+            if _is_weak_transcript(raw_text) and not _is_confirmation_like(raw_text):
+                return False
             return True
         if _is_weak_transcript(raw_text):
             return True
-        low = (user_text or raw_text or "").lower()
+        return self._looks_like_tool_request(user_text or raw_text)
+
+    @staticmethod
+    def _looks_like_tool_request(user_text: str) -> bool:
+        low = (user_text or "").lower()
+        if not low:
+            return False
         tool_hints = (
-            "discord", "youtube", "play ", "queue", "imagine", "memory",
-            "weather", "search", "animation", "macarena", "bandcamp", "radio",
+            "discord", "youtube", "youtubes", "play ", "queue", "imagine", "memory",
+            "weather", "search", "look up", "lookup", "google", "animation",
+            "macarena", "bandcamp", "radio", "summarize", "transcript",
+            "join ", "leave ", "skip ", "volume",
         )
         return any(h in low for h in tool_hints)
 
@@ -1253,6 +1442,14 @@ class VoiceAgent:
         original = (plan.user_meant or user_text or raw_text).strip()
 
         if intent == "confirm_pending":
+            # Orchestrator invents confirm_pending on barge fragments ("things say.") —
+            # only honor it when the user actually confirmed.
+            if not _is_confirmation_like(raw_text) and not _is_confirmation_like(user_text):
+                log.info(
+                    "ignoring confirm_pending for non-confirm utterance raw=%r",
+                    (raw_text or "")[:80],
+                )
+                return None
             return self._try_pending_action_direct("go ahead")
 
         if intent == "discord_reply_to_user" and self.discord:
@@ -1318,14 +1515,25 @@ class VoiceAgent:
                     )
 
         if intent == "discord_read_channel" and self.discord:
+            # Orchestrator often mislabels "last YouTube in #youtubes" as a channel recap.
+            if self._wants_discord_youtube_summary(original):
+                return self._try_discord_youtube_summary(original)
             channel_name = str(p.get("channel_name") or "").strip()
             if channel_name:
                 limit = int(p.get("limit") or 30)
-                try:
-                    result = self.discord.fetch_channel_messages(channel_name, limit=limit)
-                except Exception as exc:  # noqa: BLE001
-                    return f"I couldn't read #{channel_name}: {exc}"
-                return self._summarize_channel_messages(original, channel_name, result)
+
+                def _work() -> str:
+                    try:
+                        result = self.discord.fetch_channel_messages(channel_name, limit=limit)
+                    except Exception as exc:  # noqa: BLE001
+                        return f"I couldn't read #{channel_name}: {exc}"
+                    return self._summarize_channel_messages(original, channel_name, result)
+
+                return self._defer_companion(
+                    kind="channel_read",
+                    detail=channel_name,
+                    work=_work,
+                )
 
         if intent == "discord_set_volume" and self.discord:
             vol = p.get("volume")
@@ -1598,22 +1806,33 @@ class VoiceAgent:
             if not extracted:
                 return None
             channel_name, limit = extracted
-            self._emit(
-                type="tool_start",
-                tool="discord_read_channel",
-                args={"channel_name": channel_name, "limit": limit},
-            )
-            try:
-                result = self.discord.fetch_channel_messages(channel_name, limit=limit)
-            except Exception as exc:  # noqa: BLE001
+
+            def _work() -> str:
                 self._emit(
-                    type="tool_end",
+                    type="tool_start",
                     tool="discord_read_channel",
-                    result=str({"error": str(exc)}),
+                    args={"channel_name": channel_name, "limit": limit},
                 )
-                return f"I couldn't read #{channel_name}: {exc}"
-            self._emit(type="tool_end", tool="discord_read_channel", result=str(result))
-            return self._summarize_channel_messages(original, channel_name, result)
+                try:
+                    result = self.discord.fetch_channel_messages(channel_name, limit=limit)
+                except Exception as exc:  # noqa: BLE001
+                    self._emit(
+                        type="tool_end",
+                        tool="discord_read_channel",
+                        result=str({"error": str(exc)}),
+                    )
+                    return f"I couldn't read #{channel_name}: {exc}"
+                self._emit(type="tool_end", tool="discord_read_channel", result=str(result))
+                return self._summarize_channel_messages(original, channel_name, result)
+
+            return self._defer_companion(
+                kind="channel_read",
+                detail=channel_name,
+                work=_work,
+            )
+
+        if kind == "channel_youtube_summary":
+            return self._try_discord_youtube_summary(original)
 
         if kind == "queue_list" or kind == "queue_status":
             def _status_and_maybe_resume() -> dict:
@@ -1752,9 +1971,14 @@ class VoiceAgent:
             return None
         args = {"goal": goal, "profile_id": profile_id}
         from services.voice.hub import hub as voice_hub
+        from services.voice.turn_context import resolve_operator_id
 
-        if voice_hub._active_operator_id:
-            args["operator_id"] = voice_hub._active_operator_id
+        oid = resolve_operator_id(
+            self._turn_ctx,
+            fallback=getattr(voice_hub, "_active_operator_id", None),
+        )
+        if oid:
+            args["operator_id"] = oid
 
         def _run() -> dict:
             return spec.handler(args)
@@ -1893,11 +2117,15 @@ class VoiceAgent:
         )
         from services.settings.store import load_effective_settings
         from services.voice.hub import hub
+        from services.voice.turn_context import resolve_operator_id
 
         if not is_bandcamp_wishlist_turn(user_text):
             return None
 
-        operator_id = hub._active_operator_id
+        operator_id = resolve_operator_id(
+            self._turn_ctx,
+            fallback=getattr(hub, "_active_operator_id", None),
+        )
         hub._last_user_text = user_text
         settings = load_effective_settings(operator_id)
         username = resolve_username(settings, hint=user_text)
@@ -1967,6 +2195,9 @@ class VoiceAgent:
             return "channel_reply_user"
         if self._pending_channel_reply and _is_confirmation_like(original):
             return "channel_reply_confirm"
+        # Prefer latest-YouTube transcript over a generic channel-chat recap.
+        if self._wants_discord_youtube_summary(original):
+            return "channel_youtube_summary"
         if self._extract_channel_read_request(tl, original):
             return "channel_read"
         if self._extract_channel_message(tl, original):
@@ -2104,7 +2335,7 @@ class VoiceAgent:
             if not m:
                 continue
             channel = m.group(1).strip(" '\".,!?")
-            if len(channel) >= 2:
+            if VoiceAgent._is_plausible_discord_channel(channel):
                 return channel, limit
         return None
 
@@ -2137,29 +2368,81 @@ class VoiceAgent:
         return False
 
     @staticmethod
+    def _is_plausible_discord_channel(name: str) -> bool:
+        """Reject stopwords / fragments misread as channel names (e.g. 'and' from 'again')."""
+        channel = (name or "").strip(" '\"#.,!?")
+        if len(channel) < 2:
+            return False
+        key = re.sub(r"[\s_-]+", "", channel.lower())
+        if not key:
+            return False
+        stop = {
+            "and", "or", "the", "a", "an", "to", "for", "of", "on", "at", "in",
+            "into", "from", "with", "this", "that", "these", "those", "it", "its",
+            "me", "my", "you", "your", "we", "our", "them", "they", "be", "is",
+            "are", "was", "were", "do", "does", "did", "not", "no", "yes", "ok",
+            "okay", "please", "thanks", "thankyou", "again", "screen", "desktop",
+            "listing", "window", "here", "there", "what", "which", "who",
+        }
+        if key in stop:
+            return False
+        # Single common English words without digits/hyphen are usually STT junk.
+        if key.isalpha() and len(key) <= 3 and key in {
+            "and", "the", "for", "you", "are", "but", "not", "can", "all", "one",
+        }:
+            return False
+        return True
+
+    @staticmethod
+    def _looks_like_vision_screen_request(user_text: str) -> bool:
+        """User is asking about the shared screen/desktop, not a Discord channel."""
+        tl = (user_text or "").lower()
+        if not tl:
+            return False
+        if re.search(r"\b(?:discord|#\w+)\b", tl):
+            return False
+        screen_cues = (
+            "screen", "desktop", "listing", "ebay", "monitor", "window",
+            "what do you see", "what you see", "look at my", "on my screen",
+            "what does it say", "what things say", "what doesn't say",
+            "what does that say", "read the screen", "check the screen",
+            "look at the screen",
+        )
+        return any(c in tl for c in screen_cues)
+
+    def _clear_pending_discord_actions(self, *, reason: str = "") -> None:
+        if self._pending_channel_post or self._pending_channel_reply:
+            log.info("clearing pending discord action%s", f" ({reason})" if reason else "")
+        self._pending_channel_post = None
+        self._pending_channel_reply = None
+
+    @staticmethod
     def _extract_channel_message(tl: str, original: str) -> Optional[tuple[str, str]]:
         """Return (content_hint, channel_name) for text-channel post requests."""
         if VoiceAgent._is_local_audience_request(tl, original):
             return None
+        if VoiceAgent._looks_like_vision_screen_request(original):
+            return None
         text_verbs = r"(?:write|post|say|send|type|drop|message|tell)"
+        # Word-bound "in"/"to" — bare "in" formerly matched the tail of "again".
         patterns: list[tuple[str, bool]] = [
             (
-                rf"{text_verbs}\s+(?:me\s+)?(?:a\s+)?(.+?)\s+in(?:to)?\s+"
+                rf"{text_verbs}\s+(?:me\s+)?(?:a\s+)?(.+?)\s+\bin(?:to)?\b\s+"
                 rf"(?:the\s+)?#?([a-zA-Z0-9_-]+)(?:\s+(?:text\s+)?channel)?\s*$",
                 True,
             ),
             (
-                rf"{text_verbs}\s+(?:me\s+)?(?:a\s+)?(.+?)\s+(?:to|in)\s+"
+                rf"{text_verbs}\s+(?:me\s+)?(?:a\s+)?(.+?)\s+\b(?:to|in)\b\s+"
                 rf"(?:the\s+)?#?([a-zA-Z0-9_-]+)(?:\s+(?:text\s+)?channel)?\s*$",
                 True,
             ),
             (
-                rf"in(?:to)?\s+(?:the\s+)?#?([a-zA-Z0-9_-]+)(?:\s+(?:text\s+)?channel)?"
+                rf"\bin(?:to)?\b\s+(?:the\s+)?#?([a-zA-Z0-9_-]+)(?:\s+(?:text\s+)?channel)?"
                 rf"[,:]?\s+{text_verbs}\s+(?:me\s+)?(?:a\s+)?(.+)",
                 False,
             ),
             (
-                rf"{text_verbs}\s+in\s+(?:the\s+)?channel\s+"
+                rf"{text_verbs}\s+\bin\b\s+(?:the\s+)?channel\s+"
                 rf"([a-zA-Z0-9_\s-]+?)\s+(?:a\s+)?(.+)$",
                 False,
             ),
@@ -2174,7 +2457,7 @@ class VoiceAgent:
                 channel, content = m.group(1).strip(), m.group(2).strip()
             content = re.sub(r"[.!?]+$", "", content).strip(" '\"")
             channel = channel.strip(" '\"")
-            if not content or not channel or len(channel) < 2:
+            if not content or not VoiceAgent._is_plausible_discord_channel(channel):
                 continue
             if re.search(r"\b(?:play|song|music|youtube|spotify|track)\b", content, re.I):
                 continue
@@ -2185,15 +2468,15 @@ class VoiceAgent:
     def _extract_channel_correction(user_text: str) -> Optional[str]:
         patterns = (
             r"(?:should be|meant to be|try|use|post (?:it )?|send (?:it )?|put (?:it )?)"
-            r"(?:\s+\w+){0,3}\s+(?:in|to)\s+#?([a-zA-Z0-9_\s-]+)",
-            r"(?:in|to)\s+#?([a-zA-Z0-9_\s-]+)\s+(?:channel|instead)\b",
+            r"(?:\s+\w+){0,3}\s+\b(?:in|to)\b\s+#?([a-zA-Z0-9_\s-]+)",
+            r"\b(?:in|to)\b\s+#?([a-zA-Z0-9_\s-]+)\s+(?:channel|instead)\b",
             r"^#?([a-zA-Z0-9_\s-]+)\s+(?:channel\s+)?(?:please|thanks)?\s*$",
         )
         for pat in patterns:
             m = re.search(pat, user_text, re.I)
             if m:
                 name = m.group(1).strip(" '\".,!?")
-                if len(name) >= 2:
+                if VoiceAgent._is_plausible_discord_channel(name):
                     return name
         return None
 
@@ -2218,8 +2501,6 @@ class VoiceAgent:
         parts = [self.llm.base_system_prompt(include_style_cue=False)]
         if self._session_prefix:
             parts.append(self._session_prefix)
-        if self._post_history_instructions:
-            parts.append(self._post_history_instructions)
         parts.append(
             "Never output a VOICE: line — delivery cues are for spoken replies only.\n"
             + output_rules.strip()
@@ -2227,8 +2508,55 @@ class VoiceAgent:
         return "\n\n".join(parts)
 
     @staticmethod
+    def _spoken_text_from_llm(raw: str) -> tuple[str, Optional[str]]:
+        """Turn an LLM reply into speakable text; keep optional delivery cue."""
+        import re
+
+        text = (raw or "").strip()
+        if not text:
+            return "", None
+        spoken, cue = finalize_reply_text(text)
+        if spoken:
+            return spoken, cue
+        body = _strip_voice_delivery_line(sanitize_llm_output(text)).strip("\"'")
+        if body:
+            return body, cue
+        # Model sometimes puts cue + reply on one line: "VOICE: cue. Spoken reply."
+        if re.match(r"(?i)^voice:\s*", text):
+            rest = re.sub(r"(?i)^voice:\s*", "", text).strip()
+            parts = re.split(r"(?<=[.!?])\s+", rest, maxsplit=1)
+            if len(parts) == 2 and len(parts[1].strip()) >= 4:
+                return parts[1].strip(), parts[0].strip().rstrip(".")
+            if len(rest) >= 4:
+                return rest, None
+        return "", cue
+
+    @staticmethod
     def _clean_discord_text(text: str) -> str:
         return _strip_voice_delivery_line(sanitize_llm_output(text)).strip("\"'")
+
+    @staticmethod
+    def _strip_leading_user_echo(reply: str, user_text: str) -> str:
+        """Drop a leading parrot of the user's transcript (common VC compose failure)."""
+        spoken = (reply or "").strip()
+        src = (user_text or "").strip()
+        if not spoken or not src or len(src) < 4:
+            return spoken
+        spoken_l = spoken.lower()
+        src_l = src.lower()
+        src_core = src_l.rstrip("?.!,;: ")
+        spoken_core = spoken_l.rstrip("?.!,;: ")
+        if spoken_core == src_core:
+            return ""
+        # Reply starts with the user line, then continues.
+        if spoken_l.startswith(src_l):
+            rest = spoken[len(src) :].lstrip(" ,.!?—-")
+            return rest.strip() if rest.strip() else spoken
+        if src_core and spoken_l.startswith(src_core):
+            # Match without trailing punctuation on the user transcript.
+            rest = spoken[len(src_core) :].lstrip(" ,.!?—-")
+            return rest.strip() if rest.strip() else spoken
+        return spoken
 
     def _compose_channel_message(self, user_text: str, content_hint: str) -> str:
         """Build the Discord message body — literal text or LLM-generated."""
@@ -2334,8 +2662,9 @@ class VoiceAgent:
             f"#{context.get('channel')}: {author} "
             f"{'@mentioned you' if trigger == 'mention' else 'replied to you'} "
             f"and said: {content}\n\n"
-            f"Recent chat:\n{transcript or '(none)'}\n\n"
-            f"Write your reply to {author}."
+            f"Recent chat (other users only):\n{transcript or '(none)'}\n\n"
+            f"Write a fresh reply to {author} that answers what they just said. "
+            f"Do not repeat your earlier messages."
         )
         if self.memory is not None:
             pre = self.memory.prefetch_context(user_turn, scope=scope)
@@ -2347,14 +2676,15 @@ class VoiceAgent:
                 "content": self._discord_compose_system(
                     "You are replying in a Discord text channel to a @mention or "
                     "thread reply. Output ONLY the reply message — no quotes or "
-                    "labels. Keep it under 400 characters."
+                    "labels. Answer the user's latest message directly. "
+                    "Keep it under 400 characters."
                 ),
             },
             {"role": "user", "content": user_turn},
         ]
         try:
             resp = self.llm.complete(messages, max_tokens=260)
-            text = self._clean_discord_text(resp.content or "")
+            text = self._clean_discord_text(self._llm_response_text(resp))
             if text:
                 text = text[:2000]
                 if self.memory is not None:
@@ -2371,6 +2701,33 @@ class VoiceAgent:
             log.warning("discord incoming reply failed: %s", exc)
         return None
 
+    def _enhance_stt_audio(self, audio_int16) -> Any:
+        """Optional HushMic pass for dashboard/server mic (16 kHz → 48 kHz → 16 kHz)."""
+        import numpy as np
+
+        if not CONFIG.audio.hushmic_enabled:
+            return audio_int16
+        try:
+            from services.voice.hushmic import (
+                downsample_mono_48k_to_16k_int16,
+                get_hushmic_processor,
+            )
+            from services.voice.resample import upsample_mono_16k_to_48k_int16
+
+            mono = np.asarray(audio_int16, dtype=np.int16).reshape(-1)
+            if mono.size < 320:
+                return audio_int16
+            pcm48 = upsample_mono_16k_to_48k_int16(mono).tobytes()
+            enhanced48 = get_hushmic_processor().enhance_mono_utterance(
+                pcm48, key=("legacy", "dashboard-mic")
+            )
+            if not enhanced48:
+                return audio_int16
+            return downsample_mono_48k_to_16k_int16(enhanced48)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("dashboard hushmic skipped: %s", exc)
+            return audio_int16
+
     def _discord_transcribe_pcm(self, audio, sample_rate: int) -> str:
         """STT bridge for Discord VC utterances (runs off the Discord loop)."""
         if self.stt is None:
@@ -2381,8 +2738,12 @@ class VoiceAgent:
             log.warning("discord vc STT failed: %s", exc)
             return ""
 
-    def _compose_discord_vc_reply(self, context: dict) -> Optional[str]:
+    def _compose_discord_vc_reply(
+        self, context: dict
+    ) -> Optional[str] | tuple[str, Optional[str]]:
         """Compose a spoken Discord VC reply from a transcribed utterance."""
+        import time as _time
+
         author = (context.get("author") or "someone").strip()
         content = (context.get("content") or "").strip()
         if not content:
@@ -2391,51 +2752,138 @@ class VoiceAgent:
         if self.memory is not None:
             self.memory.set_turn_scope(scope)
         channel = context.get("channel") or "voice"
+        barged = bool(context.get("barged") or context.get("trigger") == "vc_barge")
         user_turn = (
-            f"Discord voice channel #{channel}: {author} said: {content}\n\n"
-            f"Reply to {author} out loud in character. Keep it under 280 characters."
+            f"Discord voice channel #{channel}.\n"
+            f"Transcript from {author}: {content}\n\n"
+            f"Respond to {author} out loud in character. Keep it under 280 characters. "
+            f"Do NOT repeat, quote, or restate their transcript — answer them."
         )
-        if self.memory is not None:
+        if barged:
+            user_turn += (
+                "\nThey interrupted you — treat their words as a correction or follow-up "
+                "to what you just said. Do not claim you misheard them if the transcript "
+                "is clear; answer the content of what they said."
+            )
+        if self.memory is not None and CONFIG.memory.prefetch and not CONFIG.discord.vc_fast:
             pre = self.memory.prefetch_context(user_turn, scope=scope)
             if pre:
                 user_turn = f"{pre}\n\n{user_turn}"
-        messages = [
-            {
-                "role": "system",
-                "content": self._discord_compose_system(
-                    "You are in a Discord voice call. Someone just spoke. "
-                    "Output ONLY the spoken reply — no quotes, labels, markdown, "
-                    "or stage directions. Keep it to one or two short sentences."
-                ),
-            },
-            {"role": "user", "content": user_turn},
-        ]
+        system = (
+            f"{self.llm.base_system_prompt()}\n\n"
+            "You are in a live Discord voice call. Someone just spoke. "
+            "Begin with one VOICE: delivery line, then write the spoken reply on "
+            "the very next line. The spoken line is required — never stop after "
+            "VOICE:. Keep the spoken part under 200 characters. "
+            "CRITICAL: Never echo or repeat the user's words. Never write the "
+            "labels 'Spoken:' or 'VOICE:' inside the spoken reply itself. "
+            "Do not invent live YouTube video titles, news, or facts you were not "
+            "given — if you lack the info, say you need a link or channel name."
+        )
+        messages: list[dict] = [{"role": "system", "content": system}]
+        # Keep history short for VC latency (vc_fast skips memory prefetch already).
+        history: list[dict] = []
+        if not CONFIG.discord.vc_fast and self.memory is not None:
+            try:
+                history = list(self.memory.recent_history() or [])
+            except Exception:  # noqa: BLE001
+                history = []
+        if not history:
+            history = list(self.history[-6:])
+        keep = 4 if CONFIG.discord.vc_fast else min(8, CONFIG.llm.history_turns * 2)
+        for msg in history[-keep:]:
+            role = msg.get("role")
+            text = (msg.get("content") or "").strip()
+            if role in ("user", "assistant") and text:
+                messages.append({"role": role, "content": text[:400]})
+        messages.append({"role": "user", "content": user_turn})
+
+        # Prefer Discord→YouTube chain, then web direct, so VC does not hallucinate.
+        yt_direct = None
+        if self.discord is not None:
+            try:
+                yt_direct = self._try_discord_youtube_summary(content)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("vc discord youtube summary skipped: %s", exc)
+        if yt_direct is None and CONFIG.web.enabled and self._tools_active():
+            try:
+                yt_direct = self._try_web_direct(content)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("vc web direct skipped: %s", exc)
+        if yt_direct:
+            spoken = self._clean_discord_text(yt_direct)[:800]
+            if spoken:
+                self._record_vc_exchange(author, content, spoken, scope=scope)
+                return (spoken, None)
+
+        t0 = _time.perf_counter()
         try:
-            resp = self.llm.complete(messages, max_tokens=180)
-            text = self._clean_discord_text(resp.content or "")
-            if text:
-                text = text[:800]
-                try:
-                    self._emit({
-                        "type": "user",
-                        "text": f"[Discord VC | {author}] {content}",
-                    })
-                    self._emit({"type": "assistant", "text": text})
-                except Exception:  # noqa: BLE001
-                    pass
-                if self.memory is not None:
-                    try:
-                        self.memory.schedule_review(
-                            f"[VC {author}]: {content}",
-                            text,
-                            scope=scope,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        log.warning("discord vc review failed: %s", exc)
-                return text
+            resp = self.llm.complete(
+                messages,
+                max_tokens=min(120, CONFIG.llm.max_tokens),
+            )
+            raw = self._llm_response_text(resp)
+            spoken, cue = self._spoken_text_from_llm(raw)
+            ms = (_time.perf_counter() - t0) * 1000.0
+            if not spoken:
+                spoken = self._clean_discord_text(raw)
+            if spoken:
+                spoken = self._strip_leading_user_echo(spoken, content)
+            if not spoken and (raw or "").strip():
+                log.warning(
+                    "discord vc compose unparsed author=%s ms=%.0f raw=%r",
+                    author,
+                    ms,
+                    (raw or "")[:160],
+                )
+            if not spoken:
+                spoken = f"Hey {author}, good to hear you."
+                cue = None
+            if spoken:
+                spoken = spoken[:800]
+                log.info("discord vc compose ok author=%s ms=%.0f chars=%d", author, ms, len(spoken))
+                self._record_vc_exchange(author, content, spoken, scope=scope)
+                return (spoken, cue)
+            log.warning(
+                "discord vc compose empty author=%s ms=%.0f raw=%r",
+                author,
+                ms,
+                (raw or "")[:160],
+            )
         except Exception as exc:  # noqa: BLE001
-            log.warning("discord vc reply compose failed: %s", exc)
+            log.warning(
+                "discord vc reply compose failed author=%s ms=%.0f: %s",
+                author,
+                (_time.perf_counter() - t0) * 1000.0,
+                exc,
+            )
         return None
+
+    def _record_vc_exchange(
+        self,
+        author: str,
+        content: str,
+        spoken: str,
+        *,
+        scope=None,
+    ) -> None:
+        """Keep VC turns in history/memory so follow-ups and barge-ins have context."""
+        user_line = f"[Discord VC | {author}] {content}"
+        try:
+            self._emit(type="user", text=user_line)
+            self._emit(type="assistant", text=spoken)
+        except Exception:  # noqa: BLE001
+            pass
+        self.history.append({"role": "user", "content": user_line})
+        self.history.append({"role": "assistant", "content": spoken})
+        if len(self.history) > 40:
+            self.history = self.history[-40:]
+        if self.memory is not None and not CONFIG.discord.vc_fast:
+            try:
+                self.memory.log_turn(user_line, spoken)
+                self.memory.schedule_review(user_line, spoken, scope=scope)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("discord vc memory log failed: %s", exc)
 
     def _summarize_channel_messages(
         self,
@@ -2667,7 +3115,7 @@ class VoiceAgent:
         return self._direct_tool_reply(tool, args, fn, ok=ok, fail=fail)
 
     def _try_web_direct(self, user_text: str) -> Optional[str]:
-        """Run web search / weather immediately — Gemma often skips tools otherwise."""
+        """Run web search / weather / YouTube transcript immediately — Gemma often skips tools otherwise."""
         if not CONFIG.web.enabled:
             return None
         kind = self._classify_web_command(user_text)
@@ -2675,18 +3123,54 @@ class VoiceAgent:
             return None
         original = (user_text or "").strip()
 
+        if kind == "youtube_transcript":
+            from tools.youtube_transcript import extract_youtube_url, youtube_transcript
+
+            yt_url = extract_youtube_url(original)
+            if not yt_url:
+                return "Send me a YouTube link and I'll summarize it for you."
+
+            def _work() -> str:
+                self._emit(type="tool_start", tool="youtube_transcript", args={"url": yt_url})
+                try:
+                    result = youtube_transcript(yt_url)
+                except Exception as exc:  # noqa: BLE001
+                    self._emit(
+                        type="tool_end",
+                        tool="youtube_transcript",
+                        result=str({"error": str(exc)}),
+                    )
+                    return "I couldn't pull that video's transcript right now."
+                self._emit(type="tool_end", tool="youtube_transcript", result=str(result))
+                if not result.get("ok"):
+                    return str(
+                        result.get("error") or "I couldn't get a transcript for that video."
+                    )
+                return self._summarize_youtube_transcript(original, result)
+
+            return self._defer_companion(kind="youtube", work=_work)
+
         if kind == "weather":
             location = self._extract_weather_location(user_text)
             if not location:
                 return "Which city or place should I check the weather for?"
             from tools.web import weather as weather_lookup
 
-            return self._direct_tool_reply(
-                "weather",
-                {"location": location},
-                lambda: weather_lookup(location),
-                ok=lambda r: (r.get("spoken") or r.get("now") or f"Weather in {location}.").strip(),
-                fail=f"I couldn't get the weather for {location}.",
+            def _weather_work() -> str:
+                return self._direct_tool_reply(
+                    "weather",
+                    {"location": location},
+                    lambda: weather_lookup(location),
+                    ok=lambda r: (
+                        r.get("spoken") or r.get("now") or f"Weather in {location}."
+                    ).strip(),
+                    fail=f"I couldn't get the weather for {location}.",
+                )
+
+            return self._defer_companion(
+                kind="weather",
+                detail=location,
+                work=_weather_work,
             )
 
         query = self._extract_search_query(original)
@@ -2694,19 +3178,23 @@ class VoiceAgent:
             return None
         from tools.web import web_search
 
-        def _run_search() -> dict:
-            return web_search(query, max_results=5)
+        def _search_work() -> str:
+            self._emit(type="tool_start", tool="web_search", args={"query": query})
+            try:
+                result = web_search(query, max_results=5)
+            except Exception as exc:  # noqa: BLE001
+                self._emit(
+                    type="tool_end",
+                    tool="web_search",
+                    result=str({"error": str(exc)}),
+                )
+                return "I couldn't search the web right now. Try again in a moment."
+            self._emit(type="tool_end", tool="web_search", result=str(result))
+            if not result.get("results"):
+                return "I searched but didn't find much on that topic."
+            return self._summarize_search_results(original, query, result)
 
-        self._emit(type="tool_start", tool="web_search", args={"query": query})
-        try:
-            result = _run_search()
-        except Exception as exc:  # noqa: BLE001
-            self._emit(type="tool_end", tool="web_search", result=str({"error": str(exc)}))
-            return "I couldn't search the web right now. Try again in a moment."
-        self._emit(type="tool_end", tool="web_search", result=str(result))
-        if not result.get("results"):
-            return "I searched but didn't find much on that topic."
-        return self._summarize_search_results(original, query, result)
+        return self._defer_companion(kind="search", detail=query, work=_search_work)
 
     def _maybe_motion_request(
         self,
@@ -2843,6 +3331,199 @@ class VoiceAgent:
             messages[-1]["content"] = f"{hint}\n\n{messages[-1]['content']}"
         return messages
 
+    def _wants_discord_youtube_summary(self, user_text: str) -> bool:
+        """True when user wants the latest YouTube link from a Discord text channel."""
+        if self.discord is None or not CONFIG.web.enabled:
+            return False
+        tl = (user_text or "").lower().strip()
+        if not tl:
+            return False
+        from tools.youtube_transcript import extract_youtube_url
+
+        if extract_youtube_url(user_text):
+            return False  # explicit URL → plain youtube_transcript path
+        play_intent = any(
+            w in tl for w in ("play ", "play this", "queue ", "add to queue", "listen to")
+        )
+        if play_intent:
+            return False
+        youtubeish = "youtube" in tl or "youtubes" in tl
+        if not youtubeish:
+            return False
+        about = any(
+            w in tl
+            for w in (
+                "last video",
+                "latest video",
+                "new video",
+                "recent video",
+                "latest upload",
+                "last upload",
+                "tell me about",
+                "what's the last",
+                "whats the last",
+                "what is the last",
+                "what's the latest",
+                "whats the latest",
+                "summarize",
+                "summary",
+                "recap",
+                "posted",
+                "uploaded",
+            )
+        )
+        return about
+
+    def _extract_discord_youtube_channel(self, user_text: str) -> str:
+        """Best-effort Discord text channel name for a YouTube-summary request."""
+        original = (user_text or "").strip()
+        patterns = (
+            # "discord channel youtubes" / "channel #youtubes"
+            r"(?:discord\s+)?(?:text\s+)?channel\s+#?([a-zA-Z0-9_-]*youtubes?[a-zA-Z0-9_-]*)",
+            r"(?:in|from|on)\s+(?:the\s+)?#?(youtubes?)\b",
+            r"#([a-zA-Z0-9_-]*youtubes?[a-zA-Z0-9_-]*)",
+            r"(?:in|from|on)\s+(?:the\s+)?#?([a-zA-Z0-9_-]*youtubes?[a-zA-Z0-9_-]*)",
+        )
+        for pat in patterns:
+            m = re.search(pat, original, re.I)
+            if not m:
+                continue
+            channel = m.group(1).strip(" '\".,!?#")
+            channel = re.sub(r"\s+(?:text\s+)?channel$", "", channel, flags=re.I).strip()
+            if len(channel) >= 2:
+                return channel
+        # Common server naming: YouTube / YouTubes
+        tl = original.lower()
+        if "youtubes" in tl:
+            return "youtubes"
+        return "youtube"
+
+    def _try_discord_youtube_summary(self, user_text: str) -> Optional[str]:
+        """Ack immediately; fetch + summarize the latest YouTube link in the background."""
+        if not self._wants_discord_youtube_summary(user_text):
+            return None
+        if self.discord is None:
+            return None
+        channel_name = self._extract_discord_youtube_channel(user_text)
+        return self._defer_companion(
+            kind="youtube_channel",
+            detail=channel_name,
+            work=lambda: self._discord_youtube_summary_work(user_text, channel_name),
+        )
+
+    def _discord_youtube_summary_work(self, user_text: str, channel_name: str) -> str:
+        """Blocking Discord→YouTube transcript chain (runs on companion background thread)."""
+        from tools.youtube_transcript import find_latest_youtube_url, youtube_transcript
+
+        limit = 40
+        self._emit(
+            type="tool_start",
+            tool="discord_read_channel",
+            args={"channel_name": channel_name, "limit": limit},
+        )
+        try:
+            history = self.discord.fetch_channel_messages(channel_name, limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            self._emit(
+                type="tool_end",
+                tool="discord_read_channel",
+                result=str({"error": str(exc)}),
+            )
+            return (
+                f"I couldn't read #{channel_name} for the latest video. "
+                f"{exc}"
+            )
+        self._emit(type="tool_end", tool="discord_read_channel", result=str(history))
+        if isinstance(history, dict) and history.get("error"):
+            return f"I couldn't read #{channel_name}: {history.get('error')}"
+
+        messages = (history or {}).get("messages") if isinstance(history, dict) else None
+        yt_url = find_latest_youtube_url(messages)
+        if not yt_url:
+            ch = (history or {}).get("channel") if isinstance(history, dict) else channel_name
+            return (
+                f"I checked #{ch or channel_name} but didn't find a YouTube link "
+                "in the recent messages."
+            )
+
+        self._emit(type="tool_start", tool="youtube_transcript", args={"url": yt_url})
+        try:
+            result = youtube_transcript(yt_url)
+        except Exception as exc:  # noqa: BLE001
+            self._emit(
+                type="tool_end",
+                tool="youtube_transcript",
+                result=str({"error": str(exc)}),
+            )
+            return "I found the video but couldn't pull its transcript."
+        self._emit(type="tool_end", tool="youtube_transcript", result=str(result))
+        if not result.get("ok"):
+            return str(
+                result.get("error")
+                or "I found the video but couldn't get a transcript for it."
+            )
+        return self._summarize_youtube_transcript(user_text, result)
+
+    def _summarize_youtube_transcript(self, user_text: str, result: dict) -> str:
+        """Turn a YouTube transcript into a short in-character spoken summary."""
+        smart = (result.get("smart_summary") or "").strip()
+        transcript = (result.get("transcript") or "").strip()
+        source = smart or transcript
+        if not source:
+            return "I got the video but the transcript was empty."
+        video_url = str(result.get("url") or "").strip()
+        if smart:
+            source_label = "Pre-summarized content (from a long video)"
+            truncated_note = ""
+            guidance = (
+                "You already have a factual pre-summary of a long video. "
+                "Rewrite it in your natural spoken voice and personality — "
+                "typically three to six sentences unless they asked for more detail. "
+                "Do not mention tools, transcripts, captions, chunking, or URLs. "
+                "Do not invent details that are not in the pre-summary."
+            )
+        else:
+            source_label = "Transcript"
+            truncated_note = (
+                " (This is a truncated transcript of a longer video.)"
+                if result.get("truncated")
+                else ""
+            )
+            guidance = (
+                "The user asked you to summarize a YouTube video. You have its "
+                "caption transcript below. Reply in your natural spoken voice and "
+                "personality with a clear summary — typically three to six sentences "
+                "unless they asked for more detail. Cover the main points and tone. "
+                "Do not mention tools, transcripts, captions, or URLs. Do not invent "
+                "details that are not in the transcript."
+            )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"{self.llm.base_system_prompt(include_style_cue=False)}\n\n"
+                    f"{guidance}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"User asked: {user_text}\n"
+                    f"Video: {video_url}{truncated_note}\n\n"
+                    f"{source_label}:\n{source}"
+                ),
+            },
+        ]
+        try:
+            resp = self.llm.complete(messages, max_tokens=420)
+            text = (resp.content or "").strip()
+            if text and len(text) > 24:
+                return text
+        except Exception as exc:  # noqa: BLE001
+            log.warning("youtube summarize failed: %s", exc)
+        preview = source[:280].rsplit(" ", 1)[0].strip()
+        return f"Here's the gist: {preview}."
+
     def _summarize_search_results(self, user_text: str, query: str, result: dict) -> str:
         """Turn raw search hits into a short spoken answer."""
         summary = (result.get("summary") or "").strip()
@@ -2891,6 +3572,49 @@ class VoiceAgent:
         tl = (user_text or "").lower().strip()
         if not tl:
             return None
+
+        from tools.youtube_transcript import extract_youtube_url
+
+        yt_url = extract_youtube_url(user_text)
+        play_intent = any(
+            w in tl
+            for w in (
+                "play ",
+                "play this",
+                "queue ",
+                "add to queue",
+                "put on",
+                "listen to",
+            )
+        )
+        summarize_intent = any(
+            w in tl
+            for w in (
+                "summarize",
+                "summary",
+                "recap",
+                "transcript",
+                "what's this about",
+                "whats this about",
+                "what is this about",
+                "what is this video",
+                "what's in this",
+                "whats in this",
+                "explain this video",
+                "tell me about this video",
+                "what's the video about",
+                "whats the video about",
+            )
+        ) or bool(
+            yt_url and re.search(r"\b(?:summariz|recap|explain|transcript)\w*\b", tl)
+        )
+        if yt_url and summarize_intent and not play_intent:
+            return "youtube_transcript"
+
+        # Discord channel "latest YouTube video" is handled by discord chain, not web search.
+        if self.discord is not None and self._wants_discord_youtube_summary(user_text):
+            return None
+
         music_context = any(
             w in tl for w in ("queue", "song", "music", "track", "discord", "playing", "spotify")
         )
@@ -2898,6 +3622,7 @@ class VoiceAgent:
             t in tl for t in ("look up", "lookup", "search for", "google", "news", "weather")
         ):
             return None
+
         if "weather" in tl or re.search(r"\b(?:forecast|temperature|rain)\b", tl):
             return "weather"
         search_triggers = (
@@ -2907,6 +3632,12 @@ class VoiceAgent:
             "tell me about", "what happened", "who won", "headlines",
         )
         if any(t in tl for t in search_triggers):
+            # Mid-utterance VC fragments like "Can you tell me about..." must not
+            # fire a web search — require a real subject after the trigger.
+            query = __class__._extract_search_query(user_text)
+            q = (query or "").strip().strip(".…,?!\"'")
+            if len(q) < 3:
+                return None
             return "search"
         if re.search(r"\bnews\b", tl) and re.search(
             r"\b(?:latest|today|202\d|ai|tech|sports|world)\b", tl
@@ -2950,9 +3681,15 @@ class VoiceAgent:
                     "",
                     query,
                     flags=re.I,
-                ).strip(" ?.,!'\"")
+                ).strip(" ?.,!'\"…")
                 if len(query) >= 3:
                     return query
+                return ""
+        # "tell me about..." / "tell me about" with no subject yet
+        m = re.search(r"tell me about\s*(.*)$", tl)
+        if m is not None:
+            subject = m.group(1).strip(" ?.,!'\"…")
+            return subject if len(subject) >= 3 else ""
         query = re.sub(
             r"^(?:okay|ok|yeah|sure|hey)[,.]?\s*(?:can you|could you|please)\s+",
             "",
@@ -3083,10 +3820,84 @@ class VoiceAgent:
 
     # ----- events -----------------------------------------------------------
 
-    def _emit(self, **event) -> None:
+    def _next_event_sequence(self) -> int:
+        with self._event_sequence_lock:
+            self._event_sequence += 1
+            return self._event_sequence
+
+    def set_event_audience(self, audience) -> None:
+        """Capture immutable delivery audience for subsequent turn events."""
+        self._event_audience = audience
+
+    def _new_turn_context(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        corr_id: str,
+        generation_id: int,
+    ) -> TurnContext:
+        operator_id = None
+        room_id = None
+        data_dir = None
+        personality_id = None
+        try:
+            from services.voice.hub import hub
+
+            operator_id = str(getattr(hub, "_active_operator_id", None) or "") or None
+            room_id = str(getattr(hub, "_active_room_id", None) or "") or None
+            data_dir = str(__import__("os").environ.get("VA_DATA_DIR") or "") or None
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from config import CONFIG
+
+            pers = getattr(CONFIG, "personality", None)
+            if pers is not None:
+                personality_id = str(getattr(pers, "active_id", None) or "") or None
+            else:
+                personality_id = str(getattr(CONFIG, "active_personality", None) or "") or None
+        except Exception:  # noqa: BLE001
+            personality_id = None
+        aud = self._event_audience
+        if aud is not None and operator_id is None and getattr(aud, "kind", None) is not None:
+            from services.voice.audience import AudienceKind
+
+            if aud.kind is AudienceKind.OPERATOR:
+                operator_id = aud.id
+            elif aud.kind is AudienceKind.ROOM:
+                room_id = aud.id
+        return TurnContext(
+            session_id=session_id,
+            turn_id=turn_id,
+            corr_id=corr_id,
+            generation_id=generation_id,
+            audience=aud,
+            operator_id=operator_id,
+            room_id=room_id,
+            data_dir=data_dir,
+            personality_id=personality_id,
+        )
+
+    def _emit(self, *args, **event) -> None:
+        # Accept ``_emit(type=...)`` or legacy ``_emit({"type": ...})``.
+        if args:
+            if len(args) == 1 and isinstance(args[0], dict) and not event:
+                event = dict(args[0])
+            else:
+                raise TypeError("_emit expects keyword args or a single dict")
         corr = self._turn_corr_id
         if corr and event.get("type") in ("tool_start", "tool_end", "tool_trace"):
             event = {**event, "corr_id": corr}
+        event = stamp_event(
+            event,
+            session_id=self._session_id,
+            turn=self._turn_ctx,
+            sequence=self._next_event_sequence(),
+            # Background companion jobs often run after _turn_ctx is cleared —
+            # still stamp the frozen operator/room audience so SSE delivers.
+            audience=self._event_audience,
+        )
         if self.on_event is not None:
             try:
                 self.on_event(event)
@@ -3158,6 +3969,7 @@ class VoiceAgent:
         instruct = self._effective_instruct()
         self._express(self._turn_instruct or "", text)
         log.info("AI: %s", text)
+        gen = self.playback.generation_id
         self.playback.set_tts_generating(True)
         try:
             for audio, sr in self.voice.stream(
@@ -3165,7 +3977,7 @@ class VoiceAgent:
             ):
                 if self._barge_in_flag.is_set():
                     break
-                self.playback.submit(audio, sr)
+                self.playback.submit(audio, sr, generation_id=gen)
         finally:
             self.playback.set_tts_generating(False)
 
@@ -3183,7 +3995,20 @@ class VoiceAgent:
             was_session = self.is_session_running()
             self._barge_in_flag.clear()
             self.playback.stop()
-            self.playback.begin_turn()
+            turn_id = new_turn_id()
+            session_id = self._session_id or ""
+            turn_gen = self.playback.begin_turn(
+                session_id=session_id or None,
+                turn_id=turn_id,
+                corr_id=None,
+                audience=self._event_audience,
+            )
+            self._turn_ctx = self._new_turn_context(
+                session_id=session_id,
+                turn_id=turn_id,
+                corr_id="",
+                generation_id=turn_gen,
+            )
             use_xvec = self._clone_xvec_for_speak()
             if use_xvec is False or (use_xvec is None and not CONFIG.tts.xvec_only):
                 self._ensure_icl_ref_text()
@@ -3203,7 +4028,7 @@ class VoiceAgent:
             ):
                 if self._barge_in_flag.is_set():
                     break
-                self.playback.submit(audio, sr)
+                self.playback.submit(audio, sr, generation_id=turn_gen)
             while self.playback.is_playing() and not self._barge_in_flag.is_set():
                 time.sleep(0.05)
             if not self._barge_in_flag.is_set():
@@ -3217,6 +4042,8 @@ class VoiceAgent:
                 self._emit(type="status", value="listening")
             else:
                 self._emit(type="status", value="idle")
+            if self._turn_ctx and self._turn_ctx.turn_id == turn_id:
+                self._turn_ctx = None
 
     def speak_chat_reply(
         self,
@@ -3241,7 +4068,21 @@ class VoiceAgent:
             self._barge_in_flag.clear()
             # Always reset playback for typed chat — avoids replaying stale/ref audio.
             self.playback.stop()
-            self.playback.begin_turn()
+            turn_id = new_turn_id()
+            session_id = self._session_id or ""
+            turn_gen = self.playback.begin_turn(
+                session_id=session_id or None,
+                turn_id=turn_id,
+                corr_id=corr_id,
+                audience=self._event_audience,
+            )
+            self._turn_ctx = self._new_turn_context(
+                session_id=session_id,
+                turn_id=turn_id,
+                corr_id=corr_id or "",
+                generation_id=turn_gen,
+            )
+            self._turn_corr_id = corr_id
             self._turn_instruct = (instruct or "").strip() or None
             self._emit(type="status", value="speaking", **status_extra)
             self._emit_tts_info()
@@ -3258,12 +4099,15 @@ class VoiceAgent:
                     if self.playback.is_playing():
                         end = time.monotonic() + tail_s
                     time.sleep(0.05)
-            self._turn_instruct = None
             if emit_final_status:
                 if was_session and self.is_session_running():
                     self._emit(type="status", value="listening", **status_extra)
                 else:
                     self._emit(type="status", value="idle", **status_extra)
+            self._turn_instruct = None
+            if self._turn_ctx and self._turn_ctx.turn_id == turn_id:
+                self._turn_ctx = None
+            self._turn_corr_id = None
 
     def _resolve_render_instruct(self, instruct: str | None) -> str | None:
         if instruct and instruct.strip():
@@ -3385,7 +4229,7 @@ class VoiceAgent:
         )
         return buf.getvalue(), sr, timing
 
-    def _discord_voice_clip(self, text: str) -> Optional[bytes]:
+    def _discord_voice_clip(self, text: str, instruct: str | None = None) -> Optional[bytes]:
         """TTS WAV for Discord attachments — same synthesis path as the web panel."""
         if not CONFIG.discord.attach_voice:
             return None
@@ -3403,11 +4247,126 @@ class VoiceAgent:
             log.info("discord voice clip skipped — inference busy (voice swap or live session)")
             return None
         try:
-            wav, *_ = self.render_speech(clipped)
+            eff = (instruct or "").strip() or self._effective_instruct()
+            wav, *_ = self.render_speech(clipped, instruct=eff)
             return wav
         except Exception as exc:  # noqa: BLE001
             log.warning("discord voice clip failed: %s", exc)
             return None
+        finally:
+            INFERENCE_LOCK.release()
+
+    @staticmethod
+    def _split_spoken_sentences(text: str) -> list[str]:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return []
+        return [p.strip() for p in sentence_chunks(iter([cleaned])) if p.strip()]
+
+    def _discord_vc_sentence_wav(
+        self, text: str, instruct: str | None, *, part: str
+    ) -> Optional[bytes]:
+        """Synthesize one VC segment: 'first' sentence or 'rest'."""
+        if not CONFIG.discord.attach_voice:
+            return None
+        if self.voice is None or not getattr(self.voice, "available", True):
+            return None
+        clipped = (text or "").strip()
+        if len(clipped) > 800:
+            clipped = clipped[:797] + "..."
+        parts = self._split_spoken_sentences(clipped)
+        if part == "first":
+            target = parts[0] if parts else clipped
+        else:
+            target = " ".join(parts[1:]) if len(parts) > 1 else ""
+        target = _clean_text(target)
+        if not target:
+            return None
+        from services.voice.inference import INFERENCE_LOCK
+
+        acquired = INFERENCE_LOCK.acquire(timeout=120.0)
+        if not acquired:
+            return None
+        try:
+            eff = (instruct or "").strip() or self._effective_instruct()
+            wav, _sr, timing = self.render_speech(target, instruct=eff)
+            if part == "first":
+                log.info(
+                    "discord vc hybrid %s bytes=%s ttfa_ms=%.0f sentences=%s",
+                    part,
+                    len(wav or b""),
+                    float(timing.get("ttfa_ms") or 0),
+                    len(parts),
+                )
+            elif wav:
+                log.info("discord vc hybrid rest bytes=%s", len(wav))
+            return wav
+        except Exception as exc:  # noqa: BLE001
+            log.warning("discord vc %s synth failed: %s", part, exc)
+            return None
+        finally:
+            INFERENCE_LOCK.release()
+
+    def _discord_voice_hybrid_wavs(
+        self, text: str, instruct: str | None = None
+    ) -> list[bytes]:
+        """Legacy helper — prefer sentence-wise playback in DiscordManager."""
+        first = self._discord_vc_sentence_wav(text, instruct, part="first")
+        rest = self._discord_vc_sentence_wav(text, instruct, part="rest")
+        return [w for w in (first, rest) if w]
+
+    def _discord_voice_stream_wav(
+        self, text: str, instruct: str | None = None
+    ) -> Iterator[bytes]:
+        """Yield per-chunk WAV bytes for low-latency Discord VC playback."""
+        import io
+
+        import soundfile as sf
+
+        if not CONFIG.discord.attach_voice:
+            return
+        if self.voice is None or not getattr(self.voice, "available", True):
+            return
+        clipped = (text or "").strip()
+        if len(clipped) > 800:
+            clipped = clipped[:797] + "..."
+        if not clipped:
+            return
+
+        from services.voice.inference import INFERENCE_LOCK
+
+        acquired = INFERENCE_LOCK.acquire(timeout=120.0)
+        if not acquired:
+            log.info("discord vc stream skipped — inference busy")
+            return
+        try:
+            cleaned = _clean_text(clipped)
+            use_xvec = getattr(self, "_clone_xvec_for_speak", lambda: None)()
+            if use_xvec is False or (use_xvec is None and not CONFIG.tts.xvec_only):
+                getattr(self, "_ensure_icl_ref_text", lambda: None)()
+            eff = (instruct or "").strip() or self._effective_instruct()
+            eff_instruct = self._resolve_render_instruct(eff)
+            stream_fn = (
+                self.voice.stream_timed
+                if hasattr(self.voice, "stream_timed")
+                else self.voice.stream
+            )
+            for i, item in enumerate(
+                stream_fn(cleaned, instruct=eff_instruct, xvec_only=use_xvec)
+            ):
+                if len(item) == 3:
+                    audio, sample_rate, _timing = item
+                else:
+                    audio, sample_rate = item
+                buf = io.BytesIO()
+                sf.write(buf, audio, int(sample_rate), format="WAV", subtype="PCM_16")
+                payload = buf.getvalue()
+                if payload:
+                    if i == 0:
+                        log.info("vc TTS stream first chunk bytes=%s", len(payload))
+                    yield payload
+        except Exception as exc:  # noqa: BLE001
+            log.warning("discord vc TTS stream failed: %s", exc)
         finally:
             INFERENCE_LOCK.release()
 
@@ -3487,10 +4446,26 @@ class VoiceAgent:
         else:
             display_text = user_text or "[unclear audio]"
             log.info("user: %s", display_text)
-            self._emit(type="user", text=display_text, corr_id=corr_id, message_id=user_message_id)
+
+        turn_id = new_turn_id()
+        session_id = self._session_id or ""
         self._turn_corr_id = corr_id
         self.playback.stop()
-        self.playback.begin_turn()
+        generation_id = self.playback.begin_turn(
+            session_id=session_id or None,
+            turn_id=turn_id,
+            corr_id=corr_id,
+            audience=self._event_audience,
+        )
+        turn_ctx = self._new_turn_context(
+            session_id=session_id,
+            turn_id=turn_id,
+            corr_id=corr_id,
+            generation_id=generation_id,
+        )
+        self._turn_ctx = turn_ctx
+        if raw_text != "__monologue__":
+            self._emit(type="user", text=display_text, corr_id=corr_id, message_id=user_message_id)
         self._barge_in_flag.clear()
         self._pending_user_text = None
         self._turn_instruct = None
@@ -3563,10 +4538,22 @@ class VoiceAgent:
                         "answering or calling tools.]"
                     )
                     messages[-1]["content"] = f"{hint}\n\n{messages[-1]['content']}"
-                result = self.tool_loop.run(messages, emit=self._emit)
-                reply_text = result.final_text or ""
-                self._maybe_emit_avatar_mood(reply_text)
-                token_stream = iter([reply_text])
+                # Companion: only background the tool loop when the ask looks
+                # tool-shaped. Plain chat streams immediately with no "On it.".
+                if self._looks_like_tool_request(user_text) or self._has_pending_action():
+
+                    def _tool_work() -> str:
+                        result = self.tool_loop.run(messages, emit=self._emit)
+                        reply = (result.final_text or "").strip()
+                        if reply:
+                            self._maybe_emit_avatar_mood(reply)
+                        return reply or "Done."
+
+                    direct = self._defer_companion(kind="tools", work=_tool_work)
+                    self._maybe_emit_avatar_mood(direct)
+                    token_stream = iter([direct])
+                else:
+                    token_stream = self.llm.stream_messages(messages)
             else:
                 messages = self._build_messages(user_text)
                 token_stream = self.llm.stream_messages(messages)
@@ -3615,6 +4602,22 @@ class VoiceAgent:
                 listen_ev["completion_id"] = str(completion_id)
             self._emit(**listen_ev)
 
+        commit = should_commit_turn(
+            turn_ctx,
+            active_session_id=self._session_id,
+            active_turn=self._turn_ctx,
+            active_generation_id=self.playback.generation_id,
+        )
+        if not commit:
+            log.info(
+                "dropping stale turn commit turn_id=%s session_id=%s",
+                turn_ctx.turn_id,
+                turn_ctx.session_id,
+            )
+            if self._turn_ctx is turn_ctx:
+                self._turn_ctx = None
+            return
+
         # Record the exchange for context.
         if raw_text != "__monologue__":
             self.history.append(
@@ -3623,6 +4626,8 @@ class VoiceAgent:
                     "content": display_text,
                     "message_id": user_message_id,
                     "corr_id": corr_id,
+                    "turn_id": turn_ctx.turn_id,
+                    "session_id": turn_ctx.session_id,
                 }
             )
         if full_reply:
@@ -3633,6 +4638,8 @@ class VoiceAgent:
                     "content": full_reply,
                     "message_id": reply_message_id,
                     "corr_id": corr_id,
+                    "turn_id": turn_ctx.turn_id,
+                    "session_id": turn_ctx.session_id,
                     "completion_id": str(completion_id) if completion_id else None,
                 }
             )
@@ -3650,6 +4657,9 @@ class VoiceAgent:
                 self.memory.schedule_review(display_text, full_reply, scope=turn_scope)
             except Exception as exc:  # noqa: BLE001
                 log.warning("memory turn logging failed: %s", exc)
+
+        if self._turn_ctx is turn_ctx:
+            self._turn_ctx = None
 
     def _deliver(
         self,
@@ -3671,65 +4681,28 @@ class VoiceAgent:
                     self._emit(type="delivery", cue=self._turn_instruct)
                 spoke[0] = True
 
+        def emit_ai(text: str, *, final: bool) -> None:
+            self._emit(
+                type="ai",
+                text=text,
+                final=final,
+                corr_id=corr_id,
+                message_id=reply_message_id,
+            )
+
         if delivery == "off":
-            # Per-sentence: lowest latency, most tone variation.
-            parts: list[str] = []
-            for chunk in sentence_chunks(token_stream):
-                if self._barge_in_flag.is_set():
-                    break
-                chunk = _clean_text(chunk)
-                if not chunk:
-                    continue
-                parts.append(chunk)
-            for i, chunk in enumerate(parts):
-                if self._barge_in_flag.is_set():
-                    break
-                mark_speaking()
-                self._emit(
-                    type="ai",
-                    text=chunk,
-                    final=(i == len(parts) - 1),
-                    corr_id=corr_id,
-                    message_id=reply_message_id,
-                )
-                self._speak(chunk)
-            return " ".join(parts)
+            return self._deliver_per_sentence(
+                token_stream,
+                mark_speaking=mark_speaking,
+                emit_ai=emit_ai,
+            )
 
         if delivery == "hybrid":
-            # Speak the first sentence fast, then the remainder as one generation.
-            first_spoken = False
-            first_text = ""
-            rest_parts: list[str] = []
-            buffered: list[str] = []
-            for chunk in sentence_chunks(token_stream):
-                if self._barge_in_flag.is_set():
-                    break
-                chunk = _clean_text(chunk)
-                if not chunk:
-                    continue
-                buffered.append(chunk)
-            for i, chunk in enumerate(buffered):
-                if self._barge_in_flag.is_set():
-                    break
-                is_last = i == len(buffered) - 1
-                self._emit(
-                    type="ai",
-                    text=chunk,
-                    final=is_last,
-                    corr_id=corr_id,
-                    message_id=reply_message_id,
-                )
-                if not first_spoken:
-                    first_text = chunk
-                    mark_speaking()
-                    self._speak(chunk)
-                    first_spoken = True
-                else:
-                    rest_parts.append(chunk)
-            rest = " ".join(rest_parts)
-            if rest and not self._barge_in_flag.is_set():
-                self._speak(rest)
-            return " ".join(p for p in (first_text, rest) if p)
+            return self._deliver_hybrid(
+                token_stream,
+                mark_speaking=mark_speaking,
+                emit_ai=emit_ai,
+            )
 
         # "full" (default): gather the whole reply, synthesize as one generation.
         text = ""
@@ -3742,16 +4715,186 @@ class VoiceAgent:
         text = _clean_text(text)
         if not text:
             return ""
-        self._emit(
-            type="ai",
-            text=text,
-            final=True,
-            corr_id=corr_id,
-            message_id=reply_message_id,
-        )
+        emit_ai(text, final=True)
         mark_speaking()
         self._speak(text)
         return text
+
+    def _tts_item_alive(self, generation_id: int) -> bool:
+        if self._barge_in_flag.is_set():
+            return False
+        try:
+            return int(generation_id) == int(self.playback.generation_id)
+        except Exception:  # noqa: BLE001
+            return not self._barge_in_flag.is_set()
+
+    def _deliver_per_sentence(
+        self,
+        token_stream,
+        *,
+        mark_speaking,
+        emit_ai,
+    ) -> str:
+        """Per-sentence TTS. Optionally overlap LLM consume with a serial TTS worker."""
+        overlap = bool(getattr(CONFIG.tts, "llm_overlap", False))
+        if not overlap:
+            parts: list[str] = []
+            for chunk in sentence_chunks(token_stream):
+                if self._barge_in_flag.is_set():
+                    break
+                chunk = _clean_text(chunk)
+                if not chunk:
+                    continue
+                parts.append(chunk)
+                # Emit progressively; final flag updated on last known chunk below.
+                emit_ai(chunk, final=False)
+                mark_speaking()
+                self._speak(chunk)
+            if parts:
+                # Re-emit last as final for clients that key off final=True once.
+                emit_ai(parts[-1], final=True)
+            return " ".join(parts)
+
+        return self._deliver_with_tts_worker(
+            mode="off",
+            token_stream=token_stream,
+            mark_speaking=mark_speaking,
+            emit_ai=emit_ai,
+        )
+
+    def _deliver_hybrid(
+        self,
+        token_stream,
+        *,
+        mark_speaking,
+        emit_ai,
+    ) -> str:
+        """First sentence ASAP, remainder as one generation."""
+        overlap = bool(getattr(CONFIG.tts, "llm_overlap", False))
+        if not overlap:
+            first_text = ""
+            rest_parts: list[str] = []
+            for chunk in sentence_chunks(token_stream):
+                if self._barge_in_flag.is_set():
+                    break
+                chunk = _clean_text(chunk)
+                if not chunk:
+                    continue
+                if not first_text:
+                    first_text = chunk
+                    emit_ai(chunk, final=False)
+                    mark_speaking()
+                    self._speak(chunk)
+                else:
+                    rest_parts.append(chunk)
+                    emit_ai(chunk, final=False)
+            rest = " ".join(rest_parts)
+            if rest and not self._barge_in_flag.is_set():
+                emit_ai(rest, final=True)
+                self._speak(rest)
+            elif first_text:
+                emit_ai(first_text, final=True)
+            return " ".join(p for p in (first_text, rest) if p)
+
+        return self._deliver_with_tts_worker(
+            mode="hybrid",
+            token_stream=token_stream,
+            mark_speaking=mark_speaking,
+            emit_ai=emit_ai,
+        )
+
+    def _deliver_with_tts_worker(
+        self,
+        *,
+        mode: str,
+        token_stream,
+        mark_speaking,
+        emit_ai,
+    ) -> str:
+        """One serial TTS worker; turn thread keeps pulling LLM tokens (PERF-001)."""
+        gen = int(self.playback.generation_id)
+        jobs: queue.Queue[tuple[str, bool] | None] = queue.Queue(maxsize=8)
+        spoken_parts: list[str] = []
+        worker_error: list[BaseException] = []
+
+        def _worker() -> None:
+            while True:
+                item = jobs.get()
+                if item is None:
+                    return
+                text, is_final = item
+                if not self._tts_item_alive(gen):
+                    continue
+                try:
+                    emit_ai(text, final=is_final)
+                    mark_speaking()
+                    spoken_parts.append(text)
+                    self._speak(text)
+                except BaseException as exc:  # noqa: BLE001
+                    worker_error.append(exc)
+                    return
+
+        worker = threading.Thread(
+            target=_worker,
+            name="tts-overlap-worker",
+            daemon=True,
+        )
+        worker.start()
+
+        def _enqueue(text: str, *, is_final: bool) -> bool:
+            if not self._tts_item_alive(gen):
+                return False
+            try:
+                jobs.put((text, is_final), timeout=120.0)
+            except queue.Full:
+                log.warning("tts overlap queue full — dropping segment")
+                return False
+            return True
+
+        try:
+            if mode == "hybrid":
+                first_text = ""
+                rest_parts: list[str] = []
+                for chunk in sentence_chunks(token_stream):
+                    if not self._tts_item_alive(gen):
+                        break
+                    chunk = _clean_text(chunk)
+                    if not chunk:
+                        continue
+                    if not first_text:
+                        first_text = chunk
+                        _enqueue(chunk, is_final=False)
+                    else:
+                        rest_parts.append(chunk)
+                rest = " ".join(rest_parts)
+                if rest and self._tts_item_alive(gen):
+                    _enqueue(rest, is_final=True)
+                elif first_text and self._tts_item_alive(gen):
+                    emit_ai(first_text, final=True)
+                return " ".join(p for p in (first_text, rest) if p)
+
+            # mode == "off"
+            parts: list[str] = []
+            pending: str | None = None
+            for chunk in sentence_chunks(token_stream):
+                if not self._tts_item_alive(gen):
+                    break
+                chunk = _clean_text(chunk)
+                if not chunk:
+                    continue
+                if pending is not None:
+                    _enqueue(pending, is_final=False)
+                    parts.append(pending)
+                pending = chunk
+            if pending is not None and self._tts_item_alive(gen):
+                _enqueue(pending, is_final=True)
+                parts.append(pending)
+            return " ".join(parts)
+        finally:
+            jobs.put(None)
+            worker.join(timeout=300.0)
+            if worker_error:
+                raise worker_error[0]
 
     def _on_barge_in(self) -> None:
         self._barge_in_flag.set()
@@ -3878,6 +5021,7 @@ class VoiceAgent:
             dur = audio.size / CONFIG.stt.sample_rate
             log.debug("duplex captured %.2fs, transcribing", dur)
 
+            audio = self._enhance_stt_audio(audio)
             text = (self.stt.transcribe_array(audio, CONFIG.stt.sample_rate, barge=True) or "").strip()
             if not _is_barge_transcript(text):
                 if ducked:
@@ -4326,6 +5470,29 @@ class VoiceAgent:
 
         log.info("loading STT for reference transcription (%s)", CONFIG.stt.whisper_model)
         self.stt = create_stt()
+        self._emit_stt_status()
+
+    def _emit_stt_status(self) -> None:
+        """Surface ASR readiness / degraded fallback for the dashboard (ASR-002)."""
+        if self.stt is None:
+            return
+        status_fn = getattr(self.stt, "status", None)
+        if not callable(status_fn):
+            return
+        try:
+            snap = status_fn() or {}
+        except Exception:  # noqa: BLE001
+            return
+        if snap.get("degraded"):
+            self._emit(
+                type="status",
+                value="stt_degraded",
+                detail=snap.get("detail"),
+                stt=snap,
+            )
+            log.warning("STT degraded: %s", snap.get("detail") or snap)
+        else:
+            self._emit(type="status", value="stt_ready", stt=snap)
 
     def _ensure_icl_ref_text(self) -> None:
         """Ensure ref_text exists when ICL clone mode is active (auto-transcribe if needed)."""
@@ -4402,9 +5569,15 @@ class VoiceAgent:
 
     def _emit_raw(self, event: dict) -> None:
         """Pass a pre-built event dict straight through to the UI broadcaster."""
+        stamped = stamp_event(
+            event,
+            session_id=self._session_id,
+            turn=self._turn_ctx,
+            sequence=self._next_event_sequence(),
+        )
         if self.on_event is not None:
             try:
-                self.on_event(event)
+                self.on_event(stamped)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -4463,17 +5636,89 @@ class VoiceAgent:
     def is_session_running(self) -> bool:
         return self._session_thread is not None and self._session_thread.is_alive()
 
+    def mic_source(self) -> str:
+        return (self._mic_source or "browser").strip().lower()
+
+    def submit_browser_utterance(
+        self, audio_int16, *, assistant_speaking: bool = False
+    ) -> dict:
+        """Transcribe browser audio and return its terminal duck disposition."""
+        import numpy as np
+
+        audio = np.asarray(audio_int16, dtype=np.int16).reshape(-1)
+        if audio.size == 0 or self._session_stop.is_set() or self.stt is None:
+            return {"outcome": "resume_audio" if assistant_speaking else "ignored"}
+
+        self._emit(type="status", value="transcribing")
+        barge_ctx = assistant_speaking
+        try:
+            barge_ctx = (
+                assistant_speaking
+                or self._turn_active.is_set()
+                or self.playback.is_playing()
+                or self.playback.tts_generating()
+            )
+            text = (
+                self.stt.transcribe_array(
+                    audio, CONFIG.stt.sample_rate, barge=barge_ctx
+                )
+                or ""
+            ).strip()
+        except Exception as exc:  # noqa: BLE001
+            self._emit(type="error", text=str(exc))
+            self._emit(type="status", value="listening")
+            return {"outcome": "resume_audio" if barge_ctx else "ignored"}
+
+        if not text:
+            self._emit(type="status", value="listening")
+            return {"outcome": "resume_audio" if barge_ctx else "ignored"}
+
+        if (
+            barge_ctx
+            and CONFIG.audio.barge_in
+            and (self.barge_mode or "smart").lower() == "smart"
+        ):
+            if not _is_barge_transcript(text):
+                self._emit(type="status", value="listening")
+                return {"outcome": "resume_audio"}
+            log.info("user (browser barge): %s", text)
+            self._pending_user_text = text
+            self._barge_in_flag.set()
+            generation_id = self.playback.stop()
+            self._emit(type="barge_in")
+            self._emit(type="status", value="listening")
+            return {"outcome": "clear_audio", "generation_id": generation_id}
+
+        self._enqueue_turn(text)
+        return {"outcome": "queued"}
+
     def _enqueue_turn(self, text: str) -> None:
         if self._session_stop.is_set():
             return
-        self._turn_queue.put(text)
+        from services.voice.bounded_queue import put_keep_newest
+
+        dropped = put_keep_newest(self._turn_queue, text)
+        if dropped:
+            self._turn_queue_dropped += 1
+            self._emit(
+                type="busy",
+                reason="turn_overflow",
+                dropped=self._turn_queue_dropped,
+            )
+
+    def _drain_turn_queue(self) -> int:
+        from services.voice.bounded_queue import drain_queue
+
+        return drain_queue(self._turn_queue)
 
     def _turn_worker_loop(self) -> None:
         """Process voice turns off the VAD thread so STT can keep listening."""
         while not self._session_stop.is_set():
             text: Optional[str]
+            from_queue = False
             try:
                 text = self._turn_queue.get(timeout=0.25)
+                from_queue = True
             except queue.Empty:
                 pending = self._pending_user_text
                 if pending and not self._turn_active.is_set():
@@ -4483,34 +5728,45 @@ class VoiceAgent:
                     continue
             else:
                 if text is None:
+                    if from_queue:
+                        self._turn_queue.task_done()
                     break
             try:
                 self.respond(text)
             except Exception as exc:  # noqa: BLE001
                 log.exception("turn worker failed: %s", exc)
             finally:
-                self._turn_queue.task_done()
+                if from_queue:
+                    self._turn_queue.task_done()
 
-    def start_session(self) -> None:
-        """Start a hands-free VAD conversation loop on a background thread."""
+    def start_session(self, *, mic_source: str = "browser") -> None:
+        """Start a hands-free conversation loop (browser WS or server PortAudio mic)."""
         if self.is_session_running():
             return
+        source = (mic_source or "browser").strip().lower()
+        if source not in {"browser", "server", "websocket", "ws"}:
+            source = "browser"
+        if source in {"websocket", "ws"}:
+            source = "browser"
+        self._mic_source = source
+        self._session_id = new_session_id()
+        self._turn_ctx = None
+        self._event_sequence = 0
+        self._drain_turn_queue()
+        self._turn_queue_dropped = 0
+
         if self.stt is None:
             from stt import create_stt
 
-            log.info("loading STT (faster-whisper %s)", CONFIG.stt.whisper_model)
+            backend = (CONFIG.stt.backend or "whisper").strip().lower()
+            if backend in {"qwen3-asr", "qwen3_asr", "asr"}:
+                log.info("loading STT (qwen3-asr %s)", CONFIG.stt.asr_base_url)
+            else:
+                log.info("loading STT (faster-whisper %s)", CONFIG.stt.whisper_model)
             self.stt = create_stt()
+            self._emit_stt_status()
         self._session_stop.clear()
-        from vad import SharedMic
 
-        if self._mic is None:
-            self._mic = SharedMic()
-            self._mic.start()
-            log.info("session mic open (full-duplex)")
-        if self._duplex_thread is None or not self._duplex_thread.is_alive():
-            self._duplex_thread = threading.Thread(target=self._duplex_worker, daemon=True)
-            self._duplex_thread.start()
-            log.info("session duplex barge listener started")
         if self._turn_worker_thread is None or not self._turn_worker_thread.is_alive():
             self._turn_worker_thread = threading.Thread(
                 target=self._turn_worker_loop,
@@ -4519,18 +5775,53 @@ class VoiceAgent:
             )
             self._turn_worker_thread.start()
             log.info("session turn worker started")
-        self._session_thread = threading.Thread(target=self._vad_session, daemon=True)
+
+        if source == "server":
+            from vad import SharedMic
+
+            if self._mic is None:
+                self._mic = SharedMic()
+                self._mic.start()
+                log.info("session mic open (full-duplex)")
+            if self._duplex_thread is None or not self._duplex_thread.is_alive():
+                self._duplex_thread = threading.Thread(target=self._duplex_worker, daemon=True)
+                self._duplex_thread.start()
+                log.info("session duplex barge listener started")
+            self._session_thread = threading.Thread(target=self._vad_session, daemon=True)
+            self._session_thread.start()
+            return
+
+        log.info("session browser mic (WebSocket ingress)")
+        self._session_thread = threading.Thread(target=self._browser_session_idle, daemon=True)
         self._session_thread.start()
+
+    def _browser_session_idle(self) -> None:
+        """Hold session open while browser WebSocket feeds utterances."""
+        self._deliver_greeting_if_needed()
+        self._emit(type="status", value="listening")
+        try:
+            while not self._session_stop.is_set():
+                time.sleep(0.1)
+        except Exception as exc:  # noqa: BLE001
+            self._emit(type="error", text=str(exc))
+        finally:
+            self._emit(type="status", value="idle")
 
     def stop_session(self) -> None:
         self._session_stop.set()
         self._barge_in_flag.set()
         self._turn_active.clear()
+        self._pending_user_text = None
         self.playback.stop()
+        self._drain_turn_queue()
         try:
-            self._turn_queue.put(None)
-        except Exception:  # noqa: BLE001
-            pass
+            self._turn_queue.put_nowait(None)
+        except queue.Full:
+            self._drain_turn_queue()
+            try:
+                self._turn_queue.put_nowait(None)
+            except queue.Full:
+                pass
         worker = self._turn_worker_thread
         if worker is not None and worker is not threading.current_thread():
             worker.join(timeout=5.0)
@@ -4547,6 +5838,8 @@ class VoiceAgent:
             self._mic.stop()
             self._mic = None
             log.info("session mic closed")
+        self._session_id = None
+        self._turn_ctx = None
         self._emit(type="status", value="idle")
 
     def _vad_session(self) -> None:
@@ -4572,7 +5865,7 @@ class VoiceAgent:
                         while (
                             self.playback.is_playing()
                             or self.playback.tts_generating()
-                        ) and not self._session_stop.is_set():
+                        ) and not self._session_stop.is_set() and not self._barge_in_flag.is_set():
                             time.sleep(0.05)
                         if CONFIG.audio.monologue_enabled:
                             import random
@@ -4595,6 +5888,7 @@ class VoiceAgent:
                             continue
                     else:
                         self._emit(type="status", value="transcribing")
+                        audio = self._enhance_stt_audio(audio)
                         text = (self.stt.transcribe_array(audio, CONFIG.stt.sample_rate) or "").strip()
                         if not text:
                             if (
@@ -4606,7 +5900,7 @@ class VoiceAgent:
                                 continue
                 self._enqueue_turn(text)
                 if not self._session_stop.is_set():
-                    time.sleep(0.3)
+                    time.sleep(0.08)
         except Exception as exc:  # noqa: BLE001
             self._emit(type="error", text=str(exc))
         finally:

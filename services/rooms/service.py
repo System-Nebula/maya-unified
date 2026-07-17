@@ -6,7 +6,6 @@ import logging
 import re
 import secrets
 import uuid
-from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -46,6 +45,8 @@ async def create_room(
     personality_slug: str | None = None,
 ) -> VoiceRoom:
     settings = load_operator_settings_file(owner_id) or load_legacy_global_settings()
+    from services.settings.public import room_voice_settings_from
+
     pers = load_operator_personalities_file(owner_id)
     active = personality_slug or pers.get("active") or "default"
     personalities = pers.get("personalities") or {}
@@ -58,7 +59,7 @@ async def create_room(
         visibility=visibility if visibility in ("public", "private") else "private",
         status="open",
         personality_snapshot={"active": active, "entry": personality_snapshot},
-        settings_snapshot=deepcopy(settings),
+        settings_snapshot=room_voice_settings_from(settings),
     )
     session.add(room)
     await session.flush()

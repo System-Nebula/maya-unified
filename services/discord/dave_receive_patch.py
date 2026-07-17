@@ -354,7 +354,7 @@ def apply_dave_receive_patches() -> bool:
     return True
 
 
-async def wait_for_dave_ready(voice: Any, *, timeout: float = 12.0) -> bool:
+async def wait_for_dave_ready(voice: Any, *, timeout: float = 20.0) -> bool:
     """Wait for DAVE MLS handshake after connect (best-effort)."""
     loop = asyncio.get_event_loop()
     deadline = loop.time() + max(0.5, timeout)
@@ -377,3 +377,9 @@ async def wait_for_dave_ready(voice: Any, *, timeout: float = 12.0) -> bool:
         await asyncio.sleep(0.25)
     log.warning("DAVE session not ready after %.1fs — starting listen anyway", timeout)
     return False
+
+
+def reset_recv_stats() -> None:
+    """Reset packet counters (call on each new listen/connect)."""
+    for key in ("rtp", "rtcp", "dave_ok", "dave_pass", "dave_fail", "silence", "last_log_rtp"):
+        _STATS[key] = 0

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sys
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -14,6 +16,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from apps.gateway.cmd_routes import router as cmd_router  # noqa: E402
+from services.auth.deps import require_operator  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -29,8 +32,14 @@ def _fresh_registry(monkeypatch):
 
 @pytest.fixture
 def client() -> TestClient:
+    op = SimpleNamespace(id=uuid.uuid4(), role="operator", is_banned=False)
+
+    async def fake_require_operator():
+        return op
+
     app = FastAPI()
     app.include_router(cmd_router)
+    app.dependency_overrides[require_operator] = fake_require_operator
     return TestClient(app)
 
 

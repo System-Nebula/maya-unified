@@ -97,6 +97,20 @@ class StreamPlayer:
         self._browser_idle_timer: Optional[threading.Timer] = None
         self._tts_generating = False
         self._tts_generating_lock = threading.Lock()
+        # Captured playback generation — begin_turn/stop advance it; submit that
+        # carries a stale id is dropped so delayed TTS cannot leak into a new turn.
+        self._generation_id = 0
+        self._generation_lock = threading.Lock()
+        # VOICE-006: browser playback sequence + ack-driven idle.
+        self._browser_seq = 0
+        self._browser_last_queued_seq = 0
+        self._browser_last_played_seq = 0
+        self._browser_ack_playing = False
+        # Turn envelope captured at begin_turn (VOICE-002) — stamped on browser events.
+        self._envelope_session_id: Optional[str] = None
+        self._envelope_turn_id: Optional[str] = None
+        self._envelope_corr_id: Optional[str] = None
+        self._envelope_audience: Optional[dict] = None
 
         # Optional AEC — we feed it a copy of every block we send to the DAC
         # so the echo canceller knows what the speakers are outputting.
@@ -112,6 +126,16 @@ class StreamPlayer:
 
     def set_emitter(self, fn: Optional[Callable[[dict], None]]) -> None:
         self._emitter = fn
+
+    @property
+    def generation_id(self) -> int:
+        with self._generation_lock:
+            return self._generation_id
+
+    def _advance_generation(self) -> int:
+        with self._generation_lock:
+            self._generation_id += 1
+            return self._generation_id
 
     def set_tts_generating(self, active: bool) -> None:
         """True while the TTS engine is still decoding (between PCM chunks)."""
@@ -147,15 +171,21 @@ class StreamPlayer:
         return out
 
     def _extend_browser_deadline(self, samples: int, sample_rate: int) -> None:
+        """Arm a single fallback idle timer from estimated remaining audio.
+
+        Preferred completion is playback_ended from the browser; this timer only
+        covers dead/hidden tabs. Each call replaces the previous timer (no stack).
+        """
         dur = float(samples) / max(int(sample_rate), 1)
         with self._browser_deadline_lock:
             now = time.monotonic()
             if self._browser_deadline == 0.0:
-                base = now + 0.55  # Web Audio startup + scheduling slack
+                base = now + 0.35
             else:
                 base = max(now, self._browser_deadline)
-            self._browser_deadline = base + dur + 0.28
-            delay = self._browser_deadline - now
+            self._browser_deadline = base + dur
+            # One fallback: estimated remaining + short grace, capped.
+            delay = min(30.0, max(1.5, self._browser_deadline - now + 1.25))
         self._schedule_browser_idle(delay)
 
     def _schedule_browser_idle(self, delay: float) -> None:
@@ -167,20 +197,78 @@ class StreamPlayer:
         timer.start()
 
     def _browser_idle_fire(self) -> None:
+        """Fallback only — real completion comes from note_playback_ack."""
         if self._tts_active():
-            self._schedule_browser_idle(0.15)
+            self._schedule_browser_idle(0.5)
             return
         with self._browser_deadline_lock:
-            if time.monotonic() < self._browser_deadline - 0.02:
-                delay = self._browser_deadline - time.monotonic()
-                self._schedule_browser_idle(delay)
+            remaining = self._browser_deadline - time.monotonic()
+            if remaining > 0.05:
+                self._schedule_browser_idle(remaining + 0.25)
                 return
             self._browser_deadline = 0.0
-        if self.is_playing():
-            self._schedule_browser_idle(0.15)
-            return
+        self._browser_ack_playing = False
         self._set_idle()
         self._level = 0.0
+
+    def note_playback_ack(self, event: dict) -> bool:
+        """Apply an acknowledgment only to its exact active playback tuple."""
+        if self._output_sink != "browser" or not isinstance(event, dict):
+            return False
+        ev_type = str(event.get("type") or "")
+        ev_gen = event.get("generation_id")
+        current_gen = self.generation_id
+        if isinstance(ev_gen, int) and ev_gen != current_gen:
+            return False
+        ev_session = str(event.get("session_id") or "")
+        ev_turn = str(event.get("turn_id") or "")
+        if ev_session and self._envelope_session_id and ev_session != self._envelope_session_id:
+            return False
+        if ev_turn and self._envelope_turn_id and ev_turn != self._envelope_turn_id:
+            return False
+        if ev_type == "playback_started":
+            self._browser_ack_playing = True
+            self._clear_idle()
+            return True
+        if ev_type == "playback_progress":
+            seq = event.get("sequence")
+            if isinstance(seq, int):
+                self._browser_last_played_seq = max(self._browser_last_played_seq, seq)
+            self._browser_ack_playing = True
+            self._clear_idle()
+            self._schedule_browser_idle(8.0)
+            return True
+        if ev_type == "playback_ended":
+            if self._tts_active():
+                return False
+            seq = event.get("sequence")
+            if isinstance(seq, int):
+                self._browser_last_played_seq = max(self._browser_last_played_seq, seq)
+            with self._browser_deadline_lock:
+                self._browser_deadline = 0.0
+            if self._browser_idle_timer is not None:
+                self._browser_idle_timer.cancel()
+                self._browser_idle_timer = None
+            self._browser_ack_playing = False
+            self._set_idle()
+            self._level = 0.0
+            return True
+        if ev_type == "playback_interrupted":
+            with self._browser_deadline_lock:
+                self._browser_deadline = 0.0
+            if self._browser_idle_timer is not None:
+                self._browser_idle_timer.cancel()
+                self._browser_idle_timer = None
+            self._browser_ack_playing = False
+            self._set_idle()
+            self._level = 0.0
+            return True
+        if ev_type == "audio_queued":
+            seq = event.get("sequence")
+            if isinstance(seq, int):
+                self._browser_last_queued_seq = max(self._browser_last_queued_seq, seq)
+            return True
+        return False
 
     def _emit_browser(self, event: dict) -> None:
         if self._emitter is not None:
@@ -188,6 +276,38 @@ class StreamPlayer:
                 self._emitter(event)
             except Exception:  # noqa: BLE001
                 pass
+
+    def _with_envelope(self, event: dict) -> dict:
+        out = dict(event)
+        if self._envelope_session_id and "session_id" not in out:
+            out["session_id"] = self._envelope_session_id
+        if self._envelope_turn_id and "turn_id" not in out:
+            out["turn_id"] = self._envelope_turn_id
+        if self._envelope_corr_id and "corr_id" not in out:
+            out["corr_id"] = self._envelope_corr_id
+        if self._envelope_audience and "audience" not in out:
+            out["audience"] = dict(self._envelope_audience)
+        return out
+
+    def _set_envelope(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        corr_id: Optional[str] = None,
+        audience=None,
+    ) -> None:
+        self._envelope_session_id = session_id or None
+        self._envelope_turn_id = turn_id or None
+        self._envelope_corr_id = corr_id or None
+        if audience is None:
+            self._envelope_audience = None
+        elif hasattr(audience, "to_dict"):
+            self._envelope_audience = audience.to_dict()
+        elif isinstance(audience, dict):
+            self._envelope_audience = dict(audience)
+        else:
+            self._envelope_audience = None
 
     # ----- stream lifecycle -------------------------------------------------
 
@@ -378,13 +498,36 @@ class StreamPlayer:
 
     # ----- turn API ---------------------------------------------------------
 
-    def begin_turn(self) -> None:
-        """Start a fresh assistant turn: clear any prior stop flag and pending audio."""
+    def begin_turn(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        corr_id: Optional[str] = None,
+        audience=None,
+    ) -> int:
+        """Start a fresh assistant turn: clear any prior stop flag and pending audio.
+
+        Advances generation so clients reject delayed audio from the previous turn.
+        Captures session/turn/corr/audience ids so delayed chunks keep the creation-time envelope.
+        Returns the captured generation id for this turn's TTS submits.
+        """
+        gen = self._advance_generation()
+        self._set_envelope(
+            session_id=session_id,
+            turn_id=turn_id,
+            corr_id=corr_id,
+            audience=audience,
+        )
         self._drain()
         with self._lock:
             self._pending = np.zeros((0, self.channels), dtype=np.float32)
         self._stop.clear()
         self._set_idle()
+        self._browser_seq = 0
+        self._browser_last_queued_seq = 0
+        self._browser_last_played_seq = 0
+        self._browser_ack_playing = False
         with self._browser_deadline_lock:
             self._browser_deadline = 0.0
         if self._browser_idle_timer is not None:
@@ -396,11 +539,24 @@ class StreamPlayer:
         self._gain_step = 0.0
         self._stop_after_fade = False
         if self._output_sink == "browser":
-            self._emit_browser({"type": "audio_begin"})
+            self._emit_browser(
+                self._with_envelope({"type": "audio_begin", "generation_id": gen})
+            )
+        return gen
 
-    def submit(self, wav: np.ndarray, sample_rate: int) -> None:
+    def submit(
+        self,
+        wav: np.ndarray,
+        sample_rate: int,
+        *,
+        generation_id: Optional[int] = None,
+    ) -> None:
         if self._stop.is_set():
             return
+        current_gen = self.generation_id
+        if generation_id is not None and generation_id != current_gen:
+            return
+        emit_gen = current_gen if generation_id is None else generation_id
         chunk = self._reshape(wav)
         if chunk.shape[0] == 0:
             return
@@ -411,30 +567,66 @@ class StreamPlayer:
         self._update_meters(processed)
 
         if self._output_sink == "browser":
+            # Re-check after processing — barge may have advanced generation.
+            if generation_id is not None and generation_id != self.generation_id:
+                return
             mono = processed[:, 0] if processed.ndim == 2 else processed.reshape(-1)
             if self._aec is not None and self._sample_rate:
                 self._aec.push_reference(mono.copy(), self._sample_rate)
-            self._emit_browser({
-                "type": "audio",
-                "format": "f32le",
-                "sr": self._sample_rate,
-                "channels": 1,
-                "data": base64.b64encode(mono.astype(np.float32, copy=False).tobytes()).decode("ascii"),
-            })
-            self._emit_browser({
-                "type": "lip",
-                "speaking": True,
-                "level": float(self._level),
-                "bands": self.spectrum(),
-            })
+            self._browser_seq += 1
+            seq = self._browser_seq
+            self._browser_last_queued_seq = seq
+            self._browser_ack_playing = True
+            self._emit_browser(
+                self._with_envelope(
+                    {
+                        "type": "audio",
+                        "format": "f32le",
+                        "sr": self._sample_rate,
+                        "channels": 1,
+                        "generation_id": emit_gen,
+                        "sequence": seq,
+                        "data": base64.b64encode(
+                            mono.astype(np.float32, copy=False).tobytes()
+                        ).decode("ascii"),
+                    }
+                )
+            )
+            self._emit_browser(
+                self._with_envelope(
+                    {
+                        "type": "audio_queued",
+                        "generation_id": emit_gen,
+                        "sequence": seq,
+                    }
+                )
+            )
+            self._emit_browser(
+                self._with_envelope(
+                    {
+                        "type": "lip",
+                        "speaking": True,
+                        "level": float(self._level),
+                        "bands": self.spectrum(),
+                        "generation_id": emit_gen,
+                        "sequence": seq,
+                    }
+                )
+            )
             self._extend_browser_deadline(int(mono.shape[0]), self._sample_rate)
             return
 
         self._ensure_stream(sample_rate)
         self._queue.put(processed)
 
-    def stop(self) -> None:
-        """Hard stop: discard queued audio and silence the current output now."""
+    def stop(self) -> int:
+        """Hard stop: discard queued audio and silence the current output now.
+
+        Advances generation (duplex clear_audio invariant) so a late audio_stop
+        or chunk from the interrupted turn cannot affect the next one.
+        Keeps the captured turn envelope so the stop event still names that turn.
+        """
+        gen = self._advance_generation()
         self.set_tts_generating(False)
         self._gain = 1.0
         self._target_gain = 1.0
@@ -449,16 +641,25 @@ class StreamPlayer:
         if self._browser_idle_timer is not None:
             self._browser_idle_timer.cancel()
             self._browser_idle_timer = None
+        self._browser_ack_playing = False
         if self._output_sink == "browser":
-            self._emit_browser({"type": "audio_stop"})
-            self._emit_browser({
-                "type": "lip",
-                "speaking": False,
-                "level": 0.0,
-                "bands": [],
-            })
+            self._emit_browser(
+                self._with_envelope({"type": "audio_stop", "generation_id": gen})
+            )
+            self._emit_browser(
+                self._with_envelope(
+                    {
+                        "type": "lip",
+                        "speaking": False,
+                        "level": 0.0,
+                        "bands": [],
+                        "generation_id": gen,
+                    }
+                )
+            )
         self._set_idle()
         self._level = 0.0
+        return gen
 
     flush = stop
 
@@ -519,9 +720,8 @@ class StreamPlayer:
         if self._output_sink == "browser":
             if self._stop.is_set():
                 return False
-            with self._browser_deadline_lock:
-                # Web Audio schedules ahead of server clock — keep a grace tail.
-                return time.monotonic() < self._browser_deadline + 0.75
+            # Ack-driven: idle clears when playback_ended arrives (or fallback fires).
+            return not self._idle.is_set() or self._browser_ack_playing
         if self._idle.is_set():
             return time.monotonic() - self._idle_time < 0.25  # Keep playing for 250ms sound card buffer trailing padding
         return True

@@ -7,6 +7,12 @@ from services.cmd.executors.blender import exec_blend
 from services.cmd.executors.imagine import exec_imagine
 from services.cmd.executors.play import exec_play
 from services.cmd.executors.queue import exec_queue
+from services.cmd.capabilities import (
+    BLENDER_INSPECT,
+    COMMAND_BASIC,
+    GAME_CONTROL,
+    IMAGINE_SUBMIT,
+)
 from services.cmd.models import CmdDefinition, CmdParameter, CmdSurface
 from services.cmd.registry import registry
 from services.game.enabled import GAME_MODE_ENABLED
@@ -33,6 +39,7 @@ def ensure_cmds_registered() -> None:
             aliases=["cmds", "commands"],
             icon="question",
             tags=["help", "discovery"],
+            permissions=[COMMAND_BASIC],
             surfaces=[CmdSurface.CHAT, CmdSurface.DASHBOARD, CmdSurface.DISCORD],
             examples=["/help"],
             executor=exec_help,
@@ -47,6 +54,7 @@ def ensure_cmds_registered() -> None:
             category="System",
             icon="activity",
             tags=["health", "readiness", "system"],
+            permissions=[COMMAND_BASIC],
             surfaces=[CmdSurface.CHAT, CmdSurface.DASHBOARD, CmdSurface.DISCORD],
             examples=["/status"],
             executor=exec_status,
@@ -62,6 +70,7 @@ def ensure_cmds_registered() -> None:
             aliases=["img"],
             icon="image",
             tags=["image", "stable diffusion", "flux", "photo"],
+            permissions=[IMAGINE_SUBMIT],
             surfaces=[CmdSurface.CHAT, CmdSurface.DASHBOARD, CmdSurface.DISCORD],
             parameters=[
                 CmdParameter(
@@ -110,6 +119,7 @@ def ensure_cmds_registered() -> None:
             category="Creative",
             icon="box",
             tags=["blender", "3d", "mcp", "render"],
+            permissions=[BLENDER_INSPECT],
             surfaces=[CmdSurface.CHAT, CmdSurface.DASHBOARD, CmdSurface.DISCORD],
             parameters=[
                 CmdParameter(
@@ -150,6 +160,7 @@ def ensure_cmds_registered() -> None:
             aliases=["p"],
             icon="music",
             tags=["music", "audio", "discord", "bandcamp", "youtube", "queue"],
+            permissions=[COMMAND_BASIC],
             surfaces=[CmdSurface.CHAT, CmdSurface.DASHBOARD, CmdSurface.DISCORD],
             parameters=[
                 CmdParameter(
@@ -178,6 +189,7 @@ def ensure_cmds_registered() -> None:
             category="Media",
             icon="music",
             tags=["music", "audio", "dashboard", "queue"],
+            permissions=[COMMAND_BASIC],
             surfaces=[CmdSurface.CHAT, CmdSurface.DASHBOARD],
             parameters=[
                 CmdParameter(
@@ -210,6 +222,7 @@ def ensure_cmds_registered() -> None:
                 aliases=["gamegoal", "playgame"],
                 icon="gamepad",
                 tags=["pokemon", "emulator", "mgba", "game", "autonomous"],
+                permissions=[GAME_CONTROL],
                 surfaces=[CmdSurface.CHAT, CmdSurface.DASHBOARD],
                 parameters=[
                     CmdParameter(

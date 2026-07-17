@@ -60,6 +60,26 @@ async def lifespan(app: FastAPI):
     apply_discord_env(settings)
     apply_to_config(settings)
 
+    # All-in-one: bring up Qwen3-ASR beside the gateway when dictation asks for it.
+    try:
+        from services.voice.asr_sidecar import (
+            ensure_asr_sidecar,
+            stop_asr_sidecar,
+            wait_for_asr_ready,
+        )
+
+        asr_info = ensure_asr_sidecar(settings)
+        if asr_info.get("started") or asr_info.get("reason") == "already_running":
+            # Align settings CONFIG URL after sidecar may rewrite 8001 → 8091.
+            apply_to_config(settings)
+            ready = await asyncio.to_thread(wait_for_asr_ready, settings)
+            if not ready:
+                log.warning("ASR sidecar warming slowly — voice agent may use Whisper until ready")
+        elif asr_info.get("reason") not in {"autostart_disabled"}:
+            log.warning("ASR sidecar not started: %s", asr_info)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ASR sidecar startup skipped: %s", exc)
+
     from services.discovery.registry import probe_all
 
     probe_all(settings=settings)
@@ -97,3 +117,10 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target=_after_ready, daemon=True).start()
     yield
+    try:
+        from services.voice.asr_sidecar import stop_asr_sidecar
+
+        stop_asr_sidecar()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("ASR sidecar shutdown skipped: %s", exc)
+    hub.prepare_shutdown()

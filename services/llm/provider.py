@@ -8,9 +8,22 @@ if TYPE_CHECKING:
     from llm import LLMClient
 
 
-def _resolve_operator_id(operator_id: str | None = None) -> str | None:
+def _resolve_operator_id(
+    operator_id: str | None = None,
+    *,
+    turn=None,
+) -> str | None:
+    """Prefer explicit arg, then frozen TurnContext, then hub fallback (last resort)."""
     if operator_id:
         return str(operator_id)
+    try:
+        from services.voice.turn_context import resolve_operator_id as from_turn
+
+        oid = from_turn(turn)
+        if oid:
+            return oid
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from services.voice.hub import hub
 

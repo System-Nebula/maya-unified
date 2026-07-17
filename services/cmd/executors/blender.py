@@ -12,6 +12,7 @@ from services.blender import (
     blender_screenshot,
     blender_summary,
 )
+from services.cmd.capabilities import assert_blender_execute_allowed
 from services.cmd.models import CmdContext, CmdResult
 
 _ACTIONS = frozenset({"summary", "inspect", "screenshot", "render", "code"})
@@ -80,6 +81,9 @@ async def exec_blend(ctx: CmdContext, args: dict[str, Any]) -> CmdResult:
             return _result_from_tool(result, prefix="Blender render", artifacts=artifacts)
 
         if action == "code":
+            denied = assert_blender_execute_allowed(ctx)
+            if denied:
+                return CmdResult(ok=False, error=denied)
             code = str(parsed.get("code") or "").strip()
             if not code:
                 return CmdResult(ok=False, error="missing required parameter: code")

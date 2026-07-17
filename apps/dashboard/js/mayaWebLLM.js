@@ -18,9 +18,19 @@
     _pagehideBound: false,
     gpuLabel: "",
     gpuIssue: "",
+    connectionId: null,
   };
 
   let unloadPromise = null;
+
+  function connectionId() {
+    if (!state.connectionId) {
+      state.connectionId =
+        (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
+        `webllm-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+    return state.connectionId;
+  }
 
   const TROUBLESHOOT =
     "Edge is in software rendering mode. Fix: edge://settings/system → turn ON graphics acceleration, " +
@@ -32,7 +42,8 @@
       await fetch("/api/voice/agent/webllm/ready", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ready: !!ready }),
+        credentials: "same-origin",
+        body: JSON.stringify({ ready: !!ready, connection_id: connectionId() }),
       });
     } catch (_) {}
   }
@@ -41,7 +52,8 @@
     await fetch("/api/voice/agent/webllm/fulfill", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, ...payload }),
+      credentials: "same-origin",
+      body: JSON.stringify({ id, connection_id: connectionId(), ...payload }),
     });
   }
 
@@ -214,24 +226,27 @@
   }
 
   async function handleRequest(ev) {
-    const { id, messages, stream } = ev;
+    const { id, messages, stream, connection_id: targetConn, generation_id } = ev;
     if (!id || !messages) return;
+    if (targetConn && targetConn !== connectionId()) return;
+    const genPayload =
+      generation_id === undefined || generation_id === null ? {} : { generation_id };
     try {
       if (!state.engine) throw new Error("WebLLM engine not loaded");
       if (stream) {
         const chunks = await state.engine.chat.completions.create({ messages, stream: true });
         for await (const chunk of chunks) {
           const delta = chunk.choices?.[0]?.delta?.content;
-          if (delta) await fulfill(id, { chunk: delta });
+          if (delta) await fulfill(id, { chunk: delta, ...genPayload });
         }
-        await fulfill(id, { done: true });
+        await fulfill(id, { done: true, ...genPayload });
       } else {
         const out = await state.engine.chat.completions.create({ messages });
         const text = out.choices?.[0]?.message?.content || "";
-        await fulfill(id, { chunk: text, done: true });
+        await fulfill(id, { chunk: text, done: true, ...genPayload });
       }
     } catch (e) {
-      await fulfill(id, { error: e.message || String(e) });
+      await fulfill(id, { error: e.message || String(e), ...genPayload });
     }
   }
 

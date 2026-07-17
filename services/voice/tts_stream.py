@@ -82,6 +82,12 @@ class TtsStreamEncoder:
                 self._engine_prefill_ms = float(engine_timing.get("prefill_ms") or 0)
                 self._engine_decode_ms = float(engine_timing.get("decode_ms") or 0)
                 self._lock_wait_ms = float(engine_timing.get("lock_wait_ms") or 0)
+                try:
+                    from services.voice.metrics import get_voice_metrics
+
+                    get_voice_metrics().observe("voice.tts.ttfa_ms", self._ttfa_ms)
+                except Exception:
+                    pass
                 if not self._meta_sent:
                     yield pack_meta(
                         {

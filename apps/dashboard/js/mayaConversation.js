@@ -1523,6 +1523,7 @@ function _applyAgentEvent(store, ev) {
       store.step = "listen";
       _endStreaming(store);
       _finalizeChatMs(store);
+      window.mayaBrowserAudioOutput?.unduck?.();
       if (!store._ttsPreviewOnly) {
         _clearPlayingTurn(store);
         store.stopTurnAudio?.();
@@ -1566,6 +1567,7 @@ function _applyAgentEvent(store, ev) {
     return;
   }
   if (ev.type === "audio_stop") {
+    window.mayaBrowserAudioOutput?.unduck?.();
     if (!store._ttsPreviewOnly) {
       _clearPlayingTurn(store);
       store.stopTurnAudio?.();
@@ -1642,7 +1644,7 @@ function _applyAgentEvent(store, ev) {
       const op = store.turns[opIdx];
       if (corrId && !op.corrId) op.corrId = corrId;
       if (ev.message_id && _isServerId(ev.message_id)) op.messageId = ev.message_id;
-      store._chatPendingAt = Date.now();
+      if (!store._chatPendingAt) store._chatPendingAt = Date.now();
       store._ttsPendingAt = null;
       store._ttsPendingIdx = null;
       store._ttsTargetIdx = null;
@@ -1665,7 +1667,11 @@ function _applyAgentEvent(store, ev) {
     _scrollTranscript();
     return;
   }
-  if (ev.type === "ai" && (ev.text || ev.artifacts?.length)) {
+  if ((ev.type === "ai" || ev.type === "assistant") && (ev.text || ev.artifacts?.length)) {
+    if (ev.type === "assistant") {
+      // Legacy / VC alias — treat like a finalized Maya turn.
+      ev = { ...ev, type: "ai", final: ev.final !== false };
+    }
     if (ev.artifacts?.length) {
       ev.artifacts = _routePlaylistArtifacts(ev.artifacts);
     }
@@ -2652,6 +2658,17 @@ document.addEventListener("alpine:init", () => {
           const d = await statusR.json();
           this.sessionOn = !!d.session_running;
           if (d.status) this.statusLabel = d.status;
+          if (d.session_running && !window.mayaBrowserMic?.isActive?.()) {
+            try {
+              const leader = window.mayaVoiceLeader;
+              if (!leader || leader.isLeader()) {
+                await window.mayaBrowserMic?.connect?.("/api/voice/agent/ws");
+                await window.mayaBrowserMic?.startMicrophone?.();
+              } else {
+                await window.mayaBrowserMic?.startMicrophone?.({ wsUrl: "/api/voice/agent/ws" });
+              }
+            } catch (_) {}
+          }
         }
         if (convR.ok) {
           const d = await convR.json();
@@ -2696,6 +2713,7 @@ document.addEventListener("alpine:init", () => {
         this._visionUnsub = window.mayaVisionCapture.subscribe(() => this._syncVisionState());
       }
       window.addEventListener("maya-session-stop", () => {
+        window.mayaBrowserMic?.disconnect?.();
         this.stopVisionShare();
       });
       this._hydrated = true;
@@ -2721,6 +2739,33 @@ document.addEventListener("alpine:init", () => {
       const r = await fetch("/api/voice/agent/start", { method: "POST" });
       const data = await r.json();
       if (data.ok) {
+        try {
+          await window.mayaBrowserAudioOutput?.resume?.();
+          // Only the voice leader tab owns mic + playback; observers still get text SSE.
+          const leader = window.mayaVoiceLeader;
+          if (!leader || leader.isLeader()) {
+            await window.mayaBrowserMic?.connect?.(data.ws_url || "/api/voice/agent/ws");
+            await window.mayaBrowserMic?.startMicrophone?.();
+          } else {
+            // Mark desire for mic so leadership transfer can reclaim it.
+            const mic = window.mayaBrowserMic;
+            if (mic) {
+              // wantSession is internal; startMicrophone no-ops for observers but sets wantSession.
+              await mic.startMicrophone?.({ wsUrl: data.ws_url || "/api/voice/agent/ws" });
+            }
+          }
+        } catch (err) {
+          await fetch("/api/voice/agent/stop", { method: "POST" });
+          const msg = err?.message || "Microphone unavailable";
+          this.turns.push({
+            messageId: _nextMessageId(),
+            role: "system",
+            text: `Could not start browser mic: ${msg}`,
+          });
+          this.persist();
+          _scrollTranscript();
+          return;
+        }
         this.sessionOn = true;
         window.dispatchEvent(new CustomEvent("maya-session-start"));
       } else if (data.error === "voice_in_use") {
@@ -2736,6 +2781,7 @@ document.addEventListener("alpine:init", () => {
     },
 
     async stopSession() {
+      window.mayaBrowserMic?.disconnect?.();
       await fetch("/api/voice/agent/stop", { method: "POST" });
       this.sessionOn = false;
       window.dispatchEvent(new CustomEvent("maya-session-stop"));

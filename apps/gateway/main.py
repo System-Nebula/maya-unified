@@ -30,6 +30,11 @@ from apps.gateway.google_integrations_routes import router as google_integration
 from apps.gateway.bandcamp_integrations_routes import router as bandcamp_integrations_router  # noqa: E402
 from apps.gateway.platform_auth_routes import router as platform_auth_router  # noqa: E402
 from apps.gateway.lifespan import lifespan  # noqa: E402
+from services.deployment.profile import (  # noqa: E402
+    resolve_maya_profile,
+    should_mount_public_platform_routes,
+    validate_startup_bind,
+)
 from apps.gateway.settings_routes import router as settings_router
 from apps.gateway.imagine_routes import router as chat_imagine_router  # noqa: E402
 from apps.gateway.music_routes import router as media_router  # noqa: E402
@@ -39,6 +44,7 @@ from apps.gateway.room_routes import router as room_router  # noqa: E402
 from apps.gateway.browser_capture_routes import router as browser_capture_router  # noqa: E402
 from apps.gateway.game_routes import router as game_router  # noqa: E402
 from apps.gateway.voice_routes import register_agent_routes  # noqa: E402
+from services.auth.api_auth_registry import ApiAuthClass, classify_request  # noqa: E402
 from services.auth.deps import resolve_operator_from_token  # noqa: E402
 from services.auth.operator_store import any_operators_exist, get_db_session  # noqa: E402
 from services.auth.session import OPERATOR_SESSION_COOKIE, verify_operator_session  # noqa: E402
@@ -55,46 +61,13 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
-# Auth guard middleware — redirect unauthenticated HTML; 401 JSON for protected APIs
+# Auth guard middleware — deny-by-default /api; HTML login redirects
 # ---------------------------------------------------------------------------
 _GUARDED_PREFIXES = ("/", "/memory", "/settings", "/animations", "/panel", "/admin", "/rooms")
 _OPEN_PREFIXES = (
     "/login", "/setup", "/static", "/sdk", "/dashboard", "/docs", "/redoc",
-    "/openapi", "/health", "/favicon", "/room", "/imagine-outputs",
+    "/openapi", "/health", "/favicon", "/room", "/imagine-outputs", "/duplex",
 )
-_API_AUTH_OPEN = ("/api/auth/login", "/api/auth/logout", "/api/auth/me")
-_API_PLATFORM_OPEN = ("/api/platform/auth/status", "/api/platform/auth/login")
-
-
-def _path_needs_api_auth(path: str, method: str) -> bool:
-    if any(path == p or path.startswith(p + "/") for p in _API_AUTH_OPEN):
-        return False
-    if any(path == p or path.startswith(p + "/") for p in _API_PLATFORM_OPEN):
-        return False
-    if path.startswith("/api/operators"):
-        return not (method == "POST" and path == "/api/operators")
-    if path.startswith("/api/admin"):
-        return True
-    if path.startswith("/api/voice/"):
-        return True
-    if path == "/api/rooms" and method in ("GET", "POST"):
-        return True
-    if path.startswith("/api/rooms/") and method == "PATCH":
-        return True
-    return False
-
-
-def _is_room_guest_api(path: str, method: str) -> bool:
-    if not path.startswith("/api/rooms/"):
-        return False
-    if path.endswith("/join") and method == "POST":
-        return True
-    if method == "GET" and path.count("/") == 3:
-        return True
-    for suffix in ("/chat", "/messages", "/events", "/leave", "/queue", "/queue/request", "/queue/release"):
-        if path.endswith(suffix):
-            return True
-    return False
 
 
 async def _attach_operator(request: Request):
@@ -121,7 +94,19 @@ async def _auth_guard(request: Request, call_next):
     path = request.url.path
     method = request.method
 
-    if path.startswith("/api") and _path_needs_api_auth(path, method):
+    if path.startswith("/api"):
+        auth_class = classify_request(app, method, path)
+        if auth_class is None:
+            # Unmatched path → let FastAPI return 404 (still not an open handler).
+            return await call_next(request)
+        if auth_class in (
+            ApiAuthClass.PUBLIC,
+            ApiAuthClass.ROOM_MEMBER,
+            ApiAuthClass.SERVICE,
+        ):
+            await _attach_operator(request)
+            return await call_next(request)
+        # operator / admin — session required (role checks stay on route Depends)
         op = await _attach_operator(request)
         if op is None:
             return JSONResponse({"detail": "not authenticated"}, status_code=401)
@@ -129,13 +114,7 @@ async def _auth_guard(request: Request, call_next):
             return JSONResponse({"detail": "account banned"}, status_code=403)
         return await call_next(request)
 
-    if _is_room_guest_api(path, method) or path.startswith("/api/rooms"):
-        await _attach_operator(request)
-        return await call_next(request)
-
     if any(path.startswith(p) for p in _OPEN_PREFIXES):
-        return await call_next(request)
-    if path.startswith("/api"):
         return await call_next(request)
     if not any(path == p or path.startswith(p + "/") for p in _GUARDED_PREFIXES):
         return await call_next(request)
@@ -172,7 +151,14 @@ async def _revalidate_static_assets(request: Request, call_next):
 # --- operator auth (dashboard) — mount before other /api/auth routes -------------
 app.include_router(auth_router)
 app.include_router(admin_router)
-app.include_router(platform_auth_router)
+_MAYA_PROFILE = resolve_maya_profile()
+if should_mount_public_platform_routes(_MAYA_PROFILE):
+    app.include_router(platform_auth_router)
+else:
+    log.info(
+        "skipping platform auth routes (MAYA_PROFILE=%s; local binds stay private)",
+        _MAYA_PROFILE,
+    )
 app.include_router(google_integrations_router)
 app.include_router(bandcamp_integrations_router)
 
@@ -189,6 +175,12 @@ except Exception as exc:  # noqa: BLE001
 
 
 def _mount_platform_routes() -> None:
+    if not should_mount_public_platform_routes(_MAYA_PROFILE):
+        log.info(
+            "skipping public platform/webhook routes (MAYA_PROFILE=%s)",
+            _MAYA_PROFILE,
+        )
+        return
     try:
         from maya_gateway.routes import (
             arena,
@@ -248,6 +240,14 @@ if GAME_MODE_ENABLED:
     app.include_router(game_router)
 register_agent_routes(app)
 
+try:
+    from services.duplex.routes import router as duplex_router
+
+    app.include_router(duplex_router)
+    log.info("mounted duplex redirect (/duplex -> conversation)")
+except Exception as exc:  # noqa: BLE001
+    log.warning("duplex voice routes unavailable: %s", exc)
+
 # --- static: voice SDK ----------------------------------------------------------
 _sdk_dir = GATEWAY_SRC / "maya_gateway" / "static" / "sdk"
 _dashboard_dir = _ROOT / "apps" / "dashboard"
@@ -256,7 +256,12 @@ if _sdk_dir.is_dir():
     app.mount("/sdk", StaticFiles(directory=str(_sdk_dir)), name="voice-sdk")
 
 if _dashboard_dir.is_dir():
-    app.mount("/dashboard", StaticFiles(directory=str(_dashboard_dir)), name="dashboard-static")
+    # html=True serves index.html for directory URLs (e.g. /dashboard/demo/linear/)
+    app.mount(
+        "/dashboard",
+        StaticFiles(directory=str(_dashboard_dir), html=True),
+        name="dashboard-static",
+    )
 
 _image_root = Path(os.environ.get("MAYA_IMAGE_ROOT", "./data/outputs/maya-image")).resolve()
 if _image_root.is_dir():
@@ -416,11 +421,13 @@ def run() -> None:
     from apps.gateway.asyncio_compat import install_logging_filter
 
     install_logging_filter()
+    profile, host = validate_startup_bind()
     port = int(os.getenv("PORT", "8090"))
     reload = os.getenv("ENV", "production") == "development"
+    log.info("starting gateway MAYA_PROFILE=%s HOST=%s PORT=%s", profile, host, port)
     uvicorn.run(
         "apps.gateway.main:app",
-        host="0.0.0.0",
+        host=host,
         port=port,
         reload=reload,
         # Long-lived SSE streams (dashboard status/events) otherwise keep the

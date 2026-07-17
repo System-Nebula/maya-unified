@@ -106,6 +106,21 @@
       </div>
 
       <div class="xp-card">
+        <h2>Duplex Voice (recommended)</h2>
+        <p>
+          Browser mic duplex stack from Duplex Voice Lab — Qwen3-ASR → LM Studio → faster-qwen3-tts,
+          with generation-ID barge-in. Open <span class="xp-mono">/duplex</span> on this gateway (port 8090).
+        </p>
+        <div class="xp-actions">
+          <a class="xp-btn primary" href="/duplex">Open Duplex Voice</a>
+        </div>
+        <pre style="margin-top:12px"># Terminal 1 — ASR
+.\scripts\start-asr.ps1
+# Terminal 2 — gateway (LM Studio on :1234)
+python launch.py</pre>
+      </div>
+
+      <div class="xp-card">
         <h2>Run the standalone WebUI</h2>
         <p>From the repo root, in a <em>separate</em> terminal:</p>
         <pre>cd packages/voice-runtime

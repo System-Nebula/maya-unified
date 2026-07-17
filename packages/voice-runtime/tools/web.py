@@ -155,4 +155,45 @@ def build_web_tools() -> list[ToolSpec]:
             handler=lambda a: weather(a.get("location", "")),
             group="web",
         ),
+        ToolSpec(
+            name="youtube_transcript",
+            description=(
+                "Fetch the caption/transcript text for a YouTube video URL or video ID. "
+                "Use when the user wants a summary, recap, or explanation of a YouTube "
+                "video — NOT for playing music (use dashboard_play_music or "
+                "discord_play_youtube for playback). When the user asks about the last "
+                "video posted in a Discord channel, call discord_read_channel first, "
+                "then pass the newest YouTube URL here. Long videos may include a "
+                "smart_summary field — prefer rewriting that in your personality. "
+                "Otherwise summarize the transcript in a few spoken sentences."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "YouTube watch/share URL or 11-character video ID.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Max transcript characters to return (default 10000).",
+                    },
+                },
+                "required": ["url"],
+            },
+            handler=lambda a: _youtube_transcript_handler(a),
+            group="web",
+            # Fetch + optional multi-pass smart summary can take a while on long videos.
+            execution_timeout=180.0,
+        ),
     ]
+
+
+def _youtube_transcript_handler(args: dict) -> dict:
+    from tools.youtube_transcript import youtube_transcript
+
+    return youtube_transcript(
+        str(args.get("url") or ""),
+        max_chars=int(args.get("max_chars") or 10000),
+        smart_summarize=True,
+    )

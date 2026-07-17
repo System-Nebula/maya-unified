@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -47,8 +47,14 @@ def pcm_stereo_48k_to_mono_16k(pcm: bytes) -> np.ndarray:
     if raw.size % 2:
         raw = raw[:-1]
     mono = raw.reshape(-1, 2).astype(np.float32).mean(axis=1)
-    down = mono[::3]
-    return np.clip(down, -32768, 32767).astype(np.int16)
+    try:
+        from services.voice.resample import resample_float32_mono
+
+        down = resample_float32_mono(mono / 32768.0, 48000, 16000)
+        return np.clip(down * 32767.0, -32768, 32767).astype(np.int16)
+    except Exception:  # noqa: BLE001
+        down = mono[::3]
+        return np.clip(down, -32768, 32767).astype(np.int16)
 
 
 def _pcm_rms(pcm: bytes) -> float:
@@ -109,8 +115,12 @@ def build_utterance_sink(
     silence_ms: float = 1600.0,
     min_ms: float = 700.0,
     max_ms: float = 16000.0,
-    energy_threshold: float = 90.0,
+    energy_threshold: float = 400.0,
+    min_peak_energy: float = 350.0,
     merge_ms: float = 1200.0,
+    barge_onset_ms: float = 180.0,
+    bot_speaking_fn: Callable[[], bool] | None = None,
+    on_barge_onset: Callable[[int, float], None] | None = None,
     voice_client: Any = None,
 ):
     """Build a py-cord Sink that emits per-user utterances on silence.
@@ -137,7 +147,13 @@ def build_utterance_sink(
             self._min_sec = max(0.25, min_ms / 1000.0)
             self._max_sec = max(self._min_sec + 0.5, max_ms / 1000.0)
             self._energy_threshold = energy_threshold
+            self._min_peak_energy = min_peak_energy
             self._merge_sec = max(0.15, merge_ms / 1000.0)
+            self._barge_onset_sec = max(0.08, barge_onset_ms / 1000.0)
+            self._bot_speaking_fn = bot_speaking_fn
+            self._on_barge_onset = on_barge_onset
+            self._barge_voiced_sec: dict[int, float] = {}
+            self._barge_fired: set[int] = set()
             self._bufs: dict[int, _UserBuf] = {}
             self._pending: dict[int, _PendingUtterance] = {}
             self._lock = threading.Lock()
@@ -195,6 +211,24 @@ def build_utterance_sink(
                 return
             now = time.monotonic()
             energy = _pcm_rms(pcm)
+            frame_sec = len(pcm) / float(_bytes_per_sec)
+
+            if self._bot_speaking_fn and self._on_barge_onset and self._bot_speaking_fn():
+                if energy >= self._energy_threshold:
+                    voiced = self._barge_voiced_sec.get(uid, 0.0) + frame_sec
+                    self._barge_voiced_sec[uid] = voiced
+                    if voiced >= self._barge_onset_sec and uid not in self._barge_fired:
+                        self._barge_fired.add(uid)
+                        try:
+                            self._on_barge_onset(uid, energy)
+                        except Exception as exc:  # noqa: BLE001
+                            log.debug("vc barge onset callback: %s", exc)
+                else:
+                    self._barge_voiced_sec[uid] = 0.0
+            elif uid in self._barge_voiced_sec:
+                self._barge_voiced_sec[uid] = 0.0
+                self._barge_fired.discard(uid)
+
             self._write_logs += 1
             if self._write_logs <= 3 or self._write_logs % 100 == 0:
                 log.info(
@@ -204,6 +238,7 @@ def build_utterance_sink(
                     energy,
                     self._write_logs,
                 )
+            flush_item = None
             with self._lock:
                 # New speech while a merge window is open → fold into pending.
                 pending = self._pending.get(uid)
@@ -218,13 +253,17 @@ def build_utterance_sink(
                         peak_energy=energy,
                     )
                     self._bufs[uid] = buf
+                    self._barge_voiced_sec.pop(uid, None)
+                    self._barge_fired.discard(uid)
                     log.info("vc utterance start user=%s energy=%.1f", uid, energy)
                 buf.chunks.append(pcm)
                 buf.bytes_total += len(pcm)
                 buf.last_write_at = now  # any packet = still in phrase
                 buf.peak_energy = max(buf.peak_energy, energy)
                 if now - buf.started_at >= self._max_sec:
-                    self._flush_user_locked(uid, reason="max_duration")
+                    flush_item = self._take_user_locked(uid, reason="max_duration")
+            if flush_item is not None:
+                self._process_taken_utterance(*flush_item)
 
         def _watchdog(self) -> None:
             while not self._stop.wait(0.1):
@@ -234,23 +273,47 @@ def build_utterance_sink(
                 except Exception as exc:  # noqa: BLE001
                     log.debug("vc utterance watchdog: %s", exc)
 
+        def _effective_silence_sec(self, buf: _UserBuf) -> float:
+            """Longer thoughts get more hang time (Discord VAD gaps mid-phrase)."""
+            spoken = max(0.0, time.monotonic() - buf.started_at)
+            # Base silence, plus ~250ms per second spoken, capped.
+            adaptive = self._silence_sec + min(1.2, spoken * 0.25)
+            return min(3.2, adaptive)
+
         def _flush_silent(self) -> None:
             now = time.monotonic()
+            work: list[tuple[int, bytes, float, float, str]] = []
             with self._lock:
-                due = [
-                    uid
-                    for uid, buf in self._bufs.items()
-                    if (now - buf.last_write_at) >= self._silence_sec
-                    and (now - buf.started_at) >= self._min_sec
-                ]
+                due = []
+                for uid, buf in self._bufs.items():
+                    if (now - buf.started_at) < self._min_sec:
+                        continue
+                    need = self._effective_silence_sec(buf)
+                    if (now - buf.last_write_at) >= need:
+                        due.append(uid)
                 for uid in due:
-                    self._flush_user_locked(uid, reason="silence")
+                    item = self._take_user_locked(uid, reason="silence")
+                    if item is not None:
+                        work.append(item)
+            for item in work:
+                self._process_taken_utterance(*item)
 
-        def _flush_user_locked(self, uid: int, *, reason: str) -> None:
+        def _take_user_locked(
+            self, uid: int, *, reason: str
+        ) -> tuple[int, bytes, float, float, str] | None:
+            """Pop live buffer under lock; heavy DSP happens outside."""
             buf = self._bufs.pop(uid, None)
             if buf is None or not buf.chunks:
-                return
+                return None
             duration = buf.bytes_total / float(_bytes_per_sec)
+            if buf.peak_energy < self._min_peak_energy and reason != "max_duration":
+                log.info(
+                    "vc utterance discard user=%s reason=%s peak=%.1f (no real speech)",
+                    uid,
+                    reason,
+                    buf.peak_energy,
+                )
+                return None
             if duration < self._min_sec * 0.5 and reason != "max_duration":
                 log.info(
                     "vc utterance discard user=%s reason=%s dur=%.2f (too short)",
@@ -258,9 +321,25 @@ def build_utterance_sink(
                     reason,
                     duration,
                 )
-                return
-            pcm = b"".join(buf.chunks)
-            mono = pcm_stereo_48k_to_mono_16k(pcm)
+                return None
+            pcm_stereo = b"".join(buf.chunks)
+            return (uid, pcm_stereo, duration, buf.peak_energy, reason)
+
+        def _process_taken_utterance(
+            self,
+            uid: int,
+            pcm_stereo: bytes,
+            duration: float,
+            peak_energy: float,
+            reason: str,
+        ) -> None:
+            try:
+                from services.voice.duplex_ingress import discord_stereo_utterance_to_int16_16k
+
+                mono = discord_stereo_utterance_to_int16_16k(pcm_stereo, user_id=uid)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("vc hushmic failed user=%s — raw PCM: %s", uid, exc)
+                mono = pcm_stereo_48k_to_mono_16k(pcm_stereo)
             if mono.size < 1600:
                 log.info(
                     "vc utterance discard user=%s samples=%s (too small)",
@@ -269,46 +348,48 @@ def build_utterance_sink(
                 )
                 return
 
-            pending = self._pending.get(uid)
-            if pending is not None:
-                pending.chunks_16k.append(mono)
-                pending.ready_at = time.monotonic() + self._merge_sec
-                pending.payload["duration_sec"] = round(
-                    sum(c.size for c in pending.chunks_16k) / 16000.0, 3
-                )
-                log.info(
-                    "vc utterance merge user=%s +%.2fs -> %.2fs",
-                    uid,
-                    duration,
-                    pending.payload["duration_sec"],
-                )
-                return
+            with self._lock:
+                pending = self._pending.get(uid)
+                if pending is not None:
+                    pending.chunks_16k.append(mono)
+                    pending.ready_at = time.monotonic() + self._merge_sec
+                    pending.payload["duration_sec"] = round(
+                        sum(c.size for c in pending.chunks_16k) / 16000.0, 3
+                    )
+                    log.info(
+                        "vc utterance merge user=%s +%.2fs -> %.2fs",
+                        uid,
+                        duration,
+                        pending.payload["duration_sec"],
+                    )
+                    return
 
-            member = None
-            try:
-                if self.vc and getattr(self.vc, "guild", None):
-                    member = self.vc.guild.get_member(uid)
-            except Exception:  # noqa: BLE001
                 member = None
-            display = getattr(member, "display_name", None) or str(uid)
-            ch = getattr(self.vc, "channel", None) if self.vc else None
-            guild = getattr(self.vc, "guild", None) if self.vc else None
-            payload = {
-                "author": display,
-                "author_id": uid,
-                "sample_rate": 16000,
-                "duration_sec": round(float(mono.size) / 16000.0, 3),
-                "channel": self._channel_name or (getattr(ch, "name", "") if ch else ""),
-                "guild": self._guild_name or (getattr(guild, "name", "") if guild else ""),
-                "guild_id": self._guild_id
-                or (getattr(guild, "id", None) if guild else None),
-                "reason": reason,
-            }
-            self._pending[uid] = _PendingUtterance(
-                payload=payload,
-                ready_at=time.monotonic() + self._merge_sec,
-                chunks_16k=[mono],
-            )
+                try:
+                    if self.vc and getattr(self.vc, "guild", None):
+                        member = self.vc.guild.get_member(uid)
+                except Exception:  # noqa: BLE001
+                    member = None
+                display = getattr(member, "display_name", None) or str(uid)
+                ch = getattr(self.vc, "channel", None) if self.vc else None
+                guild = getattr(self.vc, "guild", None) if self.vc else None
+                payload = {
+                    "author": display,
+                    "author_id": uid,
+                    "sample_rate": 16000,
+                    "duration_sec": round(float(mono.size) / 16000.0, 3),
+                    "channel": self._channel_name or (getattr(ch, "name", "") if ch else ""),
+                    "guild": self._guild_name or (getattr(guild, "name", "") if guild else ""),
+                    "guild_id": self._guild_id
+                    or (getattr(guild, "id", None) if guild else None),
+                    "reason": reason,
+                    "peak_energy": round(peak_energy, 1),
+                }
+                self._pending[uid] = _PendingUtterance(
+                    payload=payload,
+                    ready_at=time.monotonic() + self._merge_sec,
+                    chunks_16k=[mono],
+                )
             log.info(
                 "vc utterance hold user=%s reason=%s dur=%.2fs (merge window %.0fms)",
                 display,
@@ -345,15 +426,25 @@ def build_utterance_sink(
                 except Exception as exc:  # noqa: BLE001
                     log.warning("vc utterance callback failed: %s", exc)
 
+        def user_capturing(self, uid: int) -> bool:
+            """True while this user still has live or merge-held audio."""
+            with self._lock:
+                return int(uid) in self._bufs or int(uid) in self._pending
+
         def cleanup(self) -> None:
             self._stop.set()
+            work: list[tuple[int, bytes, float, float, str]] = []
             with self._lock:
                 uids = list(self._bufs)
                 for uid in uids:
-                    self._flush_user_locked(uid, reason="cleanup")
+                    item = self._take_user_locked(uid, reason="cleanup")
+                    if item is not None:
+                        work.append(item)
                 # Force-emit anything still held.
                 for uid, pending in list(self._pending.items()):
                     pending.ready_at = 0
+            for item in work:
+                self._process_taken_utterance(*item)
             self._emit_pending()
             self.finished = True
 

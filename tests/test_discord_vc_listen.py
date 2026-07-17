@@ -26,8 +26,10 @@ def test_pcm_stereo_downsample_shape() -> None:
     stereo[:, 1] = 2000
     mono = pcm_stereo_48k_to_mono_16k(stereo.tobytes())
     assert mono.dtype == np.int16
-    assert mono.shape == (frames // 3,)
-    assert int(mono[0]) == 1500
+    # 48→16 is exact 3:1 duration; allow ±2 samples for filter edge effects.
+    assert abs(mono.shape[0] - frames // 3) <= 2
+    # Constant mid value ~1500 after anti-aliased resample (not bit-exact ::3).
+    assert abs(float(np.mean(mono)) - 1500.0) < 80.0
 
 
 def test_pcm_empty() -> None:

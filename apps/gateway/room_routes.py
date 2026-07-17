@@ -24,8 +24,10 @@ router = APIRouter(prefix="/api/rooms", tags=["voice-rooms"])
 
 
 def _room_snapshot(room) -> dict:
+    from services.settings.public import to_public_settings
+
     return {
-        "settings": room.settings_snapshot or {},
+        "settings": to_public_settings(room.settings_snapshot or {}),
         "personality": room.personality_snapshot or {},
     }
 

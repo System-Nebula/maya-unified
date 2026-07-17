@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Maya · DESIGN.md Demo Hub</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0b0b0d; --card: #141418; --text: #f4f4f5; --muted: #a1a1aa; --line: #27272a; --accent: #60a5fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: Inter, system-ui, sans-serif; background: var(--bg); color: var(--text);
+      min-height: 100vh; padding: 40px 20px 80px;
+    }
+    .wrap { width: min(1100px, 100%); margin: 0 auto; }
+    h1 { font-size: clamp(1.8rem, 3vw, 2.6rem); letter-spacing: -0.04em; margin: 0 0 8px; }
+    p.lead { color: var(--muted); max-width: 60ch; line-height: 1.5; }
+    .grid {
+      display: grid; gap: 14px; margin-top: 28px;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    }
+    a.card {
+      display: block; padding: 18px; border-radius: 14px; background: var(--card);
+      border: 1px solid var(--line); color: inherit; text-decoration: none;
+      transition: border-color .15s, transform .15s;
+    }
+    a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    a.card strong { display: block; margin-bottom: 6px; }
+    a.card span { color: var(--muted); font-size: 13px; line-height: 1.4; }
+    .rank { font-size: 11px; color: var(--accent); letter-spacing: 0.08em; text-transform: uppercase; }
+    .links { margin-top: 28px; display: flex; gap: 12px; flex-wrap: wrap; }
+    .links a {
+      color: var(--muted); border: 1px solid var(--line); padding: 8px 12px; border-radius: 999px; text-decoration: none;
+    }
+    .note { margin-top: 18px; font-size: 13px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Maya DESIGN.md demos</h1>
+    <p class="lead">
+      Separate aesthetic demo sites inspired by brand DESIGN.md files.
+      Each site includes Companion, Memory, and Settings — mock theater covering Maya’s surfaces.
+      Production dashboard is unchanged.
+    </p>
+    <div class="grid">
+      <a class="card" href="./elevenlabs/index.html"><div class="rank">#1</div><strong>ElevenLabs</strong><span>Voice-first cinematic companion</span></a>
+      <a class="card" href="./linear/index.html"><div class="rank">#2</div><strong>Linear</strong><span>Precise operator density</span></a>
+      <a class="card" href="./raycast/index.html"><div class="rank">#3</div><strong>Raycast</strong><span>Command-palette energy</span></a>
+      <a class="card" href="./cursor/index.html"><div class="rank">#4</div><strong>Cursor</strong><span>AI-native chrome</span></a>
+      <a class="card" href="./voltagent/index.html"><div class="rank">#5</div><strong>VoltAgent</strong><span>Void-black agent terminal</span></a>
+      <a class="card" href="./spotify/index.html"><div class="rank">#6</div><strong>Spotify</strong><span>Music-led player theater</span></a>
+      <a class="card" href="./vercel/index.html"><div class="rank">#7</div><strong>Vercel</strong><span>Monochrome operator portal</span></a>
+      <a class="card" href="./supabase/index.html"><div class="rank">#8</div><strong>Supabase</strong><span>Emerald data dashboard</span></a>
+      <a class="card" href="./resend/index.html"><div class="rank">#9</div><strong>Resend</strong><span>Quiet dark + mono</span></a>
+      <a class="card" href="./stripe/index.html"><div class="rank">#10</div><strong>Stripe</strong><span>Polished SaaS clarity</span></a>
+      <a class="card" href="./ollama/index.html"><div class="rank">#11</div><strong>Ollama</strong><span>Local LLM terminal</span></a>
+      <a class="card" href="./sentry/index.html"><div class="rank">#12</div><strong>Sentry</strong><span>Dense monitoring chrome</span></a>
+    </div>
+    <div class="links">
+      <a href="/dashboard/conversation.html">Open live Maya</a>
+      <a href="/dashboard/memory.html">Live Memory</a>
+      <a href="/dashboard/settings.html">Live Settings</a>
+    </div>
+    <p class="note">Temporary demo hub · /dashboard/demo/</p>
+  </div>
+</body>
+</html>

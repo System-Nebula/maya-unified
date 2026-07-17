@@ -10,7 +10,7 @@ import re
 import threading
 import time as _time
 
-from fastapi import Body, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, File, Form, HTTPException, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from services.paths import VOICE_RUNTIME, animations_dir, vrm_backgrounds_dir, vrm_dir, voices_dir
@@ -434,22 +434,44 @@ def register_agent_routes(app) -> None:
         return StreamingResponse(_gen(), headers=headers)
 
     @app.post(f"{prefix}/webllm/ready")
-    def webllm_ready(data: dict = Body(default_factory=dict)) -> dict:
+    def webllm_ready(request: Request, data: dict = Body(default_factory=dict)) -> dict:
         from services.llm import webllm_broker
 
-        webllm_broker.mark_browser_ready(bool((data or {}).get("ready", True)))
-        return {"ok": True}
+        oid = _operator_id(request)
+        if not oid:
+            raise HTTPException(401, "not authenticated")
+        payload = data or {}
+        connection_id = str(payload.get("connection_id") or "").strip()
+        if not connection_id:
+            raise HTTPException(400, "connection_id required")
+        webllm_broker.mark_browser_ready(
+            oid,
+            connection_id,
+            bool(payload.get("ready", True)),
+        )
+        return {"ok": True, "connection_id": connection_id}
 
     @app.post(f"{prefix}/webllm/fulfill")
-    def webllm_fulfill(data: dict = Body(...)) -> dict:
+    def webllm_fulfill(request: Request, data: dict = Body(...)) -> dict:
         from services.llm import webllm_broker
 
+        oid = _operator_id(request)
+        if not oid:
+            raise HTTPException(401, "not authenticated")
         payload = data or {}
+        connection_id = str(payload.get("connection_id") or "").strip()
+        if not connection_id:
+            raise HTTPException(400, "connection_id required")
+        gen_raw = payload.get("generation_id")
+        generation_id = int(gen_raw) if gen_raw is not None and str(gen_raw).strip() != "" else None
         ok = webllm_broker.fulfill(
             str(payload.get("id", "")),
+            operator_id=oid,
+            connection_id=connection_id,
             chunk=str(payload.get("chunk", "")),
             done=bool(payload.get("done")),
             error=str(payload.get("error", "")),
+            generation_id=generation_id,
         )
         return {"ok": ok}
 
@@ -471,13 +493,28 @@ def register_agent_routes(app) -> None:
                 while True:
                     try:
                         event = q.get(timeout=15.0)
-                        yield f"data: {json.dumps(event)}\n\n"
                     except queue.Empty:
                         yield ": keep-alive\n\n"
+                        continue
+                    if event is None or event.get("type") == "_shutdown":
+                        break
+                    yield f"data: {json.dumps(event)}\n\n"
             finally:
                 hub.unsubscribe(q)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.post(f"{prefix}/audio-leader")
+    def audio_leader(request: Request, data: dict = Body(...)) -> dict:
+        oid = _operator_id(request)
+        if not oid:
+            return {"ok": False, "error": "not authenticated"}
+        payload = data or {}
+        return hub.claim_audio_leader(
+            oid,
+            str(payload.get("subscriber_id") or ""),
+            leader=bool(payload.get("leader", True)),
+        )
 
     @app.post(f"{prefix}/start")
     def start(request: Request) -> dict:
@@ -490,6 +527,12 @@ def register_agent_routes(app) -> None:
     def stop(request: Request) -> dict:
         oid = _operator_id(request)
         return hub.stop(operator_id=oid or None)
+
+    @app.websocket(f"{prefix}/ws")
+    async def agent_browser_ws(websocket: WebSocket) -> None:
+        from services.voice.browser_ws import browser_voice_websocket
+
+        await browser_voice_websocket(websocket)
 
     @app.get(f"{prefix}/spectrum")
     def spectrum() -> dict:

@@ -69,6 +69,31 @@ def webllm_prefers_direct_chat(model_id: str) -> bool:
     return any(tag in mid for tag in ("1.5B", "3B-INSTRUCT", "3.2-3B", "PHI-3.5-MINI"))
 
 
+def _webllm_owner_context() -> tuple[str, str | None, int | None]:
+    """Resolve owning operator + turn/generation from the active voice hub."""
+    from services.voice.hub import hub
+
+    oid = str(getattr(hub, "_active_operator_id", None) or "").strip()
+    if not oid:
+        raise RuntimeError("WebLLM requires an active operator context")
+    turn_id = None
+    generation_id = None
+    agent = getattr(hub, "agent", None)
+    if agent is not None:
+        turn = getattr(agent, "_current_turn", None) or getattr(agent, "_turn_context", None)
+        if turn is not None:
+            turn_id = getattr(turn, "turn_id", None) or getattr(turn, "id", None)
+            generation_id = getattr(turn, "generation_id", None)
+        if generation_id is None:
+            playback = getattr(agent, "playback", None)
+            if playback is not None:
+                generation_id = getattr(playback, "generation_id", None)
+        session_id = getattr(agent, "_session_id", None)
+        if turn_id is None and session_id:
+            turn_id = str(session_id)
+    return oid, str(turn_id) if turn_id else None, int(generation_id) if generation_id is not None else None
+
+
 class WebLLMBridgeClient:
     """Drop-in LLMClient surface backed by in-browser @mlc-ai/web-llm."""
 
@@ -107,7 +132,13 @@ class WebLLMBridgeClient:
         return messages
 
     def stream_reply(self, user_text: str, history: list[dict] | None = None) -> Iterator[str]:
-        yield from webllm_broker.request_stream(self._messages(user_text, history))
+        oid, turn_id, generation_id = _webllm_owner_context()
+        yield from webllm_broker.request_stream(
+            self._messages(user_text, history),
+            operator_id=oid,
+            turn_id=turn_id,
+            generation_id=generation_id,
+        )
 
     def stream_messages(
         self,
@@ -116,11 +147,17 @@ class WebLLMBridgeClient:
         model: str | None = None,
     ) -> Iterator[str]:
         del model  # WebLLM uses a single in-browser model; vision remarks are disabled.
+        oid, turn_id, generation_id = _webllm_owner_context()
         normalized = _normalize_messages_for_webllm(
             messages,
             fallback_system=self.base_system_prompt(),
         )
-        yield from webllm_broker.request_stream(normalized)
+        yield from webllm_broker.request_stream(
+            normalized,
+            operator_id=oid,
+            turn_id=turn_id,
+            generation_id=generation_id,
+        )
 
     def complete(
         self,
@@ -131,9 +168,15 @@ class WebLLMBridgeClient:
     ) -> LLMResponse:
         if tools:
             raise ToolsUnsupported("WebLLM does not support native tool calling")
+        oid, turn_id, generation_id = _webllm_owner_context()
         normalized = _normalize_messages_for_webllm(
             messages,
             fallback_system=self.base_system_prompt(),
         )
-        text = webllm_broker.request_complete(normalized)
+        text = webllm_broker.request_complete(
+            normalized,
+            operator_id=oid,
+            turn_id=turn_id,
+            generation_id=generation_id,
+        )
         return LLMResponse(content=sanitize_llm_output(text))

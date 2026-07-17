@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Query, Request
+from typing import Annotated, Any
 
+from fastapi import APIRouter, Body, Depends, Query, Request
+
+from services.auth.deps import require_operator
 from services.cmd.bootstrap import ensure_cmds_registered
 from services.cmd.chat_bridge import dispatch_cmd_request
 from services.cmd.models import CmdSurface
@@ -11,14 +14,10 @@ from services.cmd.models import CmdSurface
 router = APIRouter(prefix="/api/cmds", tags=["cmds"])
 
 
-def _operator_id(request: Request) -> str:
-    op = getattr(request.state, "operator", None)
-    return str(op.id) if op else ""
-
-
 @router.get("")
 def list_cmds(
     request: Request,
+    _op: Annotated[Any, Depends(require_operator)],
     surface: str | None = Query(default=None),
 ) -> dict:
     ensure_cmds_registered()
@@ -34,7 +33,11 @@ def list_cmds(
 
 
 @router.post("/dispatch")
-async def dispatch_cmd_route(request: Request, data: dict = Body(...)) -> dict:
+async def dispatch_cmd_route(
+    request: Request,
+    operator: Annotated[Any, Depends(require_operator)],
+    data: dict = Body(...),
+) -> dict:
     payload = data or {}
     text = str(payload.get("text") or "").strip() or None
     cmd_id = str(payload.get("cmd_id") or "").strip() or None
@@ -44,8 +47,13 @@ async def dispatch_cmd_route(request: Request, data: dict = Body(...)) -> dict:
         surface = CmdSurface(surface_raw)
     except ValueError:
         surface = CmdSurface.DISCORD
-    operator_id = str(payload.get("operator_id") or _operator_id(request) or "").strip() or None
+    # Identity from the authenticated principal only — ignore payload operator_id.
+    operator_id = str(operator.id)
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    metadata = {
+        **metadata,
+        "operator_role": getattr(operator, "role", None) or "operator",
+    }
     result = await dispatch_cmd_request(
         text=text,
         cmd_id=cmd_id,

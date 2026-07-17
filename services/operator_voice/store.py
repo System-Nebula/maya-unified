@@ -44,10 +44,12 @@ async def save_settings(
     session: AsyncSession, operator_id: str | uuid.UUID, patch: dict[str, Any]
 ) -> dict[str, Any]:
     from services.llm.api_keys import apply_reasoning_api_key_patch, stash_reasoning_api_key
+    from services.settings.public import sanitize_settings_patch
     from services.settings.reasoning_normalize import normalize_reasoning
     from services.settings.store import _redact_reasoning_api_key
 
     oid = uuid.UUID(str(operator_id))
+    patch = sanitize_settings_patch(patch if isinstance(patch, dict) else {}, operator_id=str(operator_id))
     apply_reasoning_api_key_patch(patch, operator_id=str(operator_id))
     current = await get_or_create_settings(session, oid)
     merged = deep_merge(current, patch if isinstance(patch, dict) else {})

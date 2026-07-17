@@ -11,6 +11,7 @@ dependencies = [
     "litellm>=1.50",
     "python-multipart>=0.0.9",
     "pydantic>=2.0",
+    "pydantic-settings>=2.7",
     "sqlalchemy>=2.0",
     "asyncpg>=0.29",
     "redis>=5.0",
@@ -28,6 +29,7 @@ dependencies = [
     "py-cord[voice]==2.8.0",
     "yt-dlp>=2024.1.0",
     "ddgs>=6.0.0",
+    "youtube-transcript-api>=1.0.0",
     "fastembed",
     "numpy",
     "itsdangerous>=2.0",
@@ -41,6 +43,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+duplex = ["dpdfnet==0.5.1"]
 mcp = ["mcp"]
 otel = [
     "opentelemetry-api>=1.27.0",
@@ -110,6 +113,7 @@ maya-spider = { workspace = true }
 asyncio_mode = "auto"
 markers = [
     "integration: live network tests (OpenRouter, etc.)",
+    "security: TEST-002 security and audience regression suite",
 ]
 testpaths = [
     "apps/gateway/tests",

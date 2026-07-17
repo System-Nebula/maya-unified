@@ -59,6 +59,12 @@ def wire_discord_voice_clip(agent: Any) -> None:
     if clip_fn is not None:
         agent.discord._voice_clip_fn = clip_fn  # noqa: SLF001
         agent.discord._on_incoming_message = agent._compose_discord_incoming_reply  # noqa: SLF001
+    hybrid_fn = getattr(agent, "_discord_vc_sentence_wav", None)
+    if hybrid_fn is not None:
+        agent.discord._voice_hybrid_fn = hybrid_fn  # noqa: SLF001
+    stream_fn = getattr(agent, "_discord_voice_stream_wav", None)
+    if stream_fn is not None:
+        agent.discord._voice_stream_fn = stream_fn  # noqa: SLF001
     vc_fn = getattr(agent, "_compose_discord_vc_reply", None)
     stt_fn = getattr(agent, "_discord_transcribe_pcm", None)
     if vc_fn is not None:

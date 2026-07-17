@@ -77,19 +77,32 @@ async def login(
     response: Response,
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ):
+    from services.auth.login_throttle import (
+        check_login_allowed,
+        clear_login_failures,
+        record_login_failure,
+    )
+
     body = await request.json()
     username = (body.get("username") or "").strip().lower()
     password = body.get("password") or ""
+    client_ip = request.client.host if request.client else "unknown"
 
     if not username or not password:
         raise HTTPException(status_code=400, detail="username and password required")
 
+    if not check_login_allowed(client_ip, username):
+        # Uniform message — do not reveal whether the username exists.
+        raise HTTPException(status_code=401, detail="invalid username or password")
+
     op = await get_by_username(session, username)
     if op is None or not verify_password(op.password_hash, password):
+        record_login_failure(client_ip, username)
         raise HTTPException(status_code=401, detail="invalid username or password")
     if getattr(op, "is_banned", False):
         raise HTTPException(status_code=403, detail="account banned")
 
+    clear_login_failures(client_ip, username)
     await touch_last_login(session, op.id)
     from services.operator_voice.context import ensure_operator_seeded
 

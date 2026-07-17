@@ -8,6 +8,7 @@ from typing import Any
 
 from opentelemetry import trace
 
+from services.cmd.capabilities import check_cmd_permissions
 from services.cmd.models import CmdContext, CmdResult, ParsedCmd
 from services.cmd.parser import validate_args
 from services.cmd.registry import registry
@@ -36,6 +37,9 @@ async def dispatch_cmd_async(parsed: ParsedCmd, ctx: CmdContext) -> CmdResult:
             ok=False,
             error=f"cmd {cmd.name} is not available on surface {ctx.surface.value}",
         )
+    denied = check_cmd_permissions(cmd, parsed, ctx)
+    if denied:
+        return CmdResult(ok=False, error=denied)
     err = validate_args(cmd, parsed.args)
     if err:
         return CmdResult(ok=False, error=err)

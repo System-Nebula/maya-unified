@@ -14,6 +14,7 @@ from services.settings.catalog import (
     fetch_openai_models,
 )
 from services.llm.api_keys import resolve_reasoning_api_key
+from services.settings.public import to_public_settings
 from services.settings.reasoning_normalize import uses_lm_studio_catalog
 from services.settings.store import load_effective_settings
 from services.voice.hub import hub
@@ -29,9 +30,8 @@ def _operator_id(request: Request) -> str:
 @router.get("")
 def get_settings(request: Request) -> dict:
     oid = _operator_id(request)
-    if oid:
-        return {"ok": True, "settings": load_effective_settings(oid)}
-    return {"ok": True, "settings": load_effective_settings(None)}
+    settings = load_effective_settings(oid or None)
+    return {"ok": True, "settings": to_public_settings(settings)}
 
 
 @router.get("/catalog")
@@ -134,7 +134,9 @@ def imagine_health(request: Request) -> dict:
 
 @router.post("")
 def patch_settings(request: Request, data: dict = Body(...)) -> dict:
+    from services.settings.public import to_public_settings
+
     patch = data.get("settings", data) if isinstance(data, dict) else {}
     oid = _operator_id(request)
-    merged = hub.apply_settings_patch(patch if isinstance(patch, dict) else {}, operator_id=oid or None)
-    return {"ok": True, "settings": load_effective_settings(oid or None)}
+    hub.apply_settings_patch(patch if isinstance(patch, dict) else {}, operator_id=oid or None)
+    return {"ok": True, "settings": to_public_settings(load_effective_settings(oid or None))}

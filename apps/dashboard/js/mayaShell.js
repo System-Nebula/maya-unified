@@ -4,6 +4,9 @@
   let es = null;
 
   function dispatch(ev) {
+    if (ev && ev.type === "sse_hello" && ev.subscriber_id) {
+      window.mayaVoiceLeader?.setSubscriberId?.(ev.subscriber_id);
+    }
     handlers.forEach((fn) => {
       try { fn(ev); } catch (_) {}
     });

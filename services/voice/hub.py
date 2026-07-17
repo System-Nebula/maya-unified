@@ -25,7 +25,7 @@ from services.settings.store import (
     seed_env_defaults,
 )
 
-_RELOAD_SECTIONS = frozenset({"discord", "tools", "memory", "runtime"})
+_RELOAD_SECTIONS = frozenset({"discord", "dictation", "tools", "memory", "runtime"})
 _llm_lock = threading.Lock()
 _tts_lock = threading.Lock()
 
@@ -45,6 +45,7 @@ except ImportError:  # pragma: no cover
 log = get_logger("maya-unified.hub")
 
 from services.voice.inference import INFERENCE_LOCK as _inference_lock
+from services.voice.turn_scheduler import TURN_SCHEDULER
 
 
 def _chat_event(
@@ -121,6 +122,12 @@ class _Subscriber:
     q: queue.Queue
     operator_id: str | None = None
     room_id: str | None = None
+    slow: bool = False
+    subscriber_id: str = ""
+
+
+SSE_QUEUE_MAX = 256
+_AUDIO_EVENT_TYPES = frozenset({"audio", "audio_begin", "audio_stop", "lip"})
 
 
 def _nested_get(data: dict, *keys: str):
@@ -181,8 +188,11 @@ def _mirror_operator_runtime_globals(previous: dict, merged: dict) -> None:
 
 def _settings_broadcast_payload(merged: dict) -> dict:
     """SSE payload for settings changes — includes vrm subset for avatar hot reload."""
-    payload: dict[str, Any] = {"type": "settings", "unified": merged}
-    vrm = merged.get("vrm")
+    from services.settings.public import to_public_settings
+
+    public = to_public_settings(merged)
+    payload: dict[str, Any] = {"type": "settings", "unified": public}
+    vrm = public.get("vrm")
     if isinstance(vrm, dict):
         payload["vrm"] = vrm
     return payload
@@ -257,17 +267,42 @@ class VoiceHub(Hub):
     def __init__(self) -> None:
         super().__init__()
         self._scoped_subscribers = []
+        self._sse_dropped = 0
+        self._sse_slow_disconnects = 0
+        # operator_id -> subscriber_id for high-rate audio fanout (VOICE-005).
+        self._audio_leader_by_operator: dict[str, str] = {}
+        from services.voice.session_controller import VoiceSessionController
+
+        self.session_controller = VoiceSessionController()
 
     # ----- SSE with operator/room scoping -----------------------------------
 
     def subscribe(self, operator_id: str | None = None, room_id: str | None = None) -> queue.Queue:
-        q: queue.Queue = queue.Queue()
-        sub = _Subscriber(q=q, operator_id=operator_id, room_id=room_id)
+        import uuid
+
+        q: queue.Queue = queue.Queue(maxsize=SSE_QUEUE_MAX)
+        sub_id = uuid.uuid4().hex
+        sub = _Subscriber(
+            q=q,
+            operator_id=operator_id,
+            room_id=room_id,
+            subscriber_id=sub_id,
+        )
         with self._lock:
             self._scoped_subscribers.append(sub)
             self._subscribers.add(q)
-        q.put({"type": "status", "value": self.status})
-        q.put({"type": "ready", "value": self.ready})
+        try:
+            q.put_nowait(
+                {
+                    "type": "sse_hello",
+                    "subscriber_id": sub_id,
+                    "operator_id": operator_id,
+                }
+            )
+            q.put_nowait({"type": "status", "value": self.status})
+            q.put_nowait({"type": "ready", "value": self.ready})
+        except queue.Full:
+            pass
         if operator_id and not room_id:
             from services.dashboard.player import replay_player_to_subscriber
 
@@ -276,33 +311,165 @@ class VoiceHub(Hub):
 
     def unsubscribe(self, q: queue.Queue) -> None:
         with self._lock:
+            leaving = next((s for s in self._scoped_subscribers if s.q is q), None)
             self._subscribers.discard(q)
             self._scoped_subscribers = [s for s in self._scoped_subscribers if s.q is not q]
+            if leaving and leaving.operator_id and leaving.subscriber_id:
+                oid = str(leaving.operator_id)
+                if self._audio_leader_by_operator.get(oid) == leaving.subscriber_id:
+                    self._audio_leader_by_operator.pop(oid, None)
         super().unsubscribe(q)
 
+    def claim_audio_leader(
+        self,
+        operator_id: str | None,
+        subscriber_id: str,
+        *,
+        leader: bool = True,
+    ) -> dict:
+        """Mark which SSE subscriber may receive high-rate audio for an operator."""
+        oid = str(operator_id or "")
+        sid = str(subscriber_id or "").strip()
+        if not oid or not sid:
+            return {"ok": False, "error": "operator_id and subscriber_id required"}
+        with self._lock:
+            known = any(
+                s.subscriber_id == sid and str(s.operator_id or "") == oid
+                for s in self._scoped_subscribers
+            )
+            if not known:
+                return {"ok": False, "error": "unknown subscriber"}
+            if leader:
+                self._audio_leader_by_operator[oid] = sid
+            elif self._audio_leader_by_operator.get(oid) == sid:
+                self._audio_leader_by_operator.pop(oid, None)
+        return {
+            "ok": True,
+            "leader": leader,
+            "subscriber_id": sid,
+            "operator_id": oid,
+        }
+
+    def _put_subscriber_event(self, sub: _Subscriber, event: dict) -> None:
+        """Bounded SSE put: drop oldest for control events; mark slow on audio backlog.
+
+        Slow tabs stop receiving audio only — tool/ai/status events must still land
+        so Live Tool Log and chat stay usable after a TTS flood.
+        """
+        etype = event.get("type")
+        if sub.slow and etype in _AUDIO_EVENT_TYPES:
+            return
+        try:
+            sub.q.put_nowait(event)
+            self._record_sse_queue_depth(sub)
+            return
+        except queue.Full:
+            pass
+        if etype in _AUDIO_EVENT_TYPES:
+            sub.slow = True
+            self._sse_slow_disconnects += 1
+            try:
+                from services.voice.metrics import record_sse_slow_disconnect
+
+                record_sse_slow_disconnect()
+            except Exception:
+                pass
+            try:
+                sub.q.put_nowait(
+                    {
+                        "type": "error",
+                        "text": "SSE consumer too slow; audio stream disconnected for this tab.",
+                    }
+                )
+            except queue.Full:
+                pass
+            return
+        from services.voice.bounded_queue import put_keep_newest
+
+        if put_keep_newest(sub.q, event):
+            self._sse_dropped += 1
+            try:
+                from services.voice.metrics import record_sse_drop
+
+                record_sse_drop()
+            except Exception:
+                pass
+        self._record_sse_queue_depth(sub)
+
+    def _record_sse_queue_depth(self, sub: _Subscriber) -> None:
+        try:
+            from services.voice.metrics import get_voice_metrics
+
+            get_voice_metrics().set_queue_depth("sse", sub.q.qsize())
+        except Exception:
+            pass
+
     def broadcast(self, event: dict, *, operator_id: str | None = None, room_id: str | None = None) -> None:
-        if event.get("type") == "status":
+        """Deliver an event only to its exact captured audience (SEC-004).
+
+        Private event types without a resolvable Audience are dropped (fail closed).
+        Only allowlisted readiness events may default to global.
+        """
+        from services.voice.audience import (
+            Audience,
+            AudienceKind,
+            resolve_broadcast_audience,
+            should_deliver,
+            subscriber_audience,
+        )
+
+        raw_audience = event.get("audience")
+        if raw_audience is not None and Audience.from_dict(raw_audience) is None:
+            log.warning(
+                "dropping event with invalid audience type=%s audience=%r",
+                event.get("type"),
+                raw_audience,
+            )
+            return
+
+        audience = resolve_broadcast_audience(
+            event, operator_id=operator_id, room_id=room_id
+        )
+        if audience is None:
+            log.warning(
+                "dropping private event without audience type=%s",
+                event.get("type"),
+            )
+            return
+
+        # Stamp so delayed consumers never re-infer from mutable hub state.
+        if "audience" not in event:
+            event = {**event, "audience": audience.to_dict()}
+        if audience.kind is AudienceKind.OPERATOR and "operator_id" not in event:
+            event = {**event, "operator_id": audience.id}
+        if audience.kind is AudienceKind.ROOM and "room_id" not in event:
+            event = {**event, "room_id": audience.id}
+
+        if event.get("type") == "status" and audience.kind is AudienceKind.GLOBAL:
             self.status = event.get("value", self.status)
-        ev_op = operator_id or event.get("operator_id")
-        ev_room = room_id or event.get("room_id")
-        if ev_op and "operator_id" not in event:
-            event = {**event, "operator_id": ev_op}
-        if ev_room and "room_id" not in event:
-            event = {**event, "room_id": ev_room}
+        elif event.get("type") == "status" and audience.kind is AudienceKind.OPERATOR:
+            # Keep hub.status as last process-visible status for sse_hello replay.
+            self.status = event.get("value", self.status)
+
         with self._lock:
             subs = list(self._scoped_subscribers)
-        global_types = frozenset({"ready", "status", "error", "audio", "audio_begin", "audio_stop", "lip"})
+            audio_leaders = dict(self._audio_leader_by_operator)
+
         for sub in subs:
-            if ev_room:
-                if sub.room_id and sub.room_id != ev_room:
+            sub_aud = subscriber_audience(
+                operator_id=sub.operator_id, room_id=sub.room_id
+            )
+            if not should_deliver(sub_aud, audience):
+                continue
+            if (
+                event.get("type") in _AUDIO_EVENT_TYPES
+                and audience.kind is AudienceKind.OPERATOR
+                and audience.id
+            ):
+                leader_id = audio_leaders.get(str(audience.id))
+                if leader_id and sub.subscriber_id != leader_id:
                     continue
-            elif ev_op:
-                if sub.operator_id and sub.operator_id != ev_op:
-                    if sub.room_id:
-                        continue
-                    if event.get("type") not in global_types:
-                        continue
-            sub.q.put(event)
+            self._put_subscriber_event(sub, event)
 
     def lease_status(self) -> dict[str, Any]:
         if self.voice_lease is None:
@@ -372,6 +539,9 @@ class VoiceHub(Hub):
         self._active_operator_id = oid
         self._active_room_id = None
         if self.ready and self.agent is not None:
+            from services.voice.audience import Audience
+
+            self.agent.set_event_audience(Audience.operator(oid))
             self.agent._vision_operator_id = oid  # noqa: SLF001
             self.agent._vision_reasoning = dict(settings.get("reasoning") or {})  # noqa: SLF001
         self._activate_effective_personality(operator_id, settings)
@@ -456,11 +626,11 @@ class VoiceHub(Hub):
         self.ready = False
         self.status = "idle"
         self.voice_lease = None
-        self.broadcast({"type": "ready", "value": False})
+        self._boot_broadcast({"type": "ready", "value": False})
 
     def request_agent_reload(self) -> None:
         self.unload_agent()
-        self.broadcast({"type": "status", "value": "loading"})
+        self._boot_broadcast({"type": "status", "value": "loading"})
         threading.Thread(target=self.load_agent, daemon=True, name="voice-agent-reload").start()
 
     def load_agent(self) -> None:
@@ -484,7 +654,7 @@ class VoiceHub(Hub):
 
             from agent import VoiceAgent
 
-            self.broadcast({"type": "status", "value": "loading"})
+            self._boot_broadcast({"type": "status", "value": "loading"})
             agent = VoiceAgent(mode="vad", on_event=self._agent_event)
             swap_agent_llm(agent, operator_id=oid)
             self.agent = agent
@@ -498,13 +668,16 @@ class VoiceHub(Hub):
             self.ready = True
             self._apply_voice_settings_hot_swap(settings)
             if oid:
+                from services.voice.audience import Audience
+
+                agent.set_event_audience(Audience.operator(oid))
                 self._activate_effective_personality(oid, settings)
             else:
                 self._activate_effective_personality(None, settings)
-            self.broadcast({"type": "ready", "value": True})
+            self._boot_broadcast({"type": "ready", "value": True})
             if agent.voice is not None and not getattr(agent.voice, "available", True):
                 reason = getattr(agent.voice, "degrade_reason", "TTS unavailable")
-                self.broadcast(
+                self._boot_broadcast(
                     {
                         "type": "tts_degraded",
                         "text": (
@@ -513,22 +686,51 @@ class VoiceHub(Hub):
                         ),
                     }
                 )
-            self.broadcast({"type": "status", "value": "idle"})
+            self._boot_broadcast({"type": "status", "value": "idle"})
         except Exception as exc:  # noqa: BLE001
             self.ready = False
             self.last_error = str(exc)
-            self.broadcast({"type": "error", "text": f"Failed to load agent: {exc}"})
-            self.broadcast({"type": "status", "value": "error"})
+            self._boot_broadcast({"type": "error", "text": f"Failed to load agent: {exc}"})
+            self._boot_broadcast({"type": "status", "value": "error"})
+
+    def _boot_broadcast(self, event: dict) -> None:
+        """Process-level notices: scope to active operator when known; ready may be global."""
+        oid = self._active_operator_id
+        if oid:
+            self.broadcast(event, operator_id=oid)
+            return
+        if event.get("type") == "ready":
+            from services.voice.audience import Audience
+
+            self.broadcast({**event, "audience": Audience.global_().to_dict()})
+            return
+        # Private boot events with no operator stay local (hub.status/ready for sse_hello).
+        if event.get("type") == "status":
+            self.status = event.get("value", self.status)
+        log.debug("skip unscoped boot event type=%s", event.get("type"))
 
     def _agent_event(self, event: dict) -> None:
-        # PCM chunks must reach every dashboard tab for the active operator.
-        if event.get("type") in ("audio", "audio_begin", "audio_stop", "lip"):
-            op = self._active_operator_id
-            self.broadcast(event, operator_id=op, room_id=None)
-            return
-        op = self._active_operator_id
-        room = self._active_room_id
-        self.broadcast(event, operator_id=op, room_id=room)
+        """Fan out agent events using only the captured audience (never mutable hub IDs)."""
+        from services.voice.audience import Audience, GLOBAL_EVENT_TYPES
+
+        aud = Audience.from_dict(event.get("audience"))
+        if aud is None:
+            etype = str(event.get("type") or "")
+            if etype in GLOBAL_EVENT_TYPES:
+                event = {**event, "audience": Audience.global_().to_dict()}
+            else:
+                # Prefer the frozen audience set at operator-context apply time —
+                # still better than re-reading _active_operator_id after a switch.
+                frozen = getattr(self.agent, "_event_audience", None) if self.agent else None
+                if frozen is not None:
+                    event = {**event, "audience": frozen.to_dict()}
+                else:
+                    log.warning(
+                        "dropping agent event without audience type=%s",
+                        etype,
+                    )
+                    return
+        self.broadcast(event)
 
     def apply_settings_patch(self, patch: dict, operator_id: str | None = None) -> dict:
         from services.llm.api_keys import is_placeholder_api_key
@@ -599,8 +801,12 @@ class VoiceHub(Hub):
         return merged
 
     def get_config(self, operator_id: str | None = None) -> dict:
+        from services.settings.public import to_public_settings
+
         out = super().get_config()
-        out["unified_settings"] = load_effective_settings(operator_id or None)
+        out["unified_settings"] = to_public_settings(
+            load_effective_settings(operator_id or None)
+        )
         if self.last_error:
             out["agent_error"] = self.last_error
         out.update(self.lease_status())
@@ -682,7 +888,9 @@ class VoiceHub(Hub):
             from services.llm import webllm_broker
 
             webllm = reasoning.get("webllm") or {}
-            browser_ready = webllm_broker.browser_ready()
+            browser_ready = webllm_broker.browser_ready(
+                operator_id=self._active_operator_id or None
+            )
             health = {
                 "status": "ok" if browser_ready else "skipped",
                 "provider": "webllm",
@@ -821,14 +1029,15 @@ class VoiceHub(Hub):
             if target_mode == "clone"
             else str(voice.get("custom_model") or "")
         )
-        self.broadcast({"type": "status", "value": "loading"})
+        self.broadcast({"type": "status", "value": "loading"}, operator_id=operator_id)
         self.broadcast(
             {
                 "type": "tts_reload",
                 "phase": "start",
                 "mode": target_mode,
                 "model_id": target_model,
-            }
+            },
+            operator_id=operator_id,
         )
         try:
             result = self.agent.reload_tts()
@@ -842,17 +1051,24 @@ class VoiceHub(Hub):
                     "phase": "done",
                     "model_id": loaded,
                     "previous_model_id": result.get("previous_model_id", ""),
-                }
+                },
+                operator_id=operator_id,
             )
             log.info("TTS engine reloaded -> %s", loaded)
         except Exception as exc:  # noqa: BLE001
             log.exception("TTS reload failed, falling back to full agent reload")
-            self.broadcast({"type": "error", "text": f"TTS reload failed: {exc}"})
+            self.broadcast(
+                {"type": "error", "text": f"TTS reload failed: {exc}"},
+                operator_id=operator_id,
+            )
             self.request_agent_reload()
             return
         finally:
             if self.ready:
-                self.broadcast({"type": "status", "value": "idle"})
+                self.broadcast(
+                    {"type": "status", "value": "idle"},
+                    operator_id=operator_id,
+                )
 
     def _chat_text_basic(self, text: str, operator_id: str | None = None) -> dict:
         """Text chat via create_llm_client when VoiceAgent is still loading."""
@@ -861,95 +1077,96 @@ class VoiceHub(Hub):
         from services.llm.health import get_cached_llm_health, llm_ready_from_health
         from services.llm.provider import create_llm_client
 
-        reasoning = self._reasoning_settings(operator_id)
-        provider = str(reasoning.get("provider", "lm_studio")).lower()
-        if provider == "webllm":
-            return {
-                "ok": False,
-                "error": "WebLLM runs in the browser — use the Conversation page with WebLLM enabled.",
-            }
-        if operator_id:
-            self.apply_operator_context(operator_id)
-        apply_to_config({"reasoning": reasoning}, operator_id=operator_id)
-        health = get_cached_llm_health(reasoning, run_probe=True, operator_id=operator_id)
-        if not llm_ready_from_health(health):
-            return {"ok": False, "error": health.get("detail") or "LLM unavailable"}
-        try:
-            corr_id = new_corr_id()
-            user_message_id = new_message_id()
-            reply_message_id = new_message_id()
-            client = create_llm_client(operator_id=operator_id)
-            with span(
-                "chat.corr",
-                corr_id=corr_id,
-                user_message_id=user_message_id,
-                reply_message_id=reply_message_id,
-                operator_id=operator_id or "",
-                mode="basic",
-            ):
-                self.broadcast(
-                    _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
-                    operator_id=operator_id,
-                )
-                self.broadcast(
-                    _chat_event(
-                        {"type": "user", "text": text},
-                        corr_id=corr_id,
-                        message_id=user_message_id,
-                    ),
-                    operator_id=operator_id,
-                )
-                system = (CONFIG.llm.system_prompt or "You are Maya, a helpful assistant.").strip()
-                from vision import resolve_vision_user_content
-
-                user_content = resolve_vision_user_content(
-                    text,
-                    text,
-                    operator_id,
-                    reasoning,
-                    model=CONFIG.llm.model,
-                )
-                messages = [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_content},
-                ]
-                parts: list[str] = []
-                with _llm_lock:
-                    stream = _voice_cue_filtered_stream(client.stream_messages(messages))
-                    for chunk in stream:
-                        parts.append(chunk)
-                reply = "".join(parts).strip()
-                completion_id = _llm_completion_id(client)
-                if reply:
-                    reply, _ = _publish_ai_reply(
-                        self,
-                        reply,
+        with TURN_SCHEDULER.hold(label="chat_text_basic", operator_id=operator_id):
+            reasoning = self._reasoning_settings(operator_id)
+            provider = str(reasoning.get("provider", "lm_studio")).lower()
+            if provider == "webllm":
+                return {
+                    "ok": False,
+                    "error": "WebLLM runs in the browser — use the Conversation page with WebLLM enabled.",
+                }
+            if operator_id:
+                self.apply_operator_context(operator_id)
+            apply_to_config({"reasoning": reasoning}, operator_id=operator_id)
+            health = get_cached_llm_health(reasoning, run_probe=True, operator_id=operator_id)
+            if not llm_ready_from_health(health):
+                return {"ok": False, "error": health.get("detail") or "LLM unavailable"}
+            try:
+                corr_id = new_corr_id()
+                user_message_id = new_message_id()
+                reply_message_id = new_message_id()
+                client = create_llm_client(operator_id=operator_id)
+                with span(
+                    "chat.corr",
+                    corr_id=corr_id,
+                    user_message_id=user_message_id,
+                    reply_message_id=reply_message_id,
+                    operator_id=operator_id or "",
+                    mode="basic",
+                ):
+                    self.broadcast(
+                        _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
                         operator_id=operator_id,
-                        corr_id=corr_id,
-                        message_id=reply_message_id,
                     )
-                self.broadcast(
-                    _chat_event(
-                        {"type": "status", "value": "idle"},
-                        corr_id=corr_id,
-                        message_id=reply_message_id,
-                        completion_id=completion_id,
-                    ),
-                    operator_id=operator_id,
-                )
-                log.info(
-                    "chat turn complete mode=basic corr_id=%s user_message_id=%s reply_message_id=%s completion_id=%s",
-                    corr_id,
-                    user_message_id,
-                    reply_message_id,
-                    completion_id or "",
-                )
-            return {"ok": True, "text": reply, "mode": "basic", "corr_id": corr_id}
-        except Exception as exc:  # noqa: BLE001
-            msg = str(exc)
-            self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
-            self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
-            return {"ok": False, "error": msg}
+                    self.broadcast(
+                        _chat_event(
+                            {"type": "user", "text": text},
+                            corr_id=corr_id,
+                            message_id=user_message_id,
+                        ),
+                        operator_id=operator_id,
+                    )
+                    system = (CONFIG.llm.system_prompt or "You are Maya, a helpful assistant.").strip()
+                    from vision import resolve_vision_user_content
+
+                    user_content = resolve_vision_user_content(
+                        text,
+                        text,
+                        operator_id,
+                        reasoning,
+                        model=CONFIG.llm.model,
+                    )
+                    messages = [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_content},
+                    ]
+                    parts: list[str] = []
+                    with _llm_lock:
+                        stream = _voice_cue_filtered_stream(client.stream_messages(messages))
+                        for chunk in stream:
+                            parts.append(chunk)
+                    reply = "".join(parts).strip()
+                    completion_id = _llm_completion_id(client)
+                    if reply:
+                        reply, _ = _publish_ai_reply(
+                            self,
+                            reply,
+                            operator_id=operator_id,
+                            corr_id=corr_id,
+                            message_id=reply_message_id,
+                        )
+                    self.broadcast(
+                        _chat_event(
+                            {"type": "status", "value": "idle"},
+                            corr_id=corr_id,
+                            message_id=reply_message_id,
+                            completion_id=completion_id,
+                        ),
+                        operator_id=operator_id,
+                    )
+                    log.info(
+                        "chat turn complete mode=basic corr_id=%s user_message_id=%s reply_message_id=%s completion_id=%s",
+                        corr_id,
+                        user_message_id,
+                        reply_message_id,
+                        completion_id or "",
+                    )
+                return {"ok": True, "text": reply, "mode": "basic", "corr_id": corr_id}
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
+                self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
+                return {"ok": False, "error": msg}
 
     def _schedule_chat_tts(
         self,
@@ -974,15 +1191,20 @@ class VoiceHub(Hub):
             try:
                 from config import CONFIG
 
-                with _tts_lock:
-                    self.agent.playback.set_output_sink(CONFIG.audio.output_sink)
-                    self.agent.playback.set_output_volume(CONFIG.audio.output_volume)
-                    self.agent.speak_chat_reply(
-                        body,
-                        instruct=instruct,
-                        corr_id=corr_id,
-                        emit_final_status=False,
-                    )
+                # Re-enter the turn scheduler so TTS association cannot race another
+                # operator's apply_operator_context (CTX-001).
+                with TURN_SCHEDULER.hold(label="chat_tts", operator_id=operator_id):
+                    if operator_id:
+                        self.apply_operator_context(operator_id)
+                    with _tts_lock:
+                        self.agent.playback.set_output_sink(CONFIG.audio.output_sink)
+                        self.agent.playback.set_output_volume(CONFIG.audio.output_volume)
+                        self.agent.speak_chat_reply(
+                            body,
+                            instruct=instruct,
+                            corr_id=corr_id,
+                            emit_final_status=False,
+                        )
                 self.broadcast(idle_event, operator_id=operator_id)
             except Exception as exc:  # noqa: BLE001
                 log.exception("chat TTS failed")
@@ -1003,195 +1225,216 @@ class VoiceHub(Hub):
             return self._chat_text_basic(text, operator_id=operator_id)
         from config import CONFIG
 
-        history_override = None
-        if operator_id:
-            self.apply_operator_context(operator_id)
-            from services.operator_voice import context as op_ctx
+        with TURN_SCHEDULER.hold(label="chat_text", operator_id=operator_id) as turn_meta:
+            history_override = None
+            if operator_id:
+                self.apply_operator_context(operator_id)
+                from services.operator_voice import context as op_ctx
 
-            history_override = op_ctx.get_history_messages(operator_id)
-        if not is_webllm_provider():
-            llm = self.llm_status(operator_id)
-            if not llm.get("ok"):
-                return {"ok": False, "error": llm.get("error") or "LLM unavailable"}
-        try:
-            corr_id = new_corr_id()
-            user_message_id = new_message_id()
-            reply_message_id = new_message_id()
-            reply = ""
-            streamed = False
-            imagine_artifact_emitted = False
-            self._last_user_text = text
-            with span(
-                "chat.corr",
-                corr_id=corr_id,
-                user_message_id=user_message_id,
-                reply_message_id=reply_message_id,
-                operator_id=operator_id or "",
-                mode="enriched",
-            ):
-                self.broadcast(
-                    _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
-                    operator_id=operator_id,
-                )
-                self.broadcast(
-                    _chat_event(
-                        {"type": "user", "text": text},
-                        corr_id=corr_id,
-                        message_id=user_message_id,
-                    ),
-                    operator_id=operator_id,
-                )
-                messages = self.agent._build_messages(text, history_override=history_override)  # noqa: SLF001
-
-                plan = None
-                if self.agent._should_orchestrate():  # noqa: SLF001
-                    plan = self.agent._llm_orchestrate(text, text)  # noqa: SLF001
-
-                from services.imagine.tool_context import set_imagine_tool_context
-
-                set_imagine_tool_context(operator_id=operator_id, corr_id=corr_id)
-                try:
-                    from services.imagine.director_context import set_image_director_context
-
-                    set_image_director_context(operator_id=operator_id, corr_id=corr_id)
-                except ImportError:
-                    pass
-
-                from services.imagine.chat_fallback import trace_has_imagine_success
-                from services.imagine.intent import (
-                    looks_like_director_refinement,
-                    looks_like_imagine_request,
-                    looks_like_music_playback_request,
-                )
-                from services.imagine.settings import get_imagine_settings
-
-                effective_settings = load_effective_settings(operator_id)
-                imagine_settings = get_imagine_settings(effective_settings)
-                imagine_nl = (
-                    looks_like_imagine_request(text)
-                    and bool(imagine_settings.get("enabled"))
-                )
-
-                tool_trace: list[dict] = []
-
-                def _emit_chat(**ev: object) -> None:
-                    nonlocal streamed, imagine_artifact_emitted
-                    payload = dict(ev)
-                    ev_type = str(payload.get("type") or "")
-                    if payload.get("type") == "ai":
-                        if payload.get("text") or payload.get("artifacts"):
-                            streamed = True
-                        if payload.get("artifacts"):
-                            imagine_artifact_emitted = True
-                        payload = _chat_event(
-                            payload,
-                            corr_id=corr_id,
-                            message_id=reply_message_id,
-                        )
-                    elif ev_type.startswith("image.director."):
-                        payload = _chat_event(
-                            payload,
-                            corr_id=corr_id,
-                            message_id=reply_message_id,
-                        )
-                        if ev_type != "image.director.versions":
-                            streamed = True
-                    elif payload.get("type") in {"status", "delivery"}:
-                        payload = _chat_event(payload, corr_id=corr_id)
-                    elif payload.get("type") in {"tool_start", "tool_end", "tool_trace"}:
-                        payload = _chat_event(payload, corr_id=corr_id)
-                    elif payload.get("type") == "system" and payload.get("text"):
-                        payload = _chat_event(payload, corr_id=corr_id)
-                    self.broadcast(payload, operator_id=operator_id)
-
+                history_override = op_ctx.get_history_messages(operator_id)
+            if not is_webllm_provider():
+                llm = self.llm_status(operator_id)
+                if not llm.get("ok"):
+                    return {"ok": False, "error": llm.get("error") or "LLM unavailable"}
+            try:
+                corr_id = new_corr_id()
+                user_message_id = new_message_id()
+                reply_message_id = new_message_id()
                 reply = ""
-                anim_label = ""
-                motion_turn = False
-                direct = None
-                if self.agent._tools_active():  # noqa: SLF001
-                    if plan and plan.intent not in ("chat", "unknown", "none"):  # noqa: SLF001
-                        direct = self.agent._execute_orchestrator_plan(plan, text, text)  # noqa: SLF001
-                    if direct is None:
-                        direct = self.agent._try_pending_action_direct(text)  # noqa: SLF001
-                    if direct is None and not self.agent._maybe_motion_request(  # noqa: SLF001
-                        text, plan=plan, raw_text=text,
-                    ):
-                        try:
-                            from services.game.enabled import GAME_MODE_ENABLED
-                        except ImportError:
-                            GAME_MODE_ENABLED = False
-                        if GAME_MODE_ENABLED:
-                            direct = self.agent._try_game_direct(text)  # noqa: SLF001
-                    if direct is None and not self.agent._maybe_motion_request(  # noqa: SLF001
-                        text, plan=plan, raw_text=text,
-                    ):
-                        if self.agent._is_discord_context_turn(text):  # noqa: SLF001
-                            direct = self.agent._try_discord_direct(text)  # noqa: SLF001
-                        else:
-                            direct = self.agent._try_bandcamp_direct(text)  # noqa: SLF001
-                            if direct is None:
-                                direct = self.agent._try_dashboard_music_direct(text)  # noqa: SLF001
-                            if direct is None:
-                                direct = self.agent._try_dashboard_queue_direct(text)  # noqa: SLF001
-                            if direct is None:
-                                direct = self.agent._try_discord_direct(text)  # noqa: SLF001
-                with _inference_lock:
-                    self.agent._avatar_mood_set_this_turn = False  # noqa: SLF001
-                    if direct:
-                        reply = direct
-                    elif self.agent._tools_active():  # noqa: SLF001
-                        anim_label = ""
-                        if not imagine_nl:
-                            anim_label = self.agent._maybe_play_avatar_animation(  # noqa: SLF001
-                                text, plan=plan, raw_text=text,
-                            ) or ""
-                        motion_turn = bool(
-                            anim_label
-                            or self.agent._maybe_motion_request(  # noqa: SLF001
-                                text, plan=plan, raw_text=text,
-                            )
-                        )
-                        if motion_turn:
-                            messages = (
-                                self.agent._messages_with_animation_hint(  # noqa: SLF001
-                                    text, anim_label or "gesture",
-                                    history_override=history_override,
-                                )
-                                if anim_label
-                                else self.agent._build_messages(  # noqa: SLF001
-                                    text, history_override=history_override,
-                                )
-                            )
-                            parts: list[str] = []
-                            with _llm_lock:
-                                stream = _voice_cue_filtered_stream(self.agent.llm.stream_messages(messages))  # noqa: SLF001
-                                for chunk in stream:
-                                    parts.append(chunk)
-                            reply = "".join(parts).strip()
-                        else:
-                            tool_rounds = None
-                            if imagine_nl or looks_like_director_refinement(text):
-                                try:
-                                    from tools.image_director import image_director_max_rounds
+                streamed = False
+                imagine_artifact_emitted = False
+                self._last_user_text = text
+                with span(
+                    "chat.corr",
+                    corr_id=corr_id,
+                    user_message_id=user_message_id,
+                    reply_message_id=reply_message_id,
+                    operator_id=operator_id or "",
+                    mode="enriched",
+                    queue_wait_ms=turn_meta.queue_wait_ms,
+                ):
+                    self.broadcast(
+                        _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
+                        operator_id=operator_id,
+                    )
+                    self.broadcast(
+                        _chat_event(
+                            {"type": "user", "text": text},
+                            corr_id=corr_id,
+                            message_id=user_message_id,
+                        ),
+                        operator_id=operator_id,
+                    )
+                    messages = self.agent._build_messages(text, history_override=history_override)  # noqa: SLF001
 
-                                    tool_rounds = image_director_max_rounds()
-                                except ImportError:
-                                    pass
-                            result = self.agent.tool_loop.run(  # noqa: SLF001
-                                messages,
-                                emit=_emit_chat,
-                                max_rounds=tool_rounds,
+                    plan = None
+                    # Use turn-level gate — do NOT orchestrate every "hey how's it going".
+                    if self.agent._should_orchestrate_turn(text, text):  # noqa: SLF001
+                        plan = self.agent._llm_orchestrate(text, text)  # noqa: SLF001
+
+                    from services.imagine.tool_context import set_imagine_tool_context
+
+                    set_imagine_tool_context(operator_id=operator_id, corr_id=corr_id)
+                    try:
+                        from services.imagine.director_context import set_image_director_context
+
+                        set_image_director_context(operator_id=operator_id, corr_id=corr_id)
+                    except ImportError:
+                        pass
+
+                    from services.imagine.chat_fallback import trace_has_imagine_success
+                    from services.imagine.intent import (
+                        looks_like_director_refinement,
+                        looks_like_imagine_request,
+                        looks_like_music_playback_request,
+                    )
+                    from services.imagine.settings import get_imagine_settings
+
+                    effective_settings = load_effective_settings(operator_id)
+                    imagine_settings = get_imagine_settings(effective_settings)
+                    imagine_nl = (
+                        looks_like_imagine_request(text)
+                        and bool(imagine_settings.get("enabled"))
+                    )
+
+                    tool_trace: list[dict] = []
+
+                    def _emit_chat(**ev: object) -> None:
+                        nonlocal streamed, imagine_artifact_emitted
+                        payload = dict(ev)
+                        ev_type = str(payload.get("type") or "")
+                        if payload.get("type") == "ai":
+                            if payload.get("text") or payload.get("artifacts"):
+                                streamed = True
+                            if payload.get("artifacts"):
+                                imagine_artifact_emitted = True
+                            payload = _chat_event(
+                                payload,
+                                corr_id=corr_id,
+                                message_id=reply_message_id,
                             )
-                            reply = (result.final_text or "").strip()
-                            tool_trace = list(result.trace or [])
-                            if tool_trace:
-                                self.broadcast(
-                                    _chat_event(
-                                        {"type": "tool_trace", "trace": tool_trace},
-                                        corr_id=corr_id,
-                                    ),
-                                    operator_id=operator_id,
+                        elif ev_type.startswith("image.director."):
+                            payload = _chat_event(
+                                payload,
+                                corr_id=corr_id,
+                                message_id=reply_message_id,
+                            )
+                            if ev_type != "image.director.versions":
+                                streamed = True
+                        elif payload.get("type") in {"status", "delivery"}:
+                            payload = _chat_event(payload, corr_id=corr_id)
+                        elif payload.get("type") in {"tool_start", "tool_end", "tool_trace"}:
+                            payload = _chat_event(payload, corr_id=corr_id)
+                        elif payload.get("type") == "system" and payload.get("text"):
+                            payload = _chat_event(payload, corr_id=corr_id)
+                        self.broadcast(payload, operator_id=operator_id)
+
+                    reply = ""
+                    anim_label = ""
+                    motion_turn = False
+                    direct = None
+                    if self.agent._tools_active():  # noqa: SLF001
+                        if plan and plan.intent not in ("chat", "unknown", "none"):  # noqa: SLF001
+                            direct = self.agent._execute_orchestrator_plan(plan, text, text)  # noqa: SLF001
+                        if direct is None:
+                            direct = self.agent._try_pending_action_direct(text)  # noqa: SLF001
+                        if direct is None and not self.agent._maybe_motion_request(  # noqa: SLF001
+                            text, plan=plan, raw_text=text,
+                        ):
+                            try:
+                                from services.game.enabled import GAME_MODE_ENABLED
+                            except ImportError:
+                                GAME_MODE_ENABLED = False
+                            if GAME_MODE_ENABLED:
+                                direct = self.agent._try_game_direct(text)  # noqa: SLF001
+                        if direct is None and not self.agent._maybe_motion_request(  # noqa: SLF001
+                            text, plan=plan, raw_text=text,
+                        ):
+                            if self.agent._is_discord_context_turn(text):  # noqa: SLF001
+                                direct = self.agent._try_discord_direct(text)  # noqa: SLF001
+                            else:
+                                direct = self.agent._try_bandcamp_direct(text)  # noqa: SLF001
+                                if direct is None:
+                                    direct = self.agent._try_dashboard_music_direct(text)  # noqa: SLF001
+                                if direct is None:
+                                    direct = self.agent._try_dashboard_queue_direct(text)  # noqa: SLF001
+                                if direct is None:
+                                    direct = self.agent._try_discord_direct(text)  # noqa: SLF001
+                    with _inference_lock:
+                        self.agent._avatar_mood_set_this_turn = False  # noqa: SLF001
+                        if direct:
+                            reply = direct
+                        elif self.agent._tools_active():  # noqa: SLF001
+                            anim_label = ""
+                            if not imagine_nl:
+                                anim_label = self.agent._maybe_play_avatar_animation(  # noqa: SLF001
+                                    text, plan=plan, raw_text=text,
+                                ) or ""
+                            motion_turn = bool(
+                                anim_label
+                                or self.agent._maybe_motion_request(  # noqa: SLF001
+                                    text, plan=plan, raw_text=text,
                                 )
+                            )
+                            tool_trace: list[dict] = []
+                            if motion_turn:
+                                messages = (
+                                    self.agent._messages_with_animation_hint(  # noqa: SLF001
+                                        text, anim_label or "gesture",
+                                        history_override=history_override,
+                                    )
+                                    if anim_label
+                                    else self.agent._build_messages(  # noqa: SLF001
+                                        text, history_override=history_override,
+                                    )
+                                )
+                                parts: list[str] = []
+                                with _llm_lock:
+                                    stream = _voice_cue_filtered_stream(self.agent.llm.stream_messages(messages))  # noqa: SLF001
+                                    for chunk in stream:
+                                        parts.append(chunk)
+                                reply = "".join(parts).strip()
+                            elif (
+                                imagine_nl
+                                or looks_like_director_refinement(text)
+                                or self.agent._looks_like_tool_request(text)  # noqa: SLF001
+                                or self.agent._has_pending_action()  # noqa: SLF001
+                                or (plan and plan.intent not in ("chat", "unknown", "none", None))
+                            ):
+                                tool_rounds = None
+                                if imagine_nl or looks_like_director_refinement(text):
+                                    try:
+                                        from tools.image_director import image_director_max_rounds
+
+                                        tool_rounds = image_director_max_rounds()
+                                    except ImportError:
+                                        pass
+                                result = self.agent.tool_loop.run(  # noqa: SLF001
+                                    messages,
+                                    emit=_emit_chat,
+                                    max_rounds=tool_rounds,
+                                )
+                                reply = (result.final_text or "").strip()
+                                tool_trace = list(result.trace or [])
+                                if tool_trace:
+                                    self.broadcast(
+                                        _chat_event(
+                                            {"type": "tool_trace", "trace": tool_trace},
+                                            corr_id=corr_id,
+                                        ),
+                                        operator_id=operator_id,
+                                    )
+                            else:
+                                # Plain companion chat — stream tokens (matches LM Studio ~1s).
+                                parts = []
+                                with _llm_lock:
+                                    stream = _voice_cue_filtered_stream(
+                                        self.agent.llm.stream_messages(messages)  # noqa: SLF001
+                                    )
+                                    for chunk in stream:
+                                        parts.append(chunk)
+                                reply = "".join(parts).strip()
+                                tool_trace = []
                             from services.dashboard.music_intent import (
                                 looks_like_dashboard_queue_request,
                             )
@@ -1240,136 +1483,137 @@ class VoiceHub(Hub):
                                 )
                                 reply = fallback_reply
                                 streamed = streamed or fallback_streamed
-                    else:
-                        parts = []
-                        with _llm_lock:
-                            stream = _voice_cue_filtered_stream(self.agent.llm.stream_messages(messages))
-                            for chunk in stream:
-                                parts.append(chunk)
-                        reply = "".join(parts).strip()
+                        else:
+                            parts = []
+                            with _llm_lock:
+                                stream = _voice_cue_filtered_stream(self.agent.llm.stream_messages(messages))
+                                for chunk in stream:
+                                    parts.append(chunk)
+                            reply = "".join(parts).strip()
 
-                delivery_cue = None
-                if reply and not streamed:
-                    leaked = self.agent._apply_pseudo_tool_calls_from_text(reply)  # noqa: SLF001
-                    if leaked:
-                        reply = leaked
-                    reply, delivery_cue = _publish_ai_reply(
-                        self,
-                        reply,
-                        operator_id=operator_id,
-                        corr_id=corr_id,
-                        message_id=reply_message_id,
-                        motion_turn=motion_turn,
-                        user_text=text,
-                        anim_label=anim_label,
-                        agent=self.agent,
-                    )
-                elif reply:
-                    from agent import finalize_reply_text
-
-                    _, delivery_cue = finalize_reply_text(reply)
-                    if delivery_cue:
-                        self.broadcast(
-                            _chat_event({"type": "delivery", "cue": delivery_cue}, corr_id=corr_id),
-                            operator_id=operator_id,
-                        )
-                    if streamed:
-                        self.broadcast(
-                            _chat_event(
-                                {"type": "ai", "text": reply, "final": True},
-                                corr_id=corr_id,
-                                message_id=reply_message_id,
-                            ),
-                            operator_id=operator_id,
-                        )
-                elif motion_turn:
-                    reply, delivery_cue = _publish_ai_reply(
-                        self,
-                        "",
-                        operator_id=operator_id,
-                        corr_id=corr_id,
-                        message_id=reply_message_id,
-                        motion_turn=True,
-                        user_text=text,
-                        anim_label=anim_label,
-                        agent=self.agent,
-                    )
-
-                completion_id = _llm_completion_id(self.agent.llm)
-                if reply:
-                    self.agent._maybe_emit_avatar_mood(reply)  # noqa: SLF001
-                    if operator_id:
-                        from services.operator_voice import context as op_ctx
-
-                        op_ctx.append_turn(
-                            operator_id,
-                            "user",
-                            text,
-                            message_id=user_message_id,
-                            corr_id=corr_id,
-                        )
-                        op_ctx.append_turn(
-                            operator_id,
-                            "assistant",
+                    delivery_cue = None
+                    if reply and not streamed:
+                        leaked = self.agent._apply_pseudo_tool_calls_from_text(reply)  # noqa: SLF001
+                        if leaked:
+                            reply = leaked
+                        reply, delivery_cue = _publish_ai_reply(
+                            self,
                             reply,
-                            message_id=reply_message_id,
+                            operator_id=operator_id,
                             corr_id=corr_id,
-                            completion_id=completion_id,
+                            message_id=reply_message_id,
+                            motion_turn=motion_turn,
+                            user_text=text,
+                            anim_label=anim_label,
+                            agent=self.agent,
                         )
-                    else:
-                        self.agent.history.append(
-                            {
-                                "role": "user",
-                                "content": text,
-                                "message_id": user_message_id,
-                                "corr_id": corr_id,
-                            }
+                    elif reply:
+                        from agent import finalize_reply_text
+
+                        _, delivery_cue = finalize_reply_text(reply)
+                        if delivery_cue:
+                            self.broadcast(
+                                _chat_event({"type": "delivery", "cue": delivery_cue}, corr_id=corr_id),
+                                operator_id=operator_id,
+                            )
+                        if streamed:
+                            self.broadcast(
+                                _chat_event(
+                                    {"type": "ai", "text": reply, "final": True},
+                                    corr_id=corr_id,
+                                    message_id=reply_message_id,
+                                ),
+                                operator_id=operator_id,
+                            )
+                    elif motion_turn:
+                        reply, delivery_cue = _publish_ai_reply(
+                            self,
+                            "",
+                            operator_id=operator_id,
+                            corr_id=corr_id,
+                            message_id=reply_message_id,
+                            motion_turn=True,
+                            user_text=text,
+                            anim_label=anim_label,
+                            agent=self.agent,
                         )
-                        self.agent.history.append(
-                            {
-                                "role": "assistant",
-                                "content": reply,
-                                "message_id": reply_message_id,
-                                "corr_id": corr_id,
-                                "completion_id": completion_id,
-                            }
-                        )
-                idle_event = _chat_event(
-                    {"type": "status", "value": "idle"},
-                    corr_id=corr_id,
-                    message_id=reply_message_id,
-                    completion_id=completion_id,
-                )
-                if not reply or not self._schedule_chat_tts(
-                    reply,
-                    instruct=delivery_cue,
-                    operator_id=operator_id,
-                    corr_id=corr_id,
-                    idle_event=idle_event,
-                ):
-                    self.broadcast(idle_event, operator_id=operator_id)
-                if reply and self.agent.memory is not None:
-                    try:
-                        self.agent.memory.log_turn(text, reply)
-                        self.agent.memory.schedule_review(text, reply)
-                    except Exception as exc:  # noqa: BLE001
-                        log.warning("chat memory review failed: %s", exc)
-                log.info(
-                    "chat turn complete mode=enriched corr_id=%s user_message_id=%s reply_message_id=%s completion_id=%s",
-                    corr_id,
-                    user_message_id,
-                    reply_message_id,
-                    completion_id or "",
-                )
-            return {"ok": True, "text": reply, "corr_id": corr_id}
-        except Exception as exc:  # noqa: BLE001
-            msg = str(exc)
-            self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
-            if imagine_artifact_emitted:
-                log.warning("chat turn failed after imagine artifact corr_id=%s: %s", corr_id, msg)
-                return {"ok": True, "text": reply or "", "corr_id": corr_id}
-            self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
-            return {"ok": False, "error": msg}
+
+                    completion_id = _llm_completion_id(self.agent.llm)
+                    if reply:
+                        self.agent._maybe_emit_avatar_mood(reply)  # noqa: SLF001
+                        if operator_id:
+                            from services.operator_voice import context as op_ctx
+
+                            op_ctx.append_turn(
+                                operator_id,
+                                "user",
+                                text,
+                                message_id=user_message_id,
+                                corr_id=corr_id,
+                            )
+                            op_ctx.append_turn(
+                                operator_id,
+                                "assistant",
+                                reply,
+                                message_id=reply_message_id,
+                                corr_id=corr_id,
+                                completion_id=completion_id,
+                            )
+                        else:
+                            self.agent.history.append(
+                                {
+                                    "role": "user",
+                                    "content": text,
+                                    "message_id": user_message_id,
+                                    "corr_id": corr_id,
+                                }
+                            )
+                            self.agent.history.append(
+                                {
+                                    "role": "assistant",
+                                    "content": reply,
+                                    "message_id": reply_message_id,
+                                    "corr_id": corr_id,
+                                    "completion_id": completion_id,
+                                }
+                            )
+                    idle_event = _chat_event(
+                        {"type": "status", "value": "idle"},
+                        corr_id=corr_id,
+                        message_id=reply_message_id,
+                        completion_id=completion_id,
+                    )
+                    if not reply or not self._schedule_chat_tts(
+                        reply,
+                        instruct=delivery_cue,
+                        operator_id=operator_id,
+                        corr_id=corr_id,
+                        idle_event=idle_event,
+                    ):
+                        self.broadcast(idle_event, operator_id=operator_id)
+                    if reply and self.agent.memory is not None:
+                        try:
+                            self.agent.memory.log_turn(text, reply)
+                            self.agent.memory.schedule_review(text, reply)
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("chat memory review failed: %s", exc)
+                    log.info(
+                        "chat turn complete mode=enriched corr_id=%s user_message_id=%s reply_message_id=%s completion_id=%s",
+                        corr_id,
+                        user_message_id,
+                        reply_message_id,
+                        completion_id or "",
+                    )
+                return {"ok": True, "text": reply, "corr_id": corr_id}
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
+                if imagine_artifact_emitted:
+                    log.warning("chat turn failed after imagine artifact corr_id=%s: %s", corr_id, msg)
+                    return {"ok": True, "text": reply or "", "corr_id": corr_id}
+                self.broadcast({"type": "error", "text": msg}, operator_id=operator_id)
+                return {"ok": False, "error": msg}
+
 
     async def stream_imagine_remark(
         self,
@@ -1485,69 +1729,72 @@ class VoiceHub(Hub):
         text = (text or "").strip()
         if not text:
             return {"ok": False, "error": "empty message"}
-        self.apply_room_context(room_id, snapshot)
-        user_line = f"{member_name}: {text}"
-        try:
-            corr_id = new_corr_id()
-            user_message_id = new_message_id()
-            reply_message_id = new_message_id()
-            with span(
-                "chat.corr",
-                corr_id=corr_id,
-                user_message_id=user_message_id,
-                reply_message_id=reply_message_id,
-                room_id=room_id,
-                mode="room",
-            ):
-                self.broadcast(
-                    _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
+        with TURN_SCHEDULER.hold(label="chat_in_room", operator_id=None):
+            self.apply_room_context(room_id, snapshot)
+            user_line = f"{member_name}: {text}"
+            try:
+                corr_id = new_corr_id()
+                user_message_id = new_message_id()
+                reply_message_id = new_message_id()
+                with span(
+                    "chat.corr",
+                    corr_id=corr_id,
+                    user_message_id=user_message_id,
+                    reply_message_id=reply_message_id,
                     room_id=room_id,
-                )
-                self.broadcast(
-                    _chat_event(
-                        {"type": "user", "text": user_line},
-                        corr_id=corr_id,
-                        message_id=user_message_id,
-                    ),
-                    room_id=room_id,
-                )
-                messages = self.agent._build_messages(user_line, history_override=history)  # noqa: SLF001
-                parts: list[str] = []
-                with _llm_lock:
-                    stream = _voice_cue_filtered_stream(self.agent.llm.stream_messages(messages))
-                    for chunk in stream:
-                        parts.append(chunk)
-                reply = "".join(parts).strip()
-                if reply:
-                    reply, _ = _publish_ai_reply(
-                        self,
-                        reply,
+                    mode="room",
+                ):
+                    self.broadcast(
+                        _chat_event({"type": "status", "value": "thinking"}, corr_id=corr_id),
                         room_id=room_id,
-                        corr_id=corr_id,
-                        message_id=reply_message_id,
                     )
-                completion_id = _llm_completion_id(self.agent.llm)
-                self.broadcast(
-                    _chat_event(
-                        {"type": "status", "value": "idle"},
-                        corr_id=corr_id,
-                        message_id=reply_message_id,
-                        completion_id=completion_id,
-                    ),
-                    room_id=room_id,
-                )
-                log.info(
-                    "chat turn complete mode=room corr_id=%s user_message_id=%s reply_message_id=%s completion_id=%s room_id=%s",
-                    corr_id,
-                    user_message_id,
-                    reply_message_id,
-                    completion_id or "",
-                    room_id,
-                )
-            return {"ok": True, "text": reply, "corr_id": corr_id}
-        except Exception as exc:  # noqa: BLE001
-            self.broadcast({"type": "status", "value": "idle"}, room_id=room_id)
-            return {"ok": False, "error": str(exc)}
+                    self.broadcast(
+                        _chat_event(
+                            {"type": "user", "text": user_line},
+                            corr_id=corr_id,
+                            message_id=user_message_id,
+                        ),
+                        room_id=room_id,
+                    )
+                    messages = self.agent._build_messages(user_line, history_override=history)  # noqa: SLF001
+                    parts: list[str] = []
+                    with _llm_lock:
+                        stream = _voice_cue_filtered_stream(self.agent.llm.stream_messages(messages))
+                        for chunk in stream:
+                            parts.append(chunk)
+                    reply = "".join(parts).strip()
+                    if reply:
+                        reply, _ = _publish_ai_reply(
+                            self,
+                            reply,
+                            room_id=room_id,
+                            corr_id=corr_id,
+                            message_id=reply_message_id,
+                        )
+                    completion_id = _llm_completion_id(self.agent.llm)
+                    self.broadcast(
+                        _chat_event(
+                            {"type": "status", "value": "idle"},
+                            corr_id=corr_id,
+                            message_id=reply_message_id,
+                            completion_id=completion_id,
+                        ),
+                        room_id=room_id,
+                    )
+                    log.info(
+                        "chat turn complete mode=room corr_id=%s user_message_id=%s reply_message_id=%s completion_id=%s room_id=%s",
+                        corr_id,
+                        user_message_id,
+                        reply_message_id,
+                        completion_id or "",
+                        room_id,
+                    )
+                return {"ok": True, "text": reply or "", "corr_id": corr_id}
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                self.broadcast({"type": "status", "value": "idle"}, room_id=room_id)
+                self.broadcast({"type": "error", "text": msg}, room_id=room_id)
+                return {"ok": False, "error": msg}
 
     def speak_text(self, text: str, *, instruct: str | None = None, operator_id: str | None = None) -> dict:
         if not self.ready or self.agent is None:
@@ -1651,44 +1898,172 @@ class VoiceHub(Hub):
         if not self.ready or self.agent is None:
             return {"ok": False, "error": "agent not ready"}
         if not operator_id:
-            return self._start_session_guarded()
-        lease = VoiceLease(kind="operator", context_id=str(operator_id), speaker_id=str(operator_id))
+            return {"ok": False, "error": "owner_required"}
+
+        from services.voice.audience import Audience
+
+        owner = Audience.operator(str(operator_id))
+        begin = self.session_controller.begin_start(owner, mic_source="browser")
+        if not begin.get("ok"):
+            return {
+                "ok": False,
+                "error": begin.get("error", "conflict"),
+                "owner": begin.get("owner"),
+                "session_id": begin.get("session_id"),
+            }
+        if begin.get("idempotent"):
+            return {
+                "ok": True,
+                "idempotent": True,
+                "ws_url": "/api/voice/agent/ws",
+                "mic": begin.get("mic_source") or "browser",
+                "session_id": begin.get("session_id"),
+                "generation_id": begin.get("generation_id"),
+            }
+
+        lease = VoiceLease(
+            kind="operator",
+            context_id=str(operator_id),
+            speaker_id=str(operator_id),
+        )
         denied = self._acquire_lease(lease)
         if not denied.get("ok"):
+            self.session_controller.complete_start(
+                begin["session_id"], begin["generation_id"], ok=False
+            )
             return {
                 "ok": False,
                 "error": denied.get("error", "voice_in_use"),
                 "owner": denied.get("owner"),
             }
-        self.apply_operator_context(operator_id)
-        result = self._start_session_guarded(operator_id=operator_id)
-        if not result.get("ok"):
-            self._release_lease(
-                kind="operator", context_id=str(operator_id), speaker_id=str(operator_id)
-            )
-        return result
 
-    def _start_session_guarded(self, operator_id: str | None = None) -> dict:
-        """Start the mic session, degrading gracefully if local audio is unavailable."""
-        from player import AudioUnavailable
-
+        session_id = begin["session_id"]
+        generation_id = begin["generation_id"]
         try:
-            self.agent.start_session()
-            return {"ok": True}
-        except AudioUnavailable as exc:
-            msg = str(exc)
-            self.broadcast(
-                {"type": "status", "value": "idle"}, operator_id=operator_id
+            self.apply_operator_context(operator_id)
+            # Workers / I/O outside the controller lock.
+            self.agent.start_session(mic_source="browser")
+            # Prefer controller session id as the canonical label.
+            self.agent._session_id = session_id  # noqa: SLF001
+            done = self.session_controller.complete_start(
+                session_id, generation_id, ok=True
             )
-            self.broadcast({"type": "audio_degraded", "text": msg}, operator_id=operator_id)
+            if not done.get("ok"):
+                try:
+                    self.agent.stop_session()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._release_lease(
+                    kind="operator",
+                    context_id=str(operator_id),
+                    speaker_id=str(operator_id),
+                )
+                return {"ok": False, "error": done.get("error", "stale")}
+            return {
+                "ok": True,
+                "ws_url": "/api/voice/agent/ws",
+                "mic": "browser",
+                "session_id": session_id,
+                "generation_id": generation_id,
+            }
+        except Exception as exc:  # noqa: BLE001
+            self.session_controller.complete_start(
+                session_id, generation_id, ok=False
+            )
+            self._release_lease(
+                kind="operator",
+                context_id=str(operator_id),
+                speaker_id=str(operator_id),
+            )
+            msg = str(exc)
+            self.broadcast({"type": "status", "value": "idle"}, operator_id=operator_id)
+            self.broadcast(
+                {"type": "audio_degraded", "text": msg}, operator_id=operator_id
+            )
             return {"ok": False, "error": msg}
 
+    def _start_session_guarded(self, operator_id: str | None = None) -> dict:
+        """Legacy helper — prefer ``start(operator_id=...)`` (VOICE-001)."""
+        if not operator_id:
+            return {"ok": False, "error": "owner_required"}
+        return self.start(operator_id=operator_id)
+
     def stop(self, operator_id: str | None = None) -> dict:
-        if operator_id:
-            self._release_lease(kind="operator", context_id=str(operator_id), speaker_id=str(operator_id))
-        if self.agent is not None:
-            self.agent.stop_session()
-        return {"ok": True}
+        from services.voice.audience import Audience
+
+        admin = not bool(operator_id)
+        requester = Audience.operator(str(operator_id)) if operator_id else None
+        begin = self.session_controller.begin_stop(requester, admin=admin)
+        if not begin.get("ok"):
+            return {
+                "ok": False,
+                "error": begin.get("error", "forbidden"),
+                "owner": begin.get("owner"),
+                "session_id": begin.get("session_id"),
+            }
+        if begin.get("idle"):
+            return {"ok": True, "idle": True}
+
+        session_id = begin["session_id"]
+        try:
+            if operator_id:
+                from services.voice.browser_ws import clear_disconnect_hook
+
+                clear_disconnect_hook(str(operator_id))
+                self._release_lease(
+                    kind="operator",
+                    context_id=str(operator_id),
+                    speaker_id=str(operator_id),
+                )
+            elif begin.get("owner"):
+                # Admin/shutdown stop: release whatever lease the session owned.
+                owner = begin["owner"]
+                if owner.get("kind") == "operator" and owner.get("id"):
+                    self._release_lease(
+                        kind="operator",
+                        context_id=str(owner["id"]),
+                        speaker_id=str(owner["id"]),
+                    )
+            # Only stop the agent after ownership was verified by begin_stop.
+            if self.agent is not None:
+                self.agent.stop_session()
+            try:
+                from services.llm import webllm_broker
+
+                if operator_id:
+                    webllm_broker.cancel_operator_pending(
+                        str(operator_id), reason="session stop"
+                    )
+                else:
+                    webllm_broker.cancel_pending("session stop")
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            self.session_controller.complete_stop(session_id)
+        return {"ok": True, "session_id": session_id}
+
+    def prepare_shutdown(self) -> None:
+        """Close live voice streams before gateway reload/exit."""
+        try:
+            from services.voice.browser_ws import disconnect_all_browser_ws
+
+            disconnect_all_browser_ws()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("browser ws shutdown: %s", exc)
+        if self.agent is not None and self.agent.is_session_running():
+            try:
+                self.agent.stop_session()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("agent stop on shutdown: %s", exc)
+        self.voice_lease = None
+        sentinel = {"type": "_shutdown"}
+        with self._lock:
+            qs = list(self._subscribers)
+        for q in qs:
+            try:
+                q.put_nowait(sentinel)
+            except queue.Full:
+                pass
 
     def start_room_voice(self, room_id: str, member_id: str, member_name: str, snapshot: dict) -> dict:
         if not self.ready or self.agent is None:
@@ -1707,7 +2082,7 @@ class VoiceHub(Hub):
                 "owner": denied.get("owner"),
             }
         self.apply_room_context(room_id, snapshot)
-        self.agent.start_session()
+        self.agent.start_session(mic_source="server")
         self.broadcast({"type": "queue_granted", "member_id": member_id}, room_id=room_id)
         return {"ok": True}
 

@@ -366,7 +366,7 @@ class Hub:
     def start(self) -> dict:
         if not self.ready or self.agent is None:
             return {"ok": False, "error": "agent not ready"}
-        self.agent.start_session()
+        self.agent.start_session(mic_source="server")
         return {"ok": True}
 
     def stop(self) -> dict:
@@ -404,7 +404,7 @@ class Hub:
         self.broadcast({"type": "status", "value": "idle"})
         self.broadcast({"type": "voice", "name": self.current_voice})
         if was_running:
-            self.agent.start_session()
+            self.agent.start_session(mic_source="server")
         return {"ok": True, "name": self.current_voice, "file": self.current_voice}
 
 

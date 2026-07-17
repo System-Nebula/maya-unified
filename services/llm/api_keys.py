@@ -130,7 +130,11 @@ def apply_reasoning_api_key_patch(
     *,
     operator_id: str | None = None,
 ) -> None:
-    """Apply api_key from a settings PATCH before merge/redact."""
+    """Apply api_key from a settings PATCH before merge/redact.
+
+    Placeholders/masks are ignored (leave stored secret unchanged). Explicit
+    clears are handled by ``sanitize_settings_patch`` via ``clear_api_key``.
+    """
     if not isinstance(patch, dict):
         return
     reasoning = patch.get("reasoning")
@@ -138,8 +142,8 @@ def apply_reasoning_api_key_patch(
         return
     key = str(reasoning.get("api_key") or "").strip()
     if is_placeholder_api_key(key):
-        clear_persisted_reasoning_api_key(operator_id=operator_id)
-        clear_runtime_api_key(operator_id=operator_id)
+        # Do not clear on placeholder — UI often re-posts the masked field.
+        reasoning.pop("api_key", None)
         return
     stash_reasoning_api_key(key, operator_id=operator_id)
 

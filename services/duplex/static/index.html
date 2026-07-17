@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Maya Duplex Voice</title>
+  <link rel="stylesheet" href="/duplex/static/style.css?v=1" />
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <div class="eyebrow">MAYA UNIFIED</div>
+        <h1>Duplex Voice</h1>
+        <p>Interruptible local Qwen3 voice — same stack as Duplex Voice Lab.</p>
+      </div>
+      <div id="status" class="status">Disconnected</div>
+    </header>
+    <section id="qwen-panel" class="panel">
+      <div class="controls">
+        <button id="start" class="primary">Start microphone</button>
+        <button id="interrupt">Interrupt</button>
+        <span id="telemetry">Timing: waiting for a response</span>
+        <label class="mic-select">Microphone <select id="mic-device"><option value="">System default</option></select></label>
+        <label>
+          Input gain
+          <input id="gain" type="range" min="0.5" max="3" step="0.1" value="1" />
+        </label>
+      </div>
+
+      <details class="voice-card">
+        <summary>Voice cloning</summary>
+        <form id="voice-form">
+          <label class="file-field">Reference clip
+            <input name="audio" type="file" accept="audio/*" required />
+          </label>
+          <label class="transcript-field">Transcript override (optional)
+            <textarea name="transcript" rows="2" placeholder="Leave blank to transcribe automatically..."></textarea>
+          </label>
+          <button type="submit">Load cloned voice</button>
+          <span id="voice-status">Checking voice…</span>
+        </form>
+      </details>
+      <div class="meter"><div id="meter-fill"></div></div>
+
+      <div id="transcript" class="transcript"></div>
+
+      <form id="text-form">
+        <input id="text-input" placeholder="Type a test message..." autocomplete="off" />
+        <button>Send</button>
+      </form>
+    </section>
+  </main>
+
+  <script src="/duplex/static/app.js?v=1"></script>
+</body>
+</html>
