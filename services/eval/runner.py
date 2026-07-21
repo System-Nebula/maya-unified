@@ -20,7 +20,7 @@ if str(_VOICE_RUNTIME) not in sys.path:
     sys.path.insert(0, str(_VOICE_RUNTIME))
 
 from config import LLMConfig  # noqa: E402
-from llm import LLMResponse, ToolCall  # noqa: E402
+from llm import LLMResponse  # noqa: E402
 from tools.loop import ToolLoop, ToolLoopResult  # noqa: E402
 
 
@@ -114,14 +114,32 @@ def _build_llm(model: str, api_key: str, max_tokens: int | None) -> _ProtocolTra
         api_key=api_key,
         model=model,
         max_tokens=max_tokens or 512,
+        temperature=0.0,  # deterministic routing for reproducible evals
         disable_thinking=True,
         reasoning_effort="none",
     )
     return _ProtocolTracker(LiteLLMAdapter(cfg, litellm_model=model))
 
 
-def _build_messages(llm: _ProtocolTracker, case: EvalCase) -> list[dict]:
-    messages: list[dict] = [{"role": "system", "content": llm.base_system_prompt()}]
+def _tool_guide() -> str:
+    """The agent's real TOOL_GUIDE, imported lazily (guarded)."""
+    try:
+        from agent import TOOL_GUIDE
+
+        return str(TOOL_GUIDE)
+    except Exception:  # noqa: BLE001 - eval still works without it
+        return ""
+
+
+def _build_messages(
+    llm: _ProtocolTracker, case: EvalCase, *, include_tool_guide: bool = False
+) -> list[dict]:
+    system = llm.base_system_prompt()
+    if include_tool_guide:
+        guide = _tool_guide()
+        if guide:
+            system = f"{system}\n\n{guide}"
+    messages: list[dict] = [{"role": "system", "content": system}]
     for turn in case.transcript:
         messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": case.user})
@@ -149,7 +167,7 @@ def run_case(
     registry = build_eval_registry()
     executor = ToolExecutor(registry, timeout=5.0)
     loop = ToolLoop(llm, registry, executor, max_rounds=suite.max_rounds, mode=suite.tool_mode)
-    messages = _build_messages(llm, case)
+    messages = _build_messages(llm, case, include_tool_guide=suite.include_tool_guide)
 
     t0 = time.perf_counter()
     error: str | None = None

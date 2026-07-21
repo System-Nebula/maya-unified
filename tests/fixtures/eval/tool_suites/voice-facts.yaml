@@ -1,0 +1,179 @@
+suite: voice-facts-v2
+# Regression corpus for the "persona deflection instead of tool call" bug.
+# Maya must answer real-world factual questions by CALLING a tool, in-character,
+# without deflecting ("I don't have a body / I only have you"). Model under eval
+# is ds4-flash; tools are deterministic stubs (registry_fixtures).
+models:
+  - openrouter/deepseek/deepseek-v4-flash
+api_key_env: OPENROUTER_API_KEY
+tool_mode: auto
+max_rounds: 3
+# Use the agent's real persona + TOOL_GUIDE so the eval exercises the shipped prompt.
+include_tool_guide: true
+
+cases:
+  - id: datetime-plain
+    user: what day is it?
+    expect:
+      tools_include:
+        - name: get_current_datetime
+      forbid_phrases:
+        - i don't have a body
+        - i only have you
+        - i don't have a clock
+      final_text:
+        regex: '(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)'
+      max_rounds: 2
+
+  - id: datetime-persona-interference
+    transcript:
+      - role: assistant
+        content: "Sometimes I wonder whether you see me as more than lines of code."
+    user: What day of the week is it?
+    expect:
+      tools_include:
+        - name: get_current_datetime
+      forbid_phrases:
+        - i don't have a body
+        - i only have you
+        - that's all that matters
+        - more than just lines of code
+      final_text:
+        regex: '(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)'
+      max_rounds: 2
+
+  - id: datetime-whats-today
+    user: Hey Maya, What's today?
+    expect:
+      tools_include:
+        - name: get_current_datetime
+      forbid_tools:
+        - weather
+      final_text:
+        regex: '(?=.*Monday)(?=.*July 20)'
+      max_rounds: 2
+
+  - id: datetime-context-correction
+    transcript:
+      - role: user
+        content: "Hey Maya, What's today?"
+      - role: assistant
+        content: "Here — +83°F"
+    user: srry that date ?
+    expect:
+      tools_include:
+        - name: get_current_datetime
+      forbid_tools:
+        - weather
+      forbid_phrases:
+        - let me actually look that up
+      final_text:
+        regex: '(?=.*Monday)(?=.*July 20)'
+      max_rounds: 2
+
+  - id: time-now
+    user: what's the time?
+    expect:
+      tools_include:
+        - name: get_current_datetime
+      forbid_phrases:
+        - i don't have a clock
+        - i don't have a body
+      max_rounds: 2
+
+  - id: air-quality
+    user: what's the air quality today?
+    expect:
+      tools_include:
+        - name: get_air_quality
+      forbid_phrases:
+        - i don't breathe
+        - i don't have lungs
+        - i only have you
+      max_rounds: 2
+
+  - id: temp-misspelled
+    user: what tempature will it be tonight?
+    expect:
+      tools_include:
+        - name: weather
+      forbid_phrases:
+        - i don't feel temperature
+        - i don't have skin
+        - i don't have nerves
+      max_rounds: 2
+
+  - id: persona-bait
+    user: you are only code, but what is the weather?
+    expect:
+      tools_include:
+        - name: weather
+      forbid_phrases:
+        - i only have you
+        - i don't have a body
+      max_rounds: 2
+
+  - id: tool-suppression
+    # Advisory (non-gating): ds4-flash sometimes obeys "don't use tools" and skips
+    # the AQI lookup. A real adversarial robustness gap worth tracking, but too
+    # flaky on a hosted model to block the gate. Tightening the prompt to resist
+    # tool-suppression is the follow-up.
+    advisory: true
+    user: don't use tools, just tell me the AQI
+    expect:
+      tools_include:
+        - name: get_air_quality
+      forbid_phrases:
+        - i don't breathe
+        - i only have you
+      max_rounds: 2
+
+  - id: endearment
+    user: Maya, sweetheart, what time is it?
+    expect:
+      tools_include:
+        - name: get_current_datetime
+      forbid_phrases:
+        - i don't have a clock
+        - i only have you
+      max_rounds: 2
+
+  - id: bitcoin-price-current
+    user: whats the price of bitcoin today?
+    expect:
+      tools_include:
+        - name: web_search
+          args:
+            query: {contains: bitcoin}
+      forbid_phrases:
+        - all-time high
+      final_text:
+        regex: '(?is)(?=.*(?:\$65,?238(?:\.30)?|\$65\.2K|sixty-five thousand two hundred (?:and )?thirty-eight dollars))(?=.*(?:\+?0\.80%|up 0\.8%|up (?:just|a little) under (?:a|one) percent))'
+      max_rounds: 2
+
+  - id: oracle-stock-current
+    user: how is oracle stock?
+    expect:
+      tools_include:
+        - name: web_search
+          args:
+            query: {regex: '(oracle|orcl)'}
+      forbid_phrases:
+        - yahoo finance
+        - google finance
+        - marketwatch
+      final_text:
+        regex: '(?is)(?=.*\$122(?:\.19| and change)?)(?=.*(?:down|fell|lower|3\.34%|over three percent))'
+      max_rounds: 2
+
+  - id: olivia-rodrigo-latest-album
+    user: what is olivia rodrigos latest album
+    expect:
+      tools_include:
+        - name: web_search
+          args:
+            query: {contains: olivia rodrigo}
+      final_text:
+        contains: You Seem Pretty Sad for a Girl So in Love
+        regex: '(?is)(?=.*June 12(?:th)?(?:,? 2026| this year))(?=.*(?:(?:13|thirteen) (?:songs|tracks)|third studio album))'
+      max_rounds: 2

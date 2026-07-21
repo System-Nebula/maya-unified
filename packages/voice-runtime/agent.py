@@ -507,7 +507,13 @@ TOOL_GUIDE = (
     "After image_generate always call image_score. If goal_match < 0.90 and fixable, prefer "
     "image_edit_region over regenerating. When score >= 0.90 or should_stop is true, call "
     "image_save_version and narrate your artistic process briefly in Maya's voice. "
-    "After imagine_generate (simple path), react in one witty spoken line; do not read URLs aloud."
+    "After imagine_generate (simple path), react in one witty spoken line; do not read URLs aloud. "
+    "For everyday real-world facts — the current date or time, weather, air quality, or "
+    "anything happening now — CALL the matching tool (get_current_datetime, weather, "
+    "get_air_quality, web_search) and answer with what it returns, in one or two natural "
+    "spoken sentences. Never claim you have no body, no clock, no senses, or otherwise "
+    "refuse a question a tool can answer — stay in character, but be genuinely helpful and "
+    "actually look it up."
 )
 
 _ANIMATION_REPLY_HINT = (
@@ -635,6 +641,8 @@ class VoiceAgent:
         self.discord = None
         self.tool_loop = None
         self.registry = None
+        self._tool_executor = None
+        self.dspy_router = None
         self._session_prefix = ""
         self._monologue_recent_modes: deque[str] = deque(maxlen=4)
         self._pending_monologue_mode = ""
@@ -773,6 +781,14 @@ class VoiceAgent:
                 log.warning("web disabled (load failed): %s", exc)
 
         try:
+            from tools.system_tools import build_system_tools
+
+            registry.register_many(build_system_tools())
+            log.info("system tools enabled (datetime, air_quality, run_bash)")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("system tools disabled (load failed): %s", exc)
+
+        try:
             from tools.animation import build_animation_tools
 
             registry.register_many(build_animation_tools(self._emit))
@@ -852,7 +868,20 @@ class VoiceAgent:
                 self.llm, registry, executor,
                 max_rounds=CONFIG.tools.max_rounds, mode=CONFIG.tools.mode,
             )
+            self.registry = registry
+            self._tool_executor = executor
             log.info("tools active: %s", ", ".join(registry.names()))
+
+            # Optional DSPy tool router — lazy-imported, off by default. A missing
+            # `dspy` package or config just leaves self.dspy_router = None.
+            if CONFIG.tools.dspy_router:
+                try:
+                    from dspy_router import DspyRouter
+
+                    self.dspy_router = DspyRouter()
+                    log.info("DSPy tool router enabled")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("DSPy router requested but unavailable: %s", exc)
 
     def _tools_active(self) -> bool:
         return self.tool_loop is not None
@@ -1335,7 +1364,39 @@ class VoiceAgent:
             return True
         if _is_weak_transcript(raw_text):
             return True
-        return self._looks_like_tool_request(user_text or raw_text)
+        return self._should_consider_tools(user_text or raw_text)
+
+    def _dspy_route_direct(self, user_text: str) -> Optional[str]:
+        """If the DSPy router selects a tool, run it and phrase the result in-voice.
+
+        Returns a spoken reply string, or None to fall back to the native tool loop.
+        """
+        try:
+            routed = self.dspy_router.route(user_text, self.registry)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("DSPy route failed: %s", exc)
+            return None
+        if not routed:
+            return None
+        name, args = routed
+        result = self._tool_executor.execute(name, args)
+        # Phrase the tool result into one or two natural spoken sentences.
+        messages = self._build_messages(user_text)
+        messages.append({
+            "role": "system",
+            "content": (
+                f"[Tool {name} returned: {result}] Answer the user in one or two natural "
+                "spoken sentences using this result, in your own voice. Do not read raw JSON "
+                "or URLs aloud."
+            ),
+        })
+        try:
+            resp = self.llm.complete(messages)
+            spoken = self._llm_response_text(resp).strip()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("DSPy phrasing failed: %s", exc)
+            return None
+        return spoken or None
 
     @staticmethod
     def _looks_like_tool_request(user_text: str) -> bool:
@@ -1349,6 +1410,33 @@ class VoiceAgent:
             "join ", "leave ", "skip ", "volume",
         )
         return any(h in low for h in tool_hints)
+
+    # Interrogatives / factual signals that a tool can answer. Broader than the
+    # tool-hint allowlist so real questions ("what time is it?", "air quality?")
+    # actually reach the tool loop instead of falling through to persona chat.
+    _FACTUAL_STARTS = (
+        "what", "when", "where", "who", "whose", "which", "how", "why",
+        "is ", "are ", "do ", "does ", "did ", "can ", "could ", "will ", "should ",
+    )
+    _FACTUAL_WORDS = (
+        "time", "clock", "date", "day", "today", "tonight", "tomorrow",
+        "temperature", "forecast", "humidity", "air quality", "aqi", "pollution",
+        "news", "current", "right now",
+    )
+
+    @classmethod
+    def _should_consider_tools(cls, user_text: str) -> bool:
+        """True when the turn is tool-shaped OR a factual question a tool can answer."""
+        low = (user_text or "").strip().lower()
+        if not low:
+            return False
+        if cls._looks_like_tool_request(low):
+            return True
+        if low.endswith("?"):
+            return True
+        if low.startswith(cls._FACTUAL_STARTS):
+            return True
+        return any(w in low for w in cls._FACTUAL_WORDS)
 
     @staticmethod
     def _llm_response_text(resp) -> str:
@@ -4516,6 +4604,8 @@ class VoiceAgent:
                         direct = self._try_discord_direct(user_text)
             if direct is None:
                 direct = self._try_web_direct(user_text)
+            if direct is None and self.dspy_router is not None and self.registry is not None:
+                direct = self._dspy_route_direct(user_text)
             anim_label = self._maybe_play_avatar_animation(
                 user_text, plan=plan, raw_text=raw_text,
             )
@@ -4538,9 +4628,10 @@ class VoiceAgent:
                         "answering or calling tools.]"
                     )
                     messages[-1]["content"] = f"{hint}\n\n{messages[-1]['content']}"
-                # Companion: only background the tool loop when the ask looks
-                # tool-shaped. Plain chat streams immediately with no "On it.".
-                if self._looks_like_tool_request(user_text) or self._has_pending_action():
+                # Companion: background the tool loop when the ask is tool-shaped
+                # or a factual question a tool can answer. Plain chat streams
+                # immediately with no "On it.".
+                if self._should_consider_tools(user_text) or self._has_pending_action():
 
                     def _tool_work() -> str:
                         result = self.tool_loop.run(messages, emit=self._emit)

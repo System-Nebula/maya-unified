@@ -60,7 +60,67 @@ def _music_lookup(args: dict) -> dict[str, Any]:
 
 def _web_search(args: dict) -> dict[str, Any]:
     query = str(args.get("query") or "").strip()
-    return {"ok": True, "results": [{"title": f"Stub result for {query}"}], "stub": True}
+    query_lower = query.lower()
+    if "bitcoin" in query_lower or "btc" in query_lower:
+        results = [{
+            "title": "Bitcoin price — July 20, 2026 close",
+            "snippet": "Bitcoin closed at $65,238.30, up 0.80% for the day.",
+            "url": "https://example.test/markets/bitcoin-2026-07-20",
+        }]
+    elif "oracle" in query_lower or "orcl" in query_lower:
+        results = [{
+            "title": "Oracle (ORCL) stock — July 20, 2026 close",
+            "snippet": "Oracle closed at $122.19, down 3.34% for the day.",
+            "url": "https://example.test/markets/orcl-2026-07-20",
+        }]
+    elif "olivia rodrigo" in query_lower:
+        results = [{
+            "title": "Olivia Rodrigo — latest album",
+            "snippet": (
+                "Her third studio album, You Seem Pretty Sad for a Girl So in Love, "
+                "was released June 12, 2026 and has 13 tracks."
+            ),
+            "url": "https://example.test/music/olivia-rodrigo-latest-album",
+        }]
+    else:
+        results = [{"title": f"Stub result for {query}"}]
+    return {"ok": True, "query": query, "results": results, "stub": True}
+
+
+# Deterministic fact tools — fixed payloads so grounding is checkable offline.
+def _get_current_datetime(args: dict) -> dict[str, Any]:
+    return {
+        "weekday": "Monday",
+        "date": "2026-07-20",
+        "time": "9:05 PM",
+        "iso": "2026-07-20T21:05:00-05:00",
+        "tz": "CDT",
+        "spoken": "Monday, July 20th, 9:05 PM",
+        "stub": True,
+    }
+
+
+def _get_air_quality(args: dict) -> dict[str, Any]:
+    location = str(args.get("location") or "your area").strip() or "your area"
+    return {
+        "location": location,
+        "us_aqi": 42,
+        "category": "good",
+        "pm2_5": 8.1,
+        "spoken": f"Air quality in {location} is good, with a US AQI of 42.",
+        "stub": True,
+    }
+
+
+def _weather(args: dict) -> dict[str, Any]:
+    location = str(args.get("location") or "your area").strip() or "your area"
+    return {
+        "location": location,
+        "now": "Clear +64°F",
+        "detail": "Clear, 64°F, humidity 55%",
+        "spoken": f"It's clear and about 64 degrees in {location} tonight.",
+        "stub": True,
+    }
 
 
 def build_eval_registry() -> ToolRegistry:
@@ -145,6 +205,48 @@ def build_eval_registry() -> ToolRegistry:
                     "required": ["query"],
                 },
                 handler=_web_search,
+                group="eval",
+            ),
+            ToolSpec(
+                name="get_current_datetime",
+                description=(
+                    "Get the current local date and time. Use for any 'what day/date is it', "
+                    "'what time is it', 'what's today' question."
+                ),
+                parameters={"type": "object", "properties": {}, "required": []},
+                handler=_get_current_datetime,
+                group="eval",
+            ),
+            ToolSpec(
+                name="get_air_quality",
+                description=(
+                    "Get current air quality (US AQI, PM2.5) for a place. Use when asked about "
+                    "air quality, smog, pollution, or whether the air is safe."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string", "description": "City or place name (optional)."},
+                    },
+                    "required": [],
+                },
+                handler=_get_air_quality,
+                group="eval",
+            ),
+            ToolSpec(
+                name="weather",
+                description=(
+                    "Get current weather / temperature for a city or place. Use when the user "
+                    "asks about weather, temperature, or the forecast."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string", "description": "City or place name (optional)."},
+                    },
+                    "required": [],
+                },
+                handler=_weather,
                 group="eval",
             ),
         ]

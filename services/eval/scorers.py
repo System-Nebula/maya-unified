@@ -71,6 +71,42 @@ def _check_tools(expected: list[dict], trace: list[dict]) -> tuple[list[str], li
     return checks, failures
 
 
+def _check_tools_include(expected: list[dict], trace: list[dict]) -> tuple[list[str], list[str]]:
+    """Unordered membership: each expected tool must appear somewhere in the trace.
+
+    Tolerates a model calling helper tools first (e.g. datetime before weather) —
+    we care that the right tool was called, not its position.
+    """
+    checks: list[str] = []
+    failures: list[str] = []
+    actual = _trace_tools(trace)
+    by_name: dict[str, list[dict]] = {}
+    for name, args in actual:
+        by_name.setdefault(name, []).append(args)
+
+    for exp in expected:
+        exp_name = str(exp.get("name") or "")
+        calls = by_name.get(exp_name)
+        if not calls:
+            failures.append(
+                f"tools_include: '{exp_name}' not called "
+                f"(got {[n for n, _ in actual] or '(none)'})"
+            )
+            continue
+        checks.append(f"tools_include: '{exp_name}' called")
+        exp_args = exp.get("args") or {}
+        if isinstance(exp_args, dict) and exp_args:
+            matched = any(
+                all(_match_arg(args.get(f), pred) for f, pred in exp_args.items())
+                for args in calls
+            )
+            if matched:
+                checks.append(f"tools_include: '{exp_name}' args matched")
+            else:
+                failures.append(f"tools_include: '{exp_name}' args {exp_args!r} not matched")
+    return checks, failures
+
+
 def _check_final_text(expect: dict[str, Any], final_text: str) -> tuple[list[str], list[str]]:
     checks: list[str] = []
     failures: list[str] = []
@@ -111,6 +147,11 @@ def score_case(
         checks.extend(c)
         failures.extend(f)
 
+    if "tools_include" in expect:
+        c, f = _check_tools_include(expect["tools_include"], trace)
+        checks.extend(c)
+        failures.extend(f)
+
     forbid = expect.get("forbid_tools") or []
     if isinstance(forbid, list):
         called = {name for name, _ in _trace_tools(trace)}
@@ -119,6 +160,18 @@ def score_case(
                 failures.append(f"forbid_tools: '{name}' was called")
             else:
                 checks.append(f"forbid_tools: '{name}' not called")
+
+    # Deflection leakage: the reply must NOT contain any forbidden phrase
+    # (e.g. "i don't have a body"). Hard invariant — persona must not swallow a
+    # factual answer a tool can provide.
+    forbid_phrases = expect.get("forbid_phrases") or []
+    if isinstance(forbid_phrases, list):
+        low_text = (final_text or "").lower()
+        for phrase in forbid_phrases:
+            if str(phrase).lower() in low_text:
+                failures.append(f"forbid_phrases: reply contains {phrase!r}")
+            else:
+                checks.append(f"forbid_phrases: {phrase!r} absent")
 
     if "max_rounds" in expect:
         limit = int(expect["max_rounds"])

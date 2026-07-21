@@ -386,6 +386,10 @@ class ToolsConfig:
     mode: str = field(default_factory=lambda: _env_str("VA_TOOL_MODE", "auto"))
     # Per-tool execution timeout in seconds.
     timeout: float = field(default_factory=lambda: _env_float("VA_TOOL_TIMEOUT", 30.0))
+    # Opt-in DSPy tool router (adds one LLM call per tool-shaped turn). Off by
+    # default so it never affects startup/latency unless explicitly enabled and
+    # the `dspy` package is installed.
+    dspy_router: bool = field(default_factory=lambda: _env_bool("VA_DSPY_ROUTER", False))
 
 
 @dataclass

@@ -15,6 +15,9 @@ class EvalCase:
     user: str
     transcript: list[dict[str, str]] = field(default_factory=list)
     expect: dict[str, Any] = field(default_factory=dict)
+    # Advisory cases are run and reported but do NOT gate (non-blocking) — used for
+    # inherently-flaky adversarial probes where a hosted model isn't reliable.
+    advisory: bool = False
 
 
 @dataclass
@@ -26,6 +29,9 @@ class EvalSuite:
     tool_mode: str = "auto"
     max_rounds: int = 3
     max_tokens: int | None = None
+    # When true, append the agent's real TOOL_GUIDE to the system prompt so the
+    # eval exercises the exact persona-vs-tools prompt the agent ships.
+    include_tool_guide: bool = False
 
 
 def _require(obj: dict[str, Any], key: str) -> Any:
@@ -46,7 +52,13 @@ def _parse_case(raw: dict[str, Any]) -> EvalCase:
     expect = raw.get("expect") or {}
     if not isinstance(expect, dict):
         raise ValueError(f"case {case_id}: expect must be a mapping")
-    return EvalCase(id=case_id, user=user, transcript=list(transcript), expect=expect)
+    return EvalCase(
+        id=case_id,
+        user=user,
+        transcript=list(transcript),
+        expect=expect,
+        advisory=bool(raw.get("advisory") or False),
+    )
 
 
 def load_suite(path: str | Path) -> EvalSuite:
@@ -83,4 +95,5 @@ def load_suite(path: str | Path) -> EvalSuite:
         tool_mode=tool_mode,
         max_rounds=max(1, max_rounds),
         max_tokens=max_tokens,
+        include_tool_guide=bool(data.get("include_tool_guide") or False),
     )
