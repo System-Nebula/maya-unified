@@ -390,6 +390,10 @@ class ToolsConfig:
     # default so it never affects startup/latency unless explicitly enabled and
     # the `dspy` package is installed.
     dspy_router: bool = field(default_factory=lambda: _env_bool("VA_DSPY_ROUTER", False))
+    # Opt-in Ax (ax-llm) tool router — the DSPy counterpart, for A/B comparison.
+    # Off by default; requires the `ax` extra (axllm). Enabling both prefers DSPy
+    # (checked first in the direct-route chain).
+    ax_router: bool = field(default_factory=lambda: _env_bool("VA_AX_ROUTER", False))
 
 
 @dataclass

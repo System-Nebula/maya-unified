@@ -28,14 +28,19 @@ log = logging.getLogger("voice-agent.dspy_router")
 _COMPILED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "dspy_router.json")
 
 
-def _make_lm():
+def _make_lm(*, model: str | None = None, api_base: str | None = None, api_key: str | None = None):
     import dspy
 
-    model = CONFIG.llm.model or "local-model"
+    # An explicit litellm model id (e.g. the eval A/B routing against OpenRouter)
+    # is passed straight through — litellm resolves the provider from the prefix.
+    if model:
+        return dspy.LM(model, api_key=api_key, temperature=0.0, max_tokens=256)
+
+    local_model = CONFIG.llm.model or "local-model"
     return dspy.LM(
-        f"openai/{model}",
-        api_base=CONFIG.llm.base_url,
-        api_key=CONFIG.llm.api_key,
+        f"openai/{local_model}",
+        api_base=api_base or CONFIG.llm.base_url,
+        api_key=api_key or CONFIG.llm.api_key,
         temperature=0.0,
         max_tokens=256,
     )
@@ -64,11 +69,11 @@ def _build_signature():
 class DspyRouter:
     """Wraps a DSPy predictor that maps an utterance to (tool_name, args)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, lm=None) -> None:
         import dspy  # raises ImportError if not installed — caller handles it
 
         self._dspy = dspy
-        self._lm = _make_lm()
+        self._lm = lm if lm is not None else _make_lm()
         signature = _build_signature()
         self._predict = dspy.Predict(signature)
         # Load an optimized program if one has been compiled offline.

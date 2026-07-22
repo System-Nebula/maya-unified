@@ -21,6 +21,7 @@ if str(_VOICE_RUNTIME) not in sys.path:
 
 from config import LLMConfig  # noqa: E402
 from llm import LLMResponse  # noqa: E402
+from tools.contracts import ToolContext  # noqa: E402
 from tools.loop import ToolLoop, ToolLoopResult  # noqa: E402
 
 
@@ -37,12 +38,26 @@ class RunResult:
     completion_id: str | None
     score: ScoreResult
     error: str | None = None
+    # Routing framework used for this run: "native" (tool loop), "dspy", or "ax".
+    framework: str = "native"
+
+    @property
+    def column(self) -> str:
+        """Matrix column label. Plain model for native; model+framework for the A/B."""
+        return self.model if self.framework == "native" else f"{self.model}::{self.framework}"
 
 
 @dataclass
 class SuiteReport:
     suite: str
     results: list[RunResult] = field(default_factory=list)
+
+    def columns(self) -> list[str]:
+        seen: list[str] = []
+        for r in self.results:
+            if r.column not in seen:
+                seen.append(r.column)
+        return seen
 
     def matrix(self) -> dict[str, dict[str, str]]:
         out: dict[str, dict[str, str]] = {}
@@ -54,7 +69,7 @@ class SuiteReport:
                 detail = r.error
             elif r.score.failures:
                 detail = r.score.failures[0]
-            out[r.case_id][r.model] = f"{status}" + (f" — {detail}" if detail else "")
+            out[r.case_id][r.column] = f"{status}" + (f" — {detail}" if detail else "")
         return out
 
 
@@ -202,6 +217,109 @@ def run_case(
     )
 
 
+def _eval_router(framework: str, model: str, api_key: str) -> Any:
+    """Build a tool router (dspy/ax) that routes against the eval model itself.
+
+    Both routers are pointed at the same model the native path uses, so the A/B
+    isolates the routing framework rather than the underlying LM.
+    """
+    if framework == "dspy":
+        from dspy_router import DspyRouter, _make_lm
+
+        return DspyRouter(lm=_make_lm(model=model, api_key=api_key))
+    if framework == "ax":
+        from ax_router import AxRouter, _make_client
+
+        # Map the litellm model id to an OpenAI-compatible endpoint for ax-llm.
+        # OpenRouter (the suite default) is handled explicitly; other providers
+        # fall back to ax_router's default client config.
+        m, base_url = model, None
+        if m.startswith("openrouter/"):
+            base_url = "https://openrouter.ai/api/v1"
+            m = m[len("openrouter/") :]
+        return AxRouter(client=_make_client(model=m, base_url=base_url, api_key=api_key))
+    raise ValueError(f"unknown routing framework: {framework!r}")
+
+
+def _complete_text(llm: _ProtocolTracker, messages: list[dict]) -> str:
+    resp = llm.complete(messages)
+    return (getattr(resp, "content", None) or getattr(resp, "reasoning_content", None) or "").strip()
+
+
+def run_case_routed(
+    suite: EvalSuite,
+    case: EvalCase,
+    model: str,
+    framework: str,
+    *,
+    api_key: str,
+) -> RunResult:
+    """Run one case through a tool router (dspy/ax): route -> execute -> phrase.
+
+    Produces the same (trace, final_text) shape the scorer expects, so routed
+    frameworks are graded on the identical suite as the native tool loop.
+    """
+    llm = _build_llm(model, api_key, suite.max_tokens)
+    registry = build_eval_registry()
+    executor = ToolExecutor(registry, timeout=5.0)
+
+    t0 = time.perf_counter()
+    error: str | None = None
+    trace: list[dict] = []
+    rounds = 0
+    final_text = ""
+    try:
+        router = _eval_router(framework, model, api_key)
+        routed = router.route(case.user, registry)
+        if routed is not None:
+            name, args = routed
+            result = executor.execute(name, args, context=ToolContext(framework=framework))
+            trace = [{"tool": name, "args": args, "result": result}]
+            rounds = 1
+            messages = _build_messages(llm, case, include_tool_guide=suite.include_tool_guide)
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"[Tool {name} returned: {result}] Answer the user in one or two "
+                        "natural spoken sentences using this result, in your own voice. Do "
+                        "not read raw JSON or URLs aloud."
+                    ),
+                }
+            )
+            final_text = _complete_text(llm, messages)
+        else:
+            # Router deferred to plain chat — reproduce the agent's persona-only
+            # fallback so deflection checks (forbid_phrases) still apply.
+            messages = _build_messages(llm, case, include_tool_guide=suite.include_tool_guide)
+            final_text = _complete_text(llm, messages)
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+
+    score = score_case(
+        case.expect,
+        trace=trace,
+        final_text=final_text,
+        rounds=rounds,
+        protocol=framework,
+    )
+    return RunResult(
+        suite=suite.suite,
+        case_id=case.id,
+        model=model,
+        final_text=final_text,
+        trace=trace,
+        rounds=rounds,
+        protocol=framework,
+        latency_ms=latency_ms,
+        completion_id=llm.last_completion_id,
+        score=score,
+        error=error,
+        framework=framework,
+    )
+
+
 class EvalRunner:
     def __init__(self, suite: EvalSuite, *, api_key: str | None = None):
         self.suite = suite
@@ -212,12 +330,14 @@ class EvalRunner:
         *,
         models: list[str] | None = None,
         case_ids: list[str] | None = None,
+        frameworks: list[str] | None = None,
     ) -> SuiteReport:
         if not self.api_key:
             raise RuntimeError(
                 f"No API key: set {self.suite.api_key_env} or reasoning.api_key in settings"
             )
         model_list = models or self.suite.models
+        framework_list = frameworks or ["native"]
         cases = self.suite.cases
         if case_ids:
             wanted = set(case_ids)
@@ -228,7 +348,17 @@ class EvalRunner:
         report = SuiteReport(suite=self.suite.suite)
         for case in cases:
             for model in model_list:
-                report.results.append(run_case(self.suite, case, model, api_key=self.api_key))
+                for framework in framework_list:
+                    if framework == "native":
+                        report.results.append(
+                            run_case(self.suite, case, model, api_key=self.api_key)
+                        )
+                    else:
+                        report.results.append(
+                            run_case_routed(
+                                self.suite, case, model, framework, api_key=self.api_key
+                            )
+                        )
         return report
 
 
@@ -237,10 +367,13 @@ def run_suite(
     *,
     models: list[str] | None = None,
     case_ids: list[str] | None = None,
+    frameworks: list[str] | None = None,
     api_key: str | None = None,
 ) -> SuiteReport:
     suite = load_suite(path)
-    return EvalRunner(suite, api_key=api_key).run(models=models, case_ids=case_ids)
+    return EvalRunner(suite, api_key=api_key).run(
+        models=models, case_ids=case_ids, frameworks=frameworks
+    )
 
 
 def result_to_dict(r: RunResult) -> dict[str, Any]:
@@ -248,6 +381,7 @@ def result_to_dict(r: RunResult) -> dict[str, Any]:
         "suite": r.suite,
         "case_id": r.case_id,
         "model": r.model,
+        "framework": r.framework,
         "final_text": r.final_text,
         "trace": r.trace,
         "rounds": r.rounds,
@@ -276,11 +410,11 @@ def write_report(report: SuiteReport, out_dir: str | Path) -> tuple[Path, Path]:
     lines = [f"# Eval report: {report.suite}", ""]
     matrix = report.matrix()
     if matrix:
-        models = sorted({r.model for r in report.results})
-        lines.append("| case | " + " | ".join(models) + " |")
-        lines.append("| --- | " + " | ".join(["---"] * len(models)) + " |")
+        cols = report.columns()
+        lines.append("| case | " + " | ".join(cols) + " |")
+        lines.append("| --- | " + " | ".join(["---"] * len(cols)) + " |")
         for case_id, row in sorted(matrix.items()):
-            cells = [row.get(m, "—") for m in models]
+            cells = [row.get(c, "—") for c in cols]
             lines.append(f"| {case_id} | " + " | ".join(cells) + " |")
     md_path = out / "summary.md"
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

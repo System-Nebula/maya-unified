@@ -643,6 +643,7 @@ class VoiceAgent:
         self.registry = None
         self._tool_executor = None
         self.dspy_router = None
+        self.ax_router = None
         self._session_prefix = ""
         self._monologue_recent_modes: deque[str] = deque(maxlen=4)
         self._pending_monologue_mode = ""
@@ -882,6 +883,17 @@ class VoiceAgent:
                     log.info("DSPy tool router enabled")
                 except Exception as exc:  # noqa: BLE001
                     log.warning("DSPy router requested but unavailable: %s", exc)
+
+            # Optional Ax (ax-llm) tool router — the DSPy counterpart, off by
+            # default. A missing `axllm` package or config leaves ax_router None.
+            if CONFIG.tools.ax_router:
+                try:
+                    from ax_router import AxRouter
+
+                    self.ax_router = AxRouter()
+                    log.info("Ax tool router enabled")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Ax router requested but unavailable: %s", exc)
 
     def _tools_active(self) -> bool:
         return self.tool_loop is not None
@@ -1366,15 +1378,16 @@ class VoiceAgent:
             return True
         return self._should_consider_tools(user_text or raw_text)
 
-    def _dspy_route_direct(self, user_text: str) -> Optional[str]:
-        """If the DSPy router selects a tool, run it and phrase the result in-voice.
+    def _router_route_direct(self, router: Any, framework: str, user_text: str) -> Optional[str]:
+        """If a tool router selects a tool, run it and phrase the result in-voice.
 
-        Returns a spoken reply string, or None to fall back to the native tool loop.
+        Shared by the DSPy and Ax routers. Returns a spoken reply string, or None
+        to fall back to the native tool loop.
         """
         try:
-            routed = self.dspy_router.route(user_text, self.registry)
+            routed = router.route(user_text, self.registry)
         except Exception as exc:  # noqa: BLE001
-            log.warning("DSPy route failed: %s", exc)
+            log.warning("%s route failed: %s", framework, exc)
             return None
         if not routed:
             return None
@@ -1394,9 +1407,15 @@ class VoiceAgent:
             resp = self.llm.complete(messages)
             spoken = self._llm_response_text(resp).strip()
         except Exception as exc:  # noqa: BLE001
-            log.warning("DSPy phrasing failed: %s", exc)
+            log.warning("%s phrasing failed: %s", framework, exc)
             return None
         return spoken or None
+
+    def _dspy_route_direct(self, user_text: str) -> Optional[str]:
+        return self._router_route_direct(self.dspy_router, "DSPy", user_text)
+
+    def _ax_route_direct(self, user_text: str) -> Optional[str]:
+        return self._router_route_direct(self.ax_router, "Ax", user_text)
 
     @staticmethod
     def _looks_like_tool_request(user_text: str) -> bool:
@@ -4606,6 +4625,8 @@ class VoiceAgent:
                 direct = self._try_web_direct(user_text)
             if direct is None and self.dspy_router is not None and self.registry is not None:
                 direct = self._dspy_route_direct(user_text)
+            if direct is None and self.ax_router is not None and self.registry is not None:
+                direct = self._ax_route_direct(user_text)
             anim_label = self._maybe_play_avatar_animation(
                 user_text, plan=plan, raw_text=raw_text,
             )
