@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", system-ui, sans-serif;
+
+  --color-bg: #030303;
+  --color-bg-elevated: #151515;
+  --color-bg-chrome: #120f1d;
+  --color-bg-hover: #1a1a1a;
+  --color-bg-pill: #0d0d0d;
+
+  --color-text: #ffffff;
+  --color-text-muted: #7c7c7c;
+  --color-text-dim: #6b6b6b;
+  --color-divider: #2c2c2c;
+
+  --color-accent: #7abfff;
+  --color-accent-deep: #005499;
+  --color-accent-hover: #a4ceff;
+  --color-success: #60d26a;
+  --color-danger: #f46e6e;
+
+  --color-card-bar: #545454;
+  --color-card-bar-fill: #7abfff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Atmospheric lightbar (design nod, original implementation) */
+.lightbar {
+  pointer-events: none;
+  position: absolute;
+  left: 50%;
+  top: -120px;
+  width: 140vw;
+  height: 420px;
+  transform: translateX(-50%);
+  background:
+    radial-gradient(ellipse 50% 60% at 50% 100%, rgb(0 84 153 / 0.35), transparent 70%),
+    radial-gradient(ellipse 40% 50% at 30% 80%, rgb(122 191 255 / 0.12), transparent 60%);
+  mask-image: radial-gradient(ellipse 60% 70% at 50% 100%, black, transparent 75%);
+  opacity: 0.9;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}

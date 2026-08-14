@@ -1,0 +1,38 @@
+{
+  "name": "aether-clean",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "dev:app": "vite --host 0.0.0.0 --port 5173",
+    "lab": "npm --prefix lab start",
+    "dev:all": "concurrently -k -n lab,web -c green,cyan \"npm run lab\" \"npm run dev\"",
+    "share": "npm run dev:all",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "postinstall": "npm --prefix lab install"
+  },
+  "dependencies": {
+    "@webgpu/types": "^0.1.71",
+    "anime4k-webgpu": "^1.0.0",
+    "hls.js": "^1.6.16",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router-dom": "^7.18.1",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.13.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "concurrently": "^9.2.1",
+    "oxlint": "^1.71.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1"
+  }
+}
