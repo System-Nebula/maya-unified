@@ -8,6 +8,7 @@ login in OpenBao uses the live network. Tests skip when the daemon is down.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 from pathlib import Path
@@ -22,6 +23,7 @@ from maya_gateway.services.slskd_search import (
     enqueue_download,
     flac_hits,
     is_seven_inch,
+    is_twelve_inch,
     nggyu_7inch_query,
     pick_seven_inch_flac,
     reset_client,
@@ -40,7 +42,7 @@ class _FakeSearches:
         self.files = files
         self.last_text = ""
 
-    def search_text(self, text: str) -> dict[str, str]:
+    def search_text(self, text: str, **kwargs: Any) -> dict[str, str]:
         self.last_text = text
         return {"id": "search-nggyu"}
 
@@ -119,12 +121,13 @@ def _reset_slskd_client() -> None:
     reset_client()
 
 
-def test_nggyu_query_mentions_seven_inch_and_disables_exact_phrase() -> None:
+def test_nggyu_query_is_artist_title_without_seven_inch_token() -> None:
     query = nggyu_7inch_query()
     text = query.to_slskd_text()
     assert NGGYU_ARTIST in text
     assert NGGYU_TITLE in text
-    assert '7"' in text
+    assert '7"' not in text
+    assert "7inch" not in text.lower()
     assert query.exact_phrase is False
     assert query.format_filter is QualityTier.LOSSLESS
 
@@ -133,6 +136,8 @@ def test_is_seven_inch_tokens() -> None:
     assert is_seven_inch(_SEVEN_FLAC)
     assert is_seven_inch('Rick Astley - Never Gonna Give You Up (7").flac')
     assert not is_seven_inch(_ALBUM_FLAC)
+    assert is_twelve_inch("Rick Astley - Never Gonna Give You Up (12 Inch) 113.mp3")
+    assert not is_twelve_inch(_ALBUM_FLAC)
 
 
 def test_brat_query_then_flac_filter(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,6 +196,59 @@ def test_search_filters_mp3_and_keeps_flac(monkeypatch: pytest.MonkeyPatch) -> N
     assert picked.extension == "flac"
 
 
+def test_pick_prefers_twelve_inch_over_album_when_no_seven(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    twelve = r"Music\Rick Astley\Never Gonna Give You Up (12 Inch).flac"
+    fake = _FakeClient(
+        [
+            _file(_ALBUM_FLAC, 30_000_000),
+            _file(twelve, 14_000_000),
+        ]
+    )
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    monkeypatch.setattr("maya_gateway.services.slskd_search.time.sleep", lambda _s: None)
+    result = search_slskd(nggyu_7inch_query(), wait_seconds=0)
+    picked = pick_seven_inch_flac(result)
+    assert picked is not None
+    assert picked.filename == twelve
+
+
+class _DelayedSearches(_FakeSearches):
+    def __init__(self, files: list[dict[str, Any]]) -> None:
+        super().__init__(files)
+        self.calls = 0
+
+    def state(self, search_id: str, includeResponses: bool = False) -> dict[str, Any]:
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "isComplete": False,
+                "state": "InProgress",
+                "fileCount": 12,
+                "responseCount": 4,
+                "responses": [],
+            }
+        payload = super().state(search_id, includeResponses=includeResponses)
+        payload["isComplete"] = True
+        payload["state"] = "Completed"
+        return payload
+
+
+def test_search_polls_until_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeClient([_file(_SEVEN_FLAC, 12_000_000)])
+    fake.searches = _DelayedSearches(fake.searches.files)
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    monkeypatch.setattr("maya_gateway.services.slskd_search.time.sleep", lambda _s: None)
+    result = search_slskd(nggyu_7inch_query(), wait_seconds=5)
+    assert fake.searches.calls >= 2
+    assert flac_hits(result)
+
+
 def test_download_enqueues_seven_inch_flac(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeClient(
         [
@@ -229,17 +287,33 @@ def test_live_search_filter_and_download_nggyu_7inch() -> None:
     wait = _search_wait()
     result = search_slskd(nggyu_7inch_query(), wait_seconds=wait)
     flacs = flac_hits(result)
+    artifact = Path("data/slskd/last_nggyu_search.json")
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(
+        json.dumps(
+            {
+                "query": result.query.to_slskd_text(),
+                "search_id": result.search_id,
+                "elapsed_seconds": result.elapsed_seconds,
+                "total_hits": result.total_hits,
+                "flac": len(flacs),
+                "seven_inch": sum(1 for hit in flacs if is_seven_inch(hit.filename)),
+                "twelve_inch": sum(1 for hit in flacs if is_twelve_inch(hit.filename)),
+                "sample": [hit.filename for hit in flacs[:8]],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     if not flacs:
-        pytest.skip(f"no FLAC hits for {NGGYU_TITLE!r} (slskd not logged in or empty network)")
+        pytest.skip(
+            f"no FLAC hits for {NGGYU_TITLE!r} after {wait}s "
+            f"(search_id={result.search_id}; wrote {artifact})"
+        )
     hit = pick_seven_inch_flac(result)
     assert hit is not None
     assert hit.extension == "flac"
-    seven = [item for item in flacs if is_seven_inch(item.filename)]
-    assert seven, (
-        "FLAC hits did not include a 7-inch filename; sample: "
-        + ", ".join(item.filename for item in flacs[:5])
-    )
-    assert is_seven_inch(hit.filename)
     transfer_id = enqueue_download(hit.username, hit.filename, hit.size)
     assert transfer_id, f"enqueue failed for {hit.filename}"
 

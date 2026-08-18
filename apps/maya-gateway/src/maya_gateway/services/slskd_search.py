@@ -29,6 +29,7 @@ _SLSKD_CLIENT = None
 NGGYU_ARTIST = "Rick Astley"
 NGGYU_TITLE = "Never Gonna Give You Up"
 _SEVEN_INCH_TOKENS = ('7"', "7''", "7inch", "7-inch", "7 inch", "7in")
+_TWELVE_INCH_TOKENS = ('12"', "12''", "12inch", "12-inch", "12 inch", "12in")
 
 
 def reset_client() -> None:
@@ -38,11 +39,16 @@ def reset_client() -> None:
 
 
 def nggyu_7inch_query() -> SearchQuery:
-    """Canonical smoke query: Never Gonna Give You Up 7\" FLAC."""
+    """Smoke query: Rick Astley — Never Gonna Give You Up, lossless.
+
+    Do not put ``7"`` in the Soulseek search text. slskd keeps those searches
+    ``InProgress`` and returns ``fileCount > 0`` with an empty ``responses``
+    list, which looks like "no hits". Prefer a 7-inch path client-side after
+    FLACs come back.
+    """
     return SearchQuery(
         artist=NGGYU_ARTIST,
         title=NGGYU_TITLE,
-        album='7"',
         exact_phrase=False,
         format_filter=QualityTier.LOSSLESS,
         max_results=50,
@@ -54,18 +60,30 @@ def is_seven_inch(filename: str) -> bool:
     return any(token in lower for token in _SEVEN_INCH_TOKENS)
 
 
+def is_twelve_inch(filename: str) -> bool:
+    lower = filename.lower()
+    return any(token in lower for token in _TWELVE_INCH_TOKENS)
+
+
+def vinyl_preference(filename: str) -> int:
+    """Higher is better: 7-inch, then 12-inch, then other FLACs."""
+    if is_seven_inch(filename):
+        return 2
+    if is_twelve_inch(filename):
+        return 1
+    return 0
+
+
 def flac_hits(result: SearchResult) -> list[SearchHit]:
     return [hit for hit in result.hits if hit.extension.lower() == "flac"]
 
 
 def pick_seven_inch_flac(result: SearchResult) -> SearchHit | None:
-    """Prefer a 7\" FLAC; otherwise the best remaining FLAC hit."""
+    """Prefer a 7\" FLAC, then 12\", then the best remaining FLAC hit."""
     flacs = flac_hits(result)
-    seven = [hit for hit in flacs if is_seven_inch(hit.filename)]
-    pool = seven or flacs
-    if not pool:
+    if not flacs:
         return None
-    return max(pool, key=lambda hit: hit.quality_score)
+    return max(flacs, key=lambda hit: (vinyl_preference(hit.filename), hit.quality_score))
 
 
 def _get_client():
@@ -130,6 +148,43 @@ def _parse_filename_hints(path: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _wait_for_search(client, search_id: str, wait_seconds: int) -> dict:
+    """Poll slskd until the search completes or ``wait_seconds`` elapses.
+
+    While a search is ``InProgress``, slskd reports ``fileCount``/``responseCount``
+    but leaves ``responses`` empty. A single sleep-then-fetch therefore looks
+    like zero hits. ``wait_seconds <= 0`` fetches once (unit tests).
+    """
+    def _state() -> dict:
+        payload = client.searches.state(search_id, includeResponses=True)
+        return payload if isinstance(payload, dict) else {}
+
+    if wait_seconds <= 0:
+        return _state()
+
+    deadline = time.time() + wait_seconds
+    last: dict = {}
+    while True:
+        last = _state()
+        responses = last.get("responses") or []
+        if last.get("isComplete"):
+            return last
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            if not responses:
+                fetch_responses = getattr(client.searches, "search_responses", None)
+                if callable(fetch_responses):
+                    try:
+                        extra = fetch_responses(search_id)
+                    except Exception:
+                        extra = None
+                    if extra:
+                        last = dict(last)
+                        last["responses"] = extra
+            return last
+        time.sleep(min(0.5, remaining))
+
+
 def search_slskd(query: SearchQuery, wait_seconds: int = 15) -> SearchResult:
     """Execute a structured query against Soulseek via slskd.
 
@@ -139,21 +194,18 @@ def search_slskd(query: SearchQuery, wait_seconds: int = 15) -> SearchResult:
     text = query.to_slskd_text()
     t0 = time.time()
 
-    # 1. Initiate search
-    raw = client.searches.search_text(text)
+    search_kwargs: dict = {}
+    if wait_seconds > 0:
+        search_kwargs["searchTimeout"] = int(wait_seconds * 1000)
+    raw = client.searches.search_text(text, **search_kwargs)
 
-    # search_text returns either a dict with "id" or the id directly
     search_id: str = ""
     if isinstance(raw, dict):
         search_id = raw.get("id", "")
     else:
         search_id = str(raw)
 
-    # 2. Wait for results
-    time.sleep(wait_seconds)
-
-    # 3. Fetch responses
-    state = client.searches.state(search_id, includeResponses=True)
+    state = _wait_for_search(client, search_id, wait_seconds)
     responses = state.get("responses", []) if isinstance(state, dict) else []
 
     # 4. Flatten + type
