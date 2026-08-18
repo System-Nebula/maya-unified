@@ -9,8 +9,9 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path, PureWindowsPath
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from maya_contracts import (
     DownloadRequest,
@@ -23,12 +24,14 @@ from maya_contracts import (
     compute_quality_score,
     infer_quality_tier,
 )
+from opentelemetry import trace
 
 # ---------------------------------------------------------------------------
 # Client bootstrap
 # ---------------------------------------------------------------------------
 
 _SLSKD_CLIENT = None
+_DOWNLOAD_TRACER_NAME = "maya.music.download"
 
 NGGYU_ARTIST = "Rick Astley"
 NGGYU_TITLE = "Never Gonna Give You Up"
@@ -40,6 +43,31 @@ def reset_client() -> None:
     """Drop the cached slskd client (tests / process reconfig)."""
     global _SLSKD_CLIENT
     _SLSKD_CLIENT = None
+
+
+@contextmanager
+def _download_span(name: str, **attrs: Any) -> Iterator[Any]:
+    tracer = trace.get_tracer(_DOWNLOAD_TRACER_NAME)
+    with tracer.start_as_current_span(name) as span:
+        for key, value in attrs.items():
+            if value is None:
+                continue
+            if isinstance(value, (bool, int, float, str)):
+                span.set_attribute(key, value)
+            else:
+                span.set_attribute(key, str(value))
+        yield span
+
+
+def _stamp_download_result(span, result: DownloadResult) -> None:
+    span.set_attribute("download.status", result.status.value)
+    span.set_attribute("download.verified", bool(result.verified))
+    if result.bytes_transferred is not None:
+        span.set_attribute("download.bytes_transferred", int(result.bytes_transferred))
+    if result.local_size is not None:
+        span.set_attribute("download.local_size", int(result.local_size))
+    if result.error:
+        span.set_attribute("download.error", str(result.error)[:160])
 
 
 def nggyu_7inch_query() -> SearchQuery:
@@ -409,6 +437,28 @@ def verify_transfer_file(
     expected_size: int,
 ) -> tuple[bool, str | None, str | None, int | None]:
     """Check transfer success + size. Local file size is required only if the file exists."""
+    with _download_span(
+        "download.verify",
+        **{"download.expected_size": expected_size},
+    ) as span:
+        ok, error, local_path, local_size = _verify_transfer_file(file_row, expected_size)
+        span.set_attribute("download.verified", ok)
+        transferred = _intish(file_row.get("bytesTransferred"))
+        if transferred is None:
+            transferred = _intish(file_row.get("bytes_transferred"))
+        if transferred is not None:
+            span.set_attribute("download.bytes_transferred", transferred)
+        if local_size is not None:
+            span.set_attribute("download.local_size", local_size)
+        if error:
+            span.set_attribute("download.error", error[:160])
+        return ok, error, local_path, local_size
+
+
+def _verify_transfer_file(
+    file_row: dict[str, Any],
+    expected_size: int,
+) -> tuple[bool, str | None, str | None, int | None]:
     state = str(file_row.get("state") or "")
     size = _intish(file_row.get("size"))
     transferred = _intish(file_row.get("bytesTransferred"))
@@ -476,6 +526,41 @@ def wait_for_transfer(
     wait_seconds: int = 15,
 ) -> dict[str, Any] | None:
     """Poll slskd until the transfer is terminal or ``wait_seconds`` elapses."""
+    if wait_seconds <= 0:
+        return _wait_for_transfer(
+            username=username,
+            filename=filename,
+            size=size,
+            transfer_id=transfer_id,
+            wait_seconds=wait_seconds,
+        )
+    with _download_span(
+        "download.wait_transfer",
+        **{
+            "download.filename": PureWindowsPath(filename).name,
+            "download.expected_size": size,
+            "download.wait_seconds": wait_seconds,
+        },
+    ) as span:
+        return _wait_for_transfer(
+            username=username,
+            filename=filename,
+            size=size,
+            transfer_id=transfer_id,
+            wait_seconds=wait_seconds,
+            span=span,
+        )
+
+
+def _wait_for_transfer(
+    *,
+    username: str,
+    filename: str,
+    size: int,
+    transfer_id: str | None = None,
+    wait_seconds: int = 15,
+    span: Any | None = None,
+) -> dict[str, Any] | None:
     client = _get_client()
 
     def _snapshot() -> dict[str, Any] | None:
@@ -493,16 +578,33 @@ def wait_for_transfer(
 
     deadline = time.time() + wait_seconds
     last: dict[str, Any] | None = None
+    polls = 0
     while True:
         last = _snapshot()
+        polls += 1
         if last is not None:
             state = str(last.get("state") or "")
             if _transfer_succeeded(state) or _transfer_failed(state):
-                return last
+                break
         remaining = deadline - time.time()
         if remaining <= 0:
-            return last
+            break
         time.sleep(min(0.5, remaining))
+
+    if span is not None:
+        span.set_attribute("download.polls", polls)
+        if last is not None:
+            state = str(last.get("state") or "")
+            span.set_attribute("download.state", state)
+            span.set_attribute("download.complete", _transfer_succeeded(state))
+            transferred = _intish(last.get("bytesTransferred"))
+            if transferred is None:
+                transferred = _intish(last.get("bytes_transferred"))
+            if transferred is not None:
+                span.set_attribute("download.bytes_transferred", transferred)
+        else:
+            span.set_attribute("download.complete", False)
+    return last
 
 
 def _extract_enqueue_id(result: Any) -> str | None:
@@ -564,6 +666,25 @@ def enqueue_download(
     Returns a transfer ID when slskd reports one, otherwise a lookup key.
     Does not ingest into the ontology — wait until the file is verified.
     """
+    with _download_span(
+        "download.enqueue",
+        **{
+            "download.filename": PureWindowsPath(filename).name,
+            "download.expected_size": size,
+        },
+    ) as span:
+        transfer_id = _enqueue_download(username, filename, size)
+        span.set_attribute("download.enqueued", transfer_id is not None)
+        if transfer_id:
+            span.set_attribute("download.transfer_id", transfer_id)
+        return transfer_id
+
+
+def _enqueue_download(
+    username: str,
+    filename: str,
+    size: int,
+) -> str | None:
     client = _get_client()
     payload = [
         {
@@ -605,6 +726,20 @@ def get_downloads() -> list[dict]:
 
 def run_download(req: DownloadRequest) -> DownloadResult:
     """Enqueue a hit, optionally wait until complete, then verify size (and local file if present)."""
+    with _download_span(
+        "download.eval",
+        **{
+            "download.filename": PureWindowsPath(req.hit.filename).name,
+            "download.expected_size": req.hit.size,
+            "download.wait_seconds": req.wait_seconds,
+        },
+    ) as span:
+        result = _run_download(req)
+        _stamp_download_result(span, result)
+        return result
+
+
+def _run_download(req: DownloadRequest) -> DownloadResult:
     expected = req.hit.size
     transfer_id = enqueue_download(req.hit.username, req.hit.filename, expected)
     if transfer_id is None:

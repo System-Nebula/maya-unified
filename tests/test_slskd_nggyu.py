@@ -441,6 +441,76 @@ def test_download_polls_until_completed(monkeypatch: pytest.MonkeyPatch) -> None
     assert outcome.verified is True
 
 
+def test_download_eval_records_wait_transfer_spans(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry import trace
+    from services.tracing import attach_in_memory_exporter, span_records
+
+    exporter, previous = attach_in_memory_exporter("maya-download-eval")
+    fake = _FakeClient([_file(_SEVEN_FLAC, 64)], complete_after=2)
+    monkeypatch.setattr("maya_gateway.services.slskd_search._get_client", lambda: fake)
+    monkeypatch.setattr("maya_gateway.services.slskd_search.time.sleep", lambda _s: None)
+    monkeypatch.setattr("maya_gateway.services.slskd_search._schedule_ingest", lambda **_: None)
+    try:
+        outcome = run_download(DownloadRequest(hit=_hit(_SEVEN_FLAC, 64), wait_seconds=5))
+        provider = trace.get_tracer_provider()
+        if hasattr(provider, "force_flush"):
+            provider.force_flush()
+        records = span_records(exporter)
+        names = [row["name"] for row in records]
+        assert "download.eval" in names
+        assert "download.enqueue" in names
+        assert "download.wait_transfer" in names
+        assert "download.verify" in names
+        wait = next(row for row in records if row["name"] == "download.wait_transfer")
+        assert wait["attributes"].get("download.complete") is True
+        assert wait["attributes"].get("download.bytes_transferred") == 64
+        assert wait["attributes"].get("download.polls", 0) >= 2
+        eval_span = next(row for row in records if row["name"] == "download.eval")
+        assert eval_span["attributes"].get("download.verified") is True
+        assert eval_span["attributes"].get("download.status") == DownloadStatus.COMPLETED.value
+        assert outcome.verified is True
+        dump = Path("data/slskd/download_eval_traces.json")
+        dump.parent.mkdir(parents=True, exist_ok=True)
+        dump.write_text(
+            json.dumps(
+                {"service": "maya-download-eval", "span_count": len(records), "spans": records},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    finally:
+        from services.tracing import restore_tracer_provider
+
+        restore_tracer_provider(previous)
+
+
+def test_download_enqueue_only_has_no_wait_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry import trace
+    from services.tracing import attach_in_memory_exporter, span_records
+
+    exporter, previous = attach_in_memory_exporter("maya-download-eval")
+    fake = _FakeClient([_file(_SEVEN_FLAC, 64)])
+    monkeypatch.setattr("maya_gateway.services.slskd_search._get_client", lambda: fake)
+    try:
+        outcome = run_download(DownloadRequest(hit=_hit(_SEVEN_FLAC, 64), wait_seconds=0))
+        provider = trace.get_tracer_provider()
+        if hasattr(provider, "force_flush"):
+            provider.force_flush()
+        names = [row["name"] for row in span_records(exporter)]
+        assert "download.eval" in names
+        assert "download.enqueue" in names
+        assert "download.wait_transfer" not in names
+        assert "download.verify" not in names
+        assert outcome.status is DownloadStatus.ENQUEUED
+    finally:
+        from services.tracing import restore_tracer_provider
+
+        restore_tracer_provider(previous)
+
+
 def test_download_fails_on_local_size_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -512,7 +582,27 @@ def test_live_search_filter_and_download_nggyu_7inch() -> None:
     assert hit is not None
     assert hit.extension == "flac"
     wait_download = int(os.environ.get("SLSKD_DOWNLOAD_WAIT", "30"))
-    outcome = run_download(DownloadRequest(hit=hit, wait_seconds=wait_download))
+    from opentelemetry import trace
+    from services.tracing import attach_in_memory_exporter, span_records
+
+    exporter, previous = attach_in_memory_exporter("maya-download-eval")
+    traces: list[dict[str, Any]] = []
+    try:
+        outcome = run_download(DownloadRequest(hit=hit, wait_seconds=wait_download))
+        provider = trace.get_tracer_provider()
+        if hasattr(provider, "force_flush"):
+            provider.force_flush()
+        traces = span_records(exporter)
+    finally:
+        from services.tracing import restore_tracer_provider
+
+        restore_tracer_provider(previous)
+    traces_path = Path("data/slskd/download_eval_traces.json")
+    traces_path.write_text(
+        json.dumps({"service": "maya-download-eval", "span_count": len(traces), "spans": traces}, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
     artifact.write_text(
         json.dumps(
             {

@@ -98,7 +98,11 @@ async def build_playlist_for_query(query: str) -> dict[str, Any]:
             return result
 
         try:
-            expansion = await asyncio.to_thread(expand_playlist, q)
+            with corr_span("play.expand_playlist", url=q) as expand_span:
+                expansion = await asyncio.to_thread(expand_playlist, q)
+                if expansion is not None:
+                    expand_span.set_attribute("title", expansion.title or "")
+                    expand_span.set_attribute("track_count", len(expansion.tracks))
         except Exception:  # noqa: BLE001
             expansion = None
         result = build_playlist_artifact(q, expansion)
