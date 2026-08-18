@@ -29,6 +29,10 @@ async def test_youtube_playlist_expand_records_spans(monkeypatch: pytest.MonkeyP
         AsyncMock(return_value=None),
     )
     monkeypatch.setattr("services.discord.playlist.expand_playlist", lambda _q: expansion)
+    monkeypatch.setattr(
+        "services.music.playlist_ontology.resolve_playlist_ontology",
+        AsyncMock(return_value=None),
+    )
 
     exporter, previous = attach_in_memory_exporter("maya-play-playlist-probe")
     try:

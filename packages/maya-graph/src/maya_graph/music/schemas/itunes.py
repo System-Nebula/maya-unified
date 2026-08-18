@@ -19,6 +19,7 @@ from maya_graph.projector import normalize_key
 logger = logging.getLogger(__name__)
 
 ITUNES_SEARCH = "https://itunes.apple.com/search"
+ITUNES_LOOKUP = "https://itunes.apple.com/lookup"
 USER_AGENT = "maya-unified-music/1.0 (+https://github.com/System-Nebula/maya-unified)"
 _TIMEOUT_SEC = 4.0
 
@@ -177,6 +178,62 @@ async def search_album(
     except (TimeoutError, httpx.HTTPError) as exc:
         logger.warning("itunes album search failed for %r: %s", term, exc)
         return []
+
+
+def collection_id_from_album_work(work: CanonicalWork) -> str | None:
+    for anchor in work.anchors:
+        if anchor.schema == "apple_music" and str(anchor.external_id).startswith("album/"):
+            return str(anchor.external_id).split("/", 1)[1]
+    if work.key.startswith("apple_music:album/"):
+        return work.key.split("/", 1)[1]
+    return None
+
+
+async def lookup_collection_songs(
+    collection_id: str | int,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> tuple[CanonicalWork | None, list[CanonicalWork]]:
+    """Return ``(album_work, song_works)`` for an iTunes collection id."""
+    cid = str(collection_id).strip()
+    if not cid:
+        return None, []
+
+    async def _run(http: httpx.AsyncClient) -> tuple[CanonicalWork | None, list[CanonicalWork]]:
+        resp = await http.get(
+            ITUNES_LOOKUP,
+            params={"id": cid, "entity": "song", "limit": 200},
+        )
+        if resp.status_code != 200:
+            record_http(resp.status_code, error=f"HTTP {resp.status_code}", hits=0)
+            return None, []
+        album: CanonicalWork | None = None
+        songs: list[CanonicalWork] = []
+        for payload in resp.json().get("results") or []:
+            if not isinstance(payload, dict):
+                continue
+            kind = payload.get("wrapperType") or payload.get("kind")
+            if kind in ("collection", "album") or payload.get("collectionType"):
+                album = _work_from_album(payload) or album
+                continue
+            if kind in ("track", "song") or payload.get("trackId"):
+                work = _work_from_track(payload)
+                if work is not None:
+                    songs.append(work)
+        record_http(resp.status_code, hits=len(songs))
+        return album, songs
+
+    try:
+        if client is not None:
+            return await _run(client)
+        async with httpx.AsyncClient(
+            timeout=_TIMEOUT_SEC,
+            headers={"User-Agent": USER_AGENT},
+        ) as http:
+            return await _run(http)
+    except (TimeoutError, httpx.HTTPError) as exc:
+        logger.warning("itunes collection lookup failed for %s: %s", cid, exc)
+        return None, []
 
 
 class ItunesSchema:
