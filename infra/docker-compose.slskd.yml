@@ -1,6 +1,6 @@
 # slskd (Soulseek) for music-query CI / Cloud Agent smoke.
 # Start: docker compose -f infra/docker-compose.slskd.yml up -d
-# Live search needs SLSKD_SLSK_USERNAME + SLSKD_SLSK_PASSWORD.
+# Live search: Soulseek login from OpenBao (scripts/start-slskd.sh) or env override.
 services:
   slskd:
     image: slskd/slskd:latest

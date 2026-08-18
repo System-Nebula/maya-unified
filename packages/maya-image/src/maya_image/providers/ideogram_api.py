@@ -32,6 +32,15 @@ def resolve_api_key(explicit: Optional[str] = None) -> str:
     if env_key:
         return env_key
     try:
+        from services.secrets.openbao import read_secret
+
+        secret = read_secret(_OPENBAO_PATH) or {}
+        value = str(secret.get("value") or secret.get("api_key") or "")
+        if value:
+            return value
+    except Exception as exc:  # pragma: no cover - openbao optional
+        logger.debug("ideogram_openbao_lookup_failed", error=str(exc))
+    try:
         from lib.portal.openbao import _read_secret  # type: ignore
 
         secret = _read_secret(_OPENBAO_PATH) or {}

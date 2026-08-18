@@ -57,6 +57,9 @@ jobs:
     env:
       SLSKD_HOST: http://127.0.0.1:5030
       SLSKD_API_KEY: ci-cloud-agent-slskd-key
+      BAO_ADDR: ${{ secrets.BAO_ADDR }}
+      BAO_TOKEN: ${{ secrets.BAO_TOKEN }}
+      # Optional override while migrating; OpenBao secret/maya/integrations/slskd is canonical.
       SLSKD_SLSK_USERNAME: ${{ secrets.SLSK_USERNAME }}
       SLSKD_SLSK_PASSWORD: ${{ secrets.SLSK_PASSWORD }}
       SLSKD_SEARCH_WAIT: "25"
@@ -73,6 +76,9 @@ jobs:
 
       - name: Install Python deps
         run: nix develop . --command ./scripts/cloud-agent-install.sh
+
+      - name: Start OpenBao
+        run: nix develop . --command ./scripts/start-openbao.sh
 
       - name: Start slskd
         run: nix develop . --command ./scripts/start-slskd.sh

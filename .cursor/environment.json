@@ -21,6 +21,10 @@
     {
       "name": "slskd",
       "port": 5030
+    },
+    {
+      "name": "openbao",
+      "port": 8200
     }
   ]
 }

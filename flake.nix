@@ -30,6 +30,7 @@
             zlib
             # CI / Cloud Agent: local Postgres with pgvector when Docker is unavailable.
             (postgresql_16.withPackages (ps: [ ps.pgvector ]))
+            openbao
           ];
 
           shellHook = ''
@@ -40,6 +41,7 @@
             echo "  make setup     # uv sync (torch cu124 + faster-qwen3-tts + platform deps)"
             echo "  make test      # pytest"
             echo "  make ci        # pytest -m 'not integration' (Cloud/CI)"
+            echo "  make slskd    # start slskd (Soulseek login from OpenBao)"
             echo "  make tts-check # GPU smoke synth (optional)"
             echo "  ./launch.sh    # start gateway + voice agent"
           '';

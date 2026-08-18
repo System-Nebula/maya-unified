@@ -1,4 +1,4 @@
-.PHONY: setup test ci slskd ci-slskd tts-check e2e-install e2e-test homepage-deploy docs-serve docs-build
+.PHONY: setup test ci slskd openbao ci-slskd tts-check e2e-install e2e-test homepage-deploy docs-serve docs-build
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -18,7 +18,11 @@ ci:
 	fi
 
 slskd:
+	@bash scripts/start-openbao.sh || true
 	@bash scripts/start-slskd.sh
+
+openbao:
+	@bash scripts/start-openbao.sh
 
 ci-slskd:
 	@if [ -n "$(IN_NIX_SHELL)" ]; then \
