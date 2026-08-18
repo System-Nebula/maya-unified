@@ -13,7 +13,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from maya_contracts import QualityTier
+from maya_contracts import QualityTier, SearchQuery
 from maya_gateway.services.slskd_search import (
     NGGYU_ARTIST,
     NGGYU_TITLE,
@@ -119,6 +119,35 @@ def test_is_seven_inch_tokens() -> None:
     assert is_seven_inch(_SEVEN_FLAC)
     assert is_seven_inch('Rick Astley - Never Gonna Give You Up (7").flac')
     assert not is_seven_inch(_ALBUM_FLAC)
+
+
+def test_brat_query_then_flac_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    brat_flac = r"Music\Charli XCX\Brat\01 - 360.flac"
+    brat_mp3 = r"Music\Charli XCX\Brat\01 - 360.mp3"
+    brat_m4a = r"Music\Charli XCX\Brat\02 - Von dutch.m4a"
+    fake = _FakeClient(
+        [
+            _file(brat_mp3, 4_000_000),
+            _file(brat_m4a, 6_000_000),
+            _file(brat_flac, 28_000_000),
+        ]
+    )
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    monkeypatch.setattr("maya_gateway.services.slskd_search.time.sleep", lambda _s: None)
+
+    query = SearchQuery(
+        album="brat",
+        exact_phrase=False,
+        format_filter=QualityTier.LOSSLESS,
+        max_results=50,
+    )
+    result = search_slskd(query, wait_seconds=0)
+    assert "brat" in fake.searches.last_text.lower()
+    assert {hit.extension for hit in result.hits} == {"flac"}
+    kept = flac_hits(result)
+    assert [hit.filename for hit in kept] == [brat_flac]
 
 
 def test_search_filters_mp3_and_keeps_flac(monkeypatch: pytest.MonkeyPatch) -> None:
