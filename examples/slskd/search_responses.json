@@ -1,0 +1,68 @@
+{
+  "brat": {
+    "responses": [
+      {
+        "username": "peer-example",
+        "files": [
+          {
+            "filename": "Music\\Charli XCX\\Brat\\01 - 360.mp3",
+            "size": 4000000,
+            "isLocked": false,
+            "hasFreeUploadSlot": true,
+            "queueLength": 0,
+            "uploadSpeed": 1000000
+          },
+          {
+            "filename": "Music\\Charli XCX\\Brat\\02 - Von dutch.m4a",
+            "size": 6000000,
+            "isLocked": false,
+            "hasFreeUploadSlot": true,
+            "queueLength": 0,
+            "uploadSpeed": 1000000
+          },
+          {
+            "filename": "Music\\Charli XCX\\Brat\\01 - 360.flac",
+            "size": 28000000,
+            "isLocked": false,
+            "hasFreeUploadSlot": true,
+            "queueLength": 0,
+            "uploadSpeed": 1000000
+          }
+        ]
+      }
+    ]
+  },
+  "nggyu": {
+    "responses": [
+      {
+        "username": "peer-example",
+        "files": [
+          {
+            "filename": "Music\\Rick Astley\\Whenever You Need Somebody\\01 - Never Gonna Give You Up.mp3",
+            "size": 5000000,
+            "isLocked": false,
+            "hasFreeUploadSlot": true,
+            "queueLength": 0,
+            "uploadSpeed": 1000000
+          },
+          {
+            "filename": "Music\\Rick Astley\\Whenever You Need Somebody\\01 - Never Gonna Give You Up.flac",
+            "size": 30000000,
+            "isLocked": false,
+            "hasFreeUploadSlot": true,
+            "queueLength": 0,
+            "uploadSpeed": 1000000
+          },
+          {
+            "filename": "Music\\Rick Astley\\Never Gonna Give You Up 7inch\\01 - Never Gonna Give You Up.flac",
+            "size": 12000000,
+            "isLocked": false,
+            "hasFreeUploadSlot": true,
+            "queueLength": 0,
+            "uploadSpeed": 1000000
+          }
+        ]
+      }
+    ]
+  }
+}

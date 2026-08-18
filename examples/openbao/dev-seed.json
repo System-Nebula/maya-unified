@@ -1,0 +1,11 @@
+{
+  "comment": "First-run OpenBao seed (copied to data/openbao/dev-seed.json, not overwritten). Replace slskd with a real Soulseek login and drop network=example to use the live network.",
+  "secrets": {
+    "secret/data/maya/integrations/slskd": {
+      "username": "maya-dev-example",
+      "password": "maya-dev-example",
+      "api_key": "ci-cloud-agent-slskd-key",
+      "network": "example"
+    }
+  }
+}

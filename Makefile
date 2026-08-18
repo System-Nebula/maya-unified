@@ -26,11 +26,11 @@ openbao:
 
 ci-slskd:
 	@if [ -n "$(IN_NIX_SHELL)" ]; then \
-		uv run --no-sync pytest tests/test_slskd_nggyu.py; \
+		uv run --no-sync pytest tests/test_slskd_nggyu.py tests/test_openbao_slskd.py tests/test_slskd_example.py; \
 	elif command -v nix >/dev/null 2>&1; then \
-		nix develop "$(ROOT)" --command uv run --no-sync pytest tests/test_slskd_nggyu.py; \
+		nix develop "$(ROOT)" --command uv run --no-sync pytest tests/test_slskd_nggyu.py tests/test_openbao_slskd.py tests/test_slskd_example.py; \
 	else \
-		uv run --no-sync pytest tests/test_slskd_nggyu.py; \
+		uv run --no-sync pytest tests/test_slskd_nggyu.py tests/test_openbao_slskd.py tests/test_slskd_example.py; \
 	fi
 
 tts-check:

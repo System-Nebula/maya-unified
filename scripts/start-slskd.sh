@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 COMPOSE="$ROOT/infra/docker-compose.slskd.yml"
 KEY_FILE="$ROOT/data/slskd_api_key"
+MODE_FILE="$ROOT/data/slskd_mode"
 mkdir -p "$ROOT/data/slskd/app" "$ROOT/data/slskd/downloads" "$ROOT/data/slskd/shared"
 
 if [[ -z "${BAO_ADDR:-}" ]]; then
@@ -102,11 +103,21 @@ for pid in os.listdir("/proc"):
             cmd = handle.read().replace(b"\0", b" ").decode("utf-8", "replace")
     except OSError:
         continue
-    if "slskd" in cmd and "--http-port 5030" in cmd:
+    if "slskd" in cmd and (
+        "--http-port 5030" in cmd or "slskd_example" in cmd
+    ):
         os.kill(int(pid), signal.SIGTERM)
         break
 time.sleep(1)
 PY
+}
+
+start_example_slskd() {
+  echo "==> example slskd (bundled test account, no Soulseek network)"
+  nohup env PYTHONPATH="$ROOT" SLSKD_API_KEY="$SLSKD_API_KEY" \
+    python3 -m services.slskd_example.server \
+    >/tmp/slskd-example.log 2>&1 &
+  printf 'example\n' > "$MODE_FILE"
 }
 
 start_docker_slskd() {
@@ -144,12 +155,17 @@ load_openbao_creds
 export SLSKD_HOST="${SLSKD_HOST:-http://127.0.0.1:5030}"
 ensure_api_key
 
+use_example=0
+case "${SLSKD_EXAMPLE:-}" in
+  1|true|TRUE|yes|YES) use_example=1 ;;
+esac
+
 if slskd_listening; then
   if slskd_logged_in; then
     echo "slskd already listening on 127.0.0.1:5030"
     exit 0
   fi
-  if [[ -n "${SLSKD_SLSK_USERNAME:-}" && -n "${SLSKD_SLSK_PASSWORD:-}" ]]; then
+  if [[ "$use_example" -eq 1 || ( -n "${SLSKD_SLSK_USERNAME:-}" && -n "${SLSKD_SLSK_PASSWORD:-}" ) ]]; then
     stop_listening_slskd
   else
     echo "slskd already listening on 127.0.0.1:5030 (not logged in; no OpenBao/env Soulseek creds)"
@@ -157,14 +173,18 @@ if slskd_listening; then
   fi
 fi
 
-if [[ -z "${SLSKD_SLSK_USERNAME:-}" || -z "${SLSKD_SLSK_PASSWORD:-}" ]]; then
-  echo "slskd Soulseek login missing; put secret/maya/integrations/slskd in OpenBao" >&2
+if [[ "$use_example" -eq 1 ]]; then
+  start_example_slskd
+elif [[ -z "${SLSKD_SLSK_USERNAME:-}" || -z "${SLSKD_SLSK_PASSWORD:-}" ]]; then
+  echo "slskd Soulseek login missing; seeding bundled example test account" >&2
+  start_example_slskd
+else
+  printf 'soulseek\n' > "$MODE_FILE"
+  start_docker_slskd || start_nix_slskd || {
+    echo "real slskd unavailable; falling back to bundled example" >&2
+    start_example_slskd
+  }
 fi
-
-start_docker_slskd || start_nix_slskd || {
-  echo "slskd: neither docker nor nix is available" >&2
-  exit 1
-}
 
 for _ in $(seq 1 60); do
   if slskd_listening; then
@@ -175,6 +195,9 @@ for _ in $(seq 1 60); do
 done
 
 echo "slskd did not become ready on 127.0.0.1:5030" >&2
+if [[ -f /tmp/slskd-example.log ]]; then
+  tail -n 40 /tmp/slskd-example.log >&2 || true
+fi
 if [[ -f /tmp/slskd-nix.log ]]; then
   tail -n 40 /tmp/slskd-nix.log >&2 || true
 fi

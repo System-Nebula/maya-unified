@@ -62,7 +62,6 @@ jobs:
       # Optional override while migrating; OpenBao secret/maya/integrations/slskd is canonical.
       SLSKD_SLSK_USERNAME: ${{ secrets.SLSK_USERNAME }}
       SLSKD_SLSK_PASSWORD: ${{ secrets.SLSK_PASSWORD }}
-      SLSKD_SEARCH_WAIT: "25"
       VA_TTS_ENABLED: "0"
       VA_STT_DEVICE: cpu
       SESSION_SECRET: ci-cloud-agent-session-secret-not-for-production

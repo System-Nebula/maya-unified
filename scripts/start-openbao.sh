@@ -82,7 +82,7 @@ ensure_token() {
 }
 
 seed_slskd() {
-  PYTHONPATH="$ROOT" python3 -m services.secrets.openbao seed || true
+  PYTHONPATH="$ROOT" python3 -m services.secrets.openbao init-dev || true
 }
 
 ensure_token

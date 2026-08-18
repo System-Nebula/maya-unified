@@ -1,14 +1,16 @@
 """slskd music-query smoke: search, FLAC filter, Never Gonna Give You Up 7\" download.
 
 Unmarked tests use a fake slskd client (always run in `make ci`).
-Live tests require a reachable slskd (`make slskd` / CI slskd job) and a
-Soulseek login; they skip when the daemon is down or not connected.
+Live tests require a reachable slskd (`make slskd`). The bundled
+maya-dev-example test account drives an in-repo stand-in; a real Soulseek
+login in OpenBao uses the live network. Tests skip when the daemon is down.
 """
 
 from __future__ import annotations
 
 import os
 import socket
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -91,7 +93,19 @@ def _slskd_listening() -> bool:
         return False
 
 
+def _search_wait() -> int:
+    mode = Path("data/slskd_mode")
+    default = "0" if mode.is_file() and mode.read_text(encoding="utf-8").strip() == "example" else "25"
+    return int(os.environ.get("SLSKD_SEARCH_WAIT", default))
+
+
 def _require_live_slskd() -> None:
+    if not os.environ.get("SLSKD_API_KEY"):
+        key_file = Path("data/slskd_api_key")
+        if key_file.is_file():
+            os.environ["SLSKD_API_KEY"] = key_file.read_text(encoding="utf-8").strip()
+        elif Path("data/slskd_mode").is_file() and Path("data/slskd_mode").read_text(encoding="utf-8").strip() == "example":
+            os.environ["SLSKD_API_KEY"] = "ci-cloud-agent-slskd-key"
     if not os.environ.get("SLSKD_API_KEY"):
         pytest.skip("SLSKD_API_KEY is not set")
     if not _slskd_listening():
@@ -212,7 +226,7 @@ def test_download_enqueues_seven_inch_flac(monkeypatch: pytest.MonkeyPatch) -> N
 @pytest.mark.integration
 def test_live_search_filter_and_download_nggyu_7inch() -> None:
     _require_live_slskd()
-    wait = int(os.environ.get("SLSKD_SEARCH_WAIT", "25"))
+    wait = _search_wait()
     result = search_slskd(nggyu_7inch_query(), wait_seconds=wait)
     flacs = flac_hits(result)
     if not flacs:
@@ -228,3 +242,22 @@ def test_live_search_filter_and_download_nggyu_7inch() -> None:
     assert is_seven_inch(hit.filename)
     transfer_id = enqueue_download(hit.username, hit.filename, hit.size)
     assert transfer_id, f"enqueue failed for {hit.filename}"
+
+
+@pytest.mark.slskd
+@pytest.mark.integration
+def test_live_brat_then_flac_filter() -> None:
+    _require_live_slskd()
+    result = search_slskd(
+        SearchQuery(
+            album="brat",
+            exact_phrase=False,
+            format_filter=QualityTier.LOSSLESS,
+            max_results=50,
+        ),
+        wait_seconds=_search_wait(),
+    )
+    kept = flac_hits(result)
+    if not kept:
+        pytest.skip("no FLAC hits for brat (slskd not logged in or empty network)")
+    assert all(hit.extension.lower() == "flac" for hit in kept)

@@ -17,11 +17,18 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+from services.paths import DATA_DIR, ROOT
 
 SLSKD_SECRET_PATH = "secret/data/maya/integrations/slskd"
 IDEOGRAM_SECRET_PATH = "secret/data/maya/providers/ideogram"
 DEFAULT_BAO_ADDR = "http://127.0.0.1:8200"
+EXAMPLE_SLSKD_USERNAME = "maya-dev-example"
+EXAMPLE_SLSKD_API_KEY = "ci-cloud-agent-slskd-key"
+DEV_SEED_EXAMPLE = ROOT / "examples" / "openbao" / "dev-seed.json"
+DEV_SEED_LOCAL = DATA_DIR / "openbao" / "dev-seed.json"
 
 
 def _env(name: str) -> str:
@@ -106,7 +113,13 @@ def slskd_credentials() -> dict[str, str]:
         or ""
     )
     api_key = str(secret.get("api_key") or secret.get("SLSKD_API_KEY") or "")
-    return {"username": username, "password": password, "api_key": api_key}
+    network = str(secret.get("network") or "")
+    return {
+        "username": username,
+        "password": password,
+        "api_key": api_key,
+        "network": network,
+    }
 
 
 def _env_slskd() -> dict[str, str]:
@@ -114,6 +127,75 @@ def _env_slskd() -> dict[str, str]:
     password = _env("SLSKD_SLSK_PASSWORD") or _env("SLSK_PASSWORD")
     api_key = _env("SLSKD_API_KEY")
     return {"username": username, "password": password, "api_key": api_key}
+
+
+def is_example_slskd_account(secret: dict[str, Any] | None = None) -> bool:
+    """True for the bundled mock account (not a Soulseek network login)."""
+    if _env("SLSKD_EXAMPLE").lower() in {"1", "true", "yes"}:
+        return True
+    data = secret if secret is not None else read_secret(SLSKD_SECRET_PATH)
+    username = str(data.get("username") or "")
+    network = str(data.get("network") or "").lower()
+    if _env("SLSKD_SLSK_USERNAME") and _env("SLSKD_SLSK_USERNAME") != EXAMPLE_SLSKD_USERNAME:
+        return False
+    return network == "example" or username == EXAMPLE_SLSKD_USERNAME
+
+
+def load_dev_seed(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Return ``{kv_api_path: data}`` from a seed JSON file."""
+    target = path or DEV_SEED_LOCAL
+    if not target.is_file():
+        return {}
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    secrets = payload.get("secrets") if isinstance(payload, dict) else None
+    if not isinstance(secrets, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for kv_path, data in secrets.items():
+        if isinstance(kv_path, str) and isinstance(data, dict):
+            out[kv_path] = dict(data)
+    return out
+
+
+def ensure_local_dev_seed() -> Path:
+    """Copy the bundled example seed into ``data/`` once (like voices/personalities)."""
+    DEV_SEED_LOCAL.parent.mkdir(parents=True, exist_ok=True)
+    if not DEV_SEED_LOCAL.is_file():
+        DEV_SEED_LOCAL.write_text(DEV_SEED_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+        try:
+            DEV_SEED_LOCAL.chmod(0o600)
+        except OSError:
+            pass
+    return DEV_SEED_LOCAL
+
+
+def init_dev() -> str:
+    """Seed local OpenBao from ``data/openbao/dev-seed.json`` (example on first run).
+
+    Remote OpenBao is never overwritten with the bundled example account.
+    Env Soulseek creds still win when the KV path is empty.
+    """
+    if not bao_token():
+        return "openbao token missing; skip init-dev"
+    if not bao_is_local():
+        return seed_slskd_from_env()
+    env_status = seed_slskd_from_env()
+    if env_status.startswith("seeded") or "already present" in env_status:
+        return env_status
+    ensure_local_dev_seed()
+    secrets = load_dev_seed(DEV_SEED_LOCAL)
+    if not secrets:
+        return "openbao dev seed missing or empty"
+    written = 0
+    for kv_path, data in secrets.items():
+        write_secret(kv_path, data)
+        written += 1
+    if is_example_slskd_account(secrets.get(SLSKD_SECRET_PATH) or {}):
+        return f"seeded {written} openbao path(s) from bundled example test account"
+    return f"seeded {written} openbao path(s) from data/openbao/dev-seed.json"
 
 
 def seed_slskd_from_env() -> str:
@@ -149,11 +231,15 @@ def export_slskd_shell() -> str:
         lines.append(f"export SLSKD_SLSK_PASSWORD={shlex.quote(creds['password'])}")
     if not _env("SLSKD_API_KEY") and len(creds["api_key"]) >= 16:
         lines.append(f"export SLSKD_API_KEY={shlex.quote(creds['api_key'])}")
+    if is_example_slskd_account(creds):
+        lines.append("export SLSKD_EXAMPLE=1")
     return "\n".join(lines)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "seed":
+    if len(sys.argv) > 1 and sys.argv[1] == "init-dev":
+        print(init_dev())
+    elif len(sys.argv) > 1 and sys.argv[1] == "seed":
         print(seed_slskd_from_env())
     else:
         print(export_slskd_shell())
