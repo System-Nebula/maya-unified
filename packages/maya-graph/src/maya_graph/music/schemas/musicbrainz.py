@@ -6,7 +6,9 @@ list on timeout, 503, or a miss. A User-Agent is required by MusicBrainz.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -18,7 +20,20 @@ logger = logging.getLogger(__name__)
 
 MUSICBRAINZ_API = "https://musicbrainz.org/ws/2/recording/"
 USER_AGENT = "maya-unified-music/1.0 (https://github.com/System-Nebula/maya-unified)"
-_TIMEOUT_SEC = 4.0
+_TIMEOUT_SEC = 8.0
+_SEARCH_DELAY_SEC = 1.1
+
+_last_search_at: float = 0.0
+_rate_lock = asyncio.Lock()
+
+
+async def _rate_limit() -> None:
+    global _last_search_at
+    async with _rate_lock:
+        elapsed = time.monotonic() - _last_search_at
+        if elapsed < _SEARCH_DELAY_SEC:
+            await asyncio.sleep(_SEARCH_DELAY_SEC - elapsed)
+        _last_search_at = time.monotonic()
 
 
 def _quote(value: str) -> str:
@@ -121,6 +136,7 @@ class MusicBrainzSchema:
         try:
             if self._client is not None:
                 return await self._search(self._client, lucene)
+            await _rate_limit()
             async with httpx.AsyncClient(
                 timeout=_TIMEOUT_SEC,
                 headers={"User-Agent": USER_AGENT, "Accept": "application/json"},

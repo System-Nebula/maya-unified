@@ -74,6 +74,7 @@ async def test_discogs_search_maps_master() -> None:
                         "master_id": 96559,
                         "title": "Rick Astley - Never Gonna Give You Up",
                         "year": "1987",
+                        "uri": "/release/249504-Rick-Astley-Never-Gonna-Give-You-Up",
                     }
                 ]
             }
@@ -86,6 +87,8 @@ async def test_discogs_search_maps_master() -> None:
     assert works[0].key == "discogs:master/96559"
     assert works[0].artists[0].name == "Rick Astley"
     assert any(a.external_id == "master/96559" for a in works[0].anchors)
+    release = next(a for a in works[0].anchors if a.external_id.startswith("release/"))
+    assert release.url == "https://www.discogs.com/release/249504-Rick-Astley-Never-Gonna-Give-You-Up"
 
 
 @pytest.mark.asyncio
@@ -276,3 +279,202 @@ async def test_wikidata_search_attaches_musicbrainz_and_discogs() -> None:
     assert f"wd:{qid}" in keys
     assert "mb:recording/77c9ba93-2d8e-4e2c-9a0a-0c0b6d0c0b6d" in keys
     assert "discogs:master/96559" in keys
+
+
+@pytest.mark.asyncio
+async def test_wikidata_searches_title_not_artist_concat() -> None:
+    seen: list[str] = []
+
+    class _Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            params = dict(request.url.params)
+            if params.get("action") == "wbsearchentities":
+                seen.append(params.get("search", ""))
+                return httpx.Response(200, json={"search": []})
+            return httpx.Response(200, json={"entities": {}})
+
+    await WikidataSchema(client=httpx.AsyncClient(transport=_Transport())).search_work(
+        WorkQuery(text="Never Gonna Give You Up", artist="Rick Astley")
+    )
+    assert seen == ["Never Gonna Give You Up"]
+
+
+@pytest.mark.asyncio
+async def test_wikidata_skips_nonsong_then_matches_performer() -> None:
+    xbox = "Q48263"
+    song = "Q126033982"
+    artist = "Q13590"
+
+    def _entity(qid: str, p31: str, performer: str | None = None) -> dict:
+        claims = {
+            "P31": [
+                {
+                    "mainsnak": {
+                        "datavalue": {"type": "wikibase-entityid", "value": {"id": p31}}
+                    }
+                }
+            ]
+        }
+        if performer:
+            claims["P175"] = [
+                {
+                    "mainsnak": {
+                        "datavalue": {
+                            "type": "wikibase-entityid",
+                            "value": {"id": performer},
+                        }
+                    }
+                }
+            ]
+        return {"id": qid, "labels": {"en": {"value": qid}}, "claims": claims}
+
+    class _Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            params = dict(request.url.params)
+            action = params.get("action", "")
+            if action == "wbsearchentities":
+                return httpx.Response(
+                    200,
+                    json={
+                        "search": [
+                            {"id": xbox, "label": "Xbox 360", "description": "console"},
+                            {
+                                "id": song,
+                                "label": "360",
+                                "description": "2024 single by Charli XCX",
+                            },
+                        ]
+                    },
+                )
+            if action == "wbgetentities":
+                ids = params.get("ids", "")
+                entities = {}
+                if xbox in ids:
+                    entities[xbox] = _entity(xbox, "Q8075")
+                if song in ids:
+                    entities[song] = _entity(song, "Q134556", artist)
+                if artist in ids:
+                    entities[artist] = {
+                        "id": artist,
+                        "labels": {"en": {"value": "Charli XCX"}},
+                        "claims": {},
+                    }
+                return httpx.Response(200, json={"entities": entities})
+            return httpx.Response(404, json={})
+
+    works = await WikidataSchema(client=httpx.AsyncClient(transport=_Transport())).search_work(
+        WorkQuery(text="360", artist="Charli XCX")
+    )
+    assert works[0].key == f"wd:{song}"
+    assert works[0].artists[0].name == "Charli XCX"
+
+
+@pytest.mark.asyncio
+async def test_wikidata_search_release_prefers_album_parenthetical() -> None:
+    seen: list[str] = []
+    qid = "Q124691269"
+
+    class _Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            params = dict(request.url.params)
+            action = params.get("action", "")
+            if action == "wbsearchentities":
+                seen.append(params.get("search", ""))
+                return httpx.Response(
+                    200,
+                    json={
+                        "search": [
+                            {
+                                "id": qid,
+                                "label": "Brat",
+                                "description": "2024 studio album by Charli XCX",
+                            }
+                        ]
+                    },
+                )
+            if action == "wbgetentities":
+                return httpx.Response(
+                    200,
+                    json={
+                        "entities": {
+                            qid: {
+                                "id": qid,
+                                "labels": {"en": {"value": "Brat"}},
+                                "claims": {
+                                    "P31": [
+                                        {
+                                            "mainsnak": {
+                                                "datavalue": {
+                                                    "type": "wikibase-entityid",
+                                                    "value": {"id": "Q208569"},
+                                                }
+                                            }
+                                        }
+                                    ]
+                                },
+                            }
+                        }
+                    },
+                )
+            return httpx.Response(404, json={})
+
+    works = await WikidataSchema(client=httpx.AsyncClient(transport=_Transport())).search_release(
+        WorkQuery(text="Brat", artist="Charli XCX")
+    )
+    assert seen[0] == "Brat (album)"
+    assert works[0].key == f"wd:{qid}"
+
+
+@pytest.mark.asyncio
+async def test_itunes_album_harvests_song_collection() -> None:
+    transport = _UrlTransport(
+        {
+            "itunes.apple.com": {
+                "results": [
+                    {
+                        "wrapperType": "track",
+                        "trackId": 1739079976,
+                        "trackName": "360",
+                        "artistName": "Charli xcx",
+                        "artistId": 319375941,
+                        "collectionName": "BRAT",
+                        "collectionId": 1739079974,
+                        "collectionViewUrl": "https://music.apple.com/us/album/brat/1739079974",
+                    }
+                ]
+            }
+        }
+    )
+    client = httpx.AsyncClient(transport=transport)
+    from maya_graph.music.schemas.itunes import search_album
+
+    works = await search_album("Charli XCX", "Brat", client=client)
+    assert works[0].key == "apple_music:album/1739079974"
+    assert works[0].label == "BRAT"
+    assert works[0].anchors[0].url == "https://music.apple.com/us/album/brat/1739079974"
+
+
+@pytest.mark.asyncio
+async def test_map_identity_reuses_extra_works_without_requery() -> None:
+    mb = CanonicalWork(
+        key="mb:recording/abc",
+        label="360",
+        artists=artist_refs("Charli XCX"),
+        anchors=(SourceRef(schema="mb", external_id="recording/abc"),),
+    )
+
+    class _Boom:
+        schema_id = "mb"
+
+        async def search_work(self, query: WorkQuery) -> list[CanonicalWork]:
+            raise AssertionError("MusicBrainz should not be queried again")
+
+        async def fetch_recording(self, ref):
+            return None
+
+        async def fetch_recordings(self, work):
+            return []
+
+    parsed = ParsedTrack(artist="Charli XCX", title="360", base_title="360")
+    mapped = await map_identity(parsed, [_Boom()], extra_works=(mb,))
+    assert mapped.key == "mb:recording/abc"

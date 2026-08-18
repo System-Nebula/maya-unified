@@ -76,33 +76,13 @@ def _accept(parsed: ParsedTrack, work: CanonicalWork) -> bool:
     return True
 
 
-async def map_identity(
+def merge_identity(
     parsed: ParsedTrack,
-    schemas: Sequence[SourceSchema],
+    works: Sequence[CanonicalWork],
 ) -> CanonicalWork:
-    """Resolve parsed strings against catalogs; ``fp:`` if nothing matches.
-
-    Catalogs that pass the title/artist threshold contribute anchors. The
-    work key comes from the highest-ranked accepted catalog (Wikidata, then
-    MusicBrainz, Discogs, Apple Music).
-    """
+    """Rank and merge already-fetched catalog works; ``fp:`` if nothing matches."""
     fallback = fingerprint_work(parsed)
-    accepted: list[CanonicalWork] = []
-    for schema in schemas:
-        try:
-            works = await schema.search_work(
-                WorkQuery(
-                    text=parsed.base_title or parsed.title,
-                    artist=parsed.artist,
-                )
-            )
-        except Exception:
-            continue
-        for work in works:
-            if _accept(parsed, work):
-                accepted.append(work)
-                break
-
+    accepted = [work for work in works if _accept(parsed, work)]
     if not accepted and fallback is not None:
         return fallback
     if not accepted:
@@ -153,3 +133,45 @@ async def map_identity(
         artists=artists,
         attrs=attrs,
     )
+
+
+async def map_identity(
+    parsed: ParsedTrack,
+    schemas: Sequence[SourceSchema],
+    *,
+    extra_works: Sequence[CanonicalWork] = (),
+) -> CanonicalWork:
+    """Resolve parsed strings against catalogs; ``fp:`` if nothing matches.
+
+    Catalogs that pass the title/artist threshold contribute anchors. The
+    work key comes from the highest-ranked accepted catalog (Wikidata, then
+    MusicBrainz, Discogs, Apple Music).
+
+    ``extra_works`` are hits from an earlier pass — matching schema ids are
+    not queried again (avoids MusicBrainz 1 req/s 503s).
+    """
+    accepted: list[CanonicalWork] = []
+    seen_schema: set[str] = set()
+    for work in extra_works:
+        if not _accept(parsed, work):
+            continue
+        accepted.append(work)
+        seen_schema.add(work.key.split(":", 1)[0])
+    for schema in schemas:
+        if schema.schema_id in seen_schema:
+            continue
+        try:
+            works = await schema.search_work(
+                WorkQuery(
+                    text=parsed.base_title or parsed.title,
+                    artist=parsed.artist,
+                )
+            )
+        except Exception:
+            continue
+        for work in works:
+            if _accept(parsed, work):
+                accepted.append(work)
+                seen_schema.add(schema.schema_id)
+                break
+    return merge_identity(parsed, accepted)

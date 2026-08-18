@@ -50,7 +50,7 @@ P_APPLE_ALBUM = "P2281"
 P_ITUNES_ARTIST = "P2850"
 
 _SEARCH_DELAY_SEC = 1.5
-_SEARCH_TIMEOUT_SEC = 3.0
+_SEARCH_TIMEOUT_SEC = 12.0
 
 # "instance of" (P31) QIDs that count as a song/track for our purposes.
 _SONG_LIKE_QIDS = {
@@ -58,6 +58,14 @@ _SONG_LIKE_QIDS = {
     "Q134556",  # single
     "Q2743",  # musical composition (fallback, broader)
     "Q105543609",  # music release
+}
+
+# Album / studio-album P31s for release-group mapping (Brat CD, LPs).
+_ALBUM_LIKE_QIDS = {
+    "Q482994",  # album
+    "Q208569",  # studio album
+    "Q41582469",  # musical work / album class used on some items
+    "Q3307153",  # double album
 }
 
 _YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -102,6 +110,13 @@ async def _rate_limit() -> None:
         if elapsed < _SEARCH_DELAY_SEC:
             await asyncio.sleep(_SEARCH_DELAY_SEC - elapsed)
         _last_search_at = time.monotonic()
+
+
+def _name_matches(expected: str, actual: str) -> bool:
+    left, right = expected.casefold().strip(), actual.casefold().strip()
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
 
 
 def _qid_from_work_key(work_key: str) -> str | None:
@@ -180,23 +195,55 @@ class WikidataSchema:
         self._client = client
 
     async def search_work(self, query: WorkQuery) -> list[CanonicalWork]:
-        text = (query.text or "").strip()
-        if query.artist and text:
-            text = f"{query.artist} {text}"
-        elif query.artist:
-            text = query.artist
-        if not text:
+        """Title-only wbsearchentities; artist is used to rank song-like hits.
+
+        Concatenating ``"{artist} {title}"`` often returns zero Wikidata hits
+        (e.g. Rick Astley + Never Gonna Give You Up). Search the title, skip
+        non-song P31s, then prefer a matching P175 performer.
+        """
+        title = (query.text or "").strip()
+        artist = (query.artist or "").strip()
+        if not title and artist:
+            title, artist = artist, ""
+        if not title:
             return []
+        return await self._run_search(title, artist=artist, instance_qids=_SONG_LIKE_QIDS)
+
+    async def search_release(self, query: WorkQuery) -> list[CanonicalWork]:
+        """Album/studio-album identity (``Brat (album)`` before bare title)."""
+        title = (query.text or "").strip()
+        artist = (query.artist or "").strip()
+        if not title:
+            return []
+        for text in (f"{title} (album)", title):
+            works = await self._run_search(
+                text, artist=artist, instance_qids=_ALBUM_LIKE_QIDS
+            )
+            if works:
+                return works
+        return []
+
+    async def _run_search(
+        self,
+        text: str,
+        *,
+        artist: str,
+        instance_qids: set[str],
+    ) -> list[CanonicalWork]:
         try:
             if self._client is None:
-                await asyncio.wait_for(_rate_limit(), timeout=_SEARCH_TIMEOUT_SEC)
+                await _rate_limit()
             if self._client is not None:
-                return await self._search(self._client, text)
+                return await self._search(
+                    self._client, text, artist=artist, instance_qids=instance_qids
+                )
             async with httpx.AsyncClient(
                 timeout=_SEARCH_TIMEOUT_SEC,
                 headers={"User-Agent": USER_AGENT},
             ) as client:
-                return await self._search(client, text)
+                return await self._search(
+                    client, text, artist=artist, instance_qids=instance_qids
+                )
         except (TimeoutError, httpx.HTTPError) as exc:
             logger.warning("wikidata search failed for %r: %s", text, exc)
             return []
@@ -229,7 +276,15 @@ class WikidataSchema:
         recordings = await self.fetch_recordings(work)
         return recordings[0] if recordings else None
 
-    async def _search(self, client: httpx.AsyncClient, text: str) -> list[CanonicalWork]:
+    async def _search(
+        self,
+        client: httpx.AsyncClient,
+        text: str,
+        *,
+        artist: str = "",
+        instance_qids: set[str] | None = None,
+    ) -> list[CanonicalWork]:
+        allowed = instance_qids or _SONG_LIKE_QIDS
         resp = await client.get(
             WIKIDATA_API,
             params={
@@ -238,48 +293,75 @@ class WikidataSchema:
                 "language": "en",
                 "search": text,
                 "type": "item",
-                "limit": 5,
+                "limit": 10,
             },
         )
         if resp.status_code != 200:
             return []
-        candidates = resp.json().get("search", [])
+        candidates = [
+            row for row in (resp.json().get("search") or []) if isinstance(row, dict) and row.get("id")
+        ]
+        qids = [str(row["id"]) for row in candidates]
+        entities = await self._fetch_entities(client, qids)
+        ranked: list[tuple[int, CanonicalWork, list[str]]] = []
+        performer_qids: list[str] = []
         for candidate in candidates:
-            qid = candidate.get("id")
-            if not qid:
-                continue
-            entity = (await self._fetch_entities(client, [qid])).get(qid) or {}
+            qid = str(candidate["id"])
+            entity = entities.get(qid) or {}
             if entity.get("missing"):
                 continue
             claims = _entity_claims(entity)
             p31 = set(_claim_entity_ids(claims, P_INSTANCE_OF))
-            if not (p31 & _SONG_LIKE_QIDS):
+            if not (p31 & allowed):
                 continue
-            performer_qids = _claim_entity_ids(claims, P_PERFORMER)
-            performer_names: list[str] = []
-            if performer_qids:
-                performers = await self._fetch_entities(client, performer_qids[:3])
-                for pqid in performer_qids[:3]:
-                    label = (
-                        (performers.get(pqid) or {})
-                        .get("labels", {})
-                        .get("en", {})
-                        .get("value")
-                    )
-                    if label:
-                        performer_names.append(str(label))
-            aliases = list(candidate.get("aliases") or [])
-            return [
-                CanonicalWork(
-                    key=f"wd:{qid}",
-                    label=candidate.get("label", text),
-                    aliases=tuple(aliases),
-                    anchors=tuple(_catalog_anchors(qid, claims)),
-                    artists=artist_refs(*performer_names),
-                    attrs={"description": candidate.get("description", "")},
+            pqids = _claim_entity_ids(claims, P_PERFORMER)[:3]
+            performer_qids.extend(pqids)
+            ranked.append(
+                (
+                    0,
+                    CanonicalWork(
+                        key=f"wd:{qid}",
+                        label=candidate.get("label", text),
+                        aliases=tuple(candidate.get("aliases") or []),
+                        anchors=tuple(_catalog_anchors(qid, claims)),
+                        attrs={"description": candidate.get("description", "")},
+                    ),
+                    pqids,
                 )
-            ]
-        return []
+            )
+        if not ranked:
+            return []
+        performers = await self._fetch_entities(client, list(dict.fromkeys(performer_qids)))
+        works: list[CanonicalWork] = []
+        for _, work, pqids in ranked:
+            names: list[str] = []
+            for pqid in pqids:
+                label = (
+                    (performers.get(pqid) or {})
+                    .get("labels", {})
+                    .get("en", {})
+                    .get("value")
+                )
+                if label:
+                    names.append(str(label))
+            filled = CanonicalWork(
+                key=work.key,
+                label=work.label,
+                aliases=work.aliases,
+                anchors=work.anchors,
+                artists=artist_refs(*names),
+                attrs=work.attrs,
+            )
+            works.append(filled)
+        if artist:
+            for work in works:
+                if any(_name_matches(artist, a.name) for a in work.artists):
+                    return [work]
+            needle = artist.casefold()
+            for work in works:
+                if needle in str(work.attrs.get("description") or "").casefold():
+                    return [work]
+        return works[:1]
 
     async def _fetch_entity_p31(self, client: httpx.AsyncClient, qid: str) -> set[str]:
         resp = await client.get(

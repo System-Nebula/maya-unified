@@ -18,6 +18,17 @@ USER_AGENT = "maya-unified-music/1.0 (+https://github.com/System-Nebula/maya-uni
 _TIMEOUT_SEC = 4.0
 
 
+def _discogs_url(uri: str | None, fallback: str) -> str:
+    if not uri:
+        return fallback
+    text = str(uri).strip()
+    if text.startswith("https://") or text.startswith("http://"):
+        return text
+    if text.startswith("/"):
+        return f"https://www.discogs.com{text}"
+    return fallback
+
+
 def _headers() -> dict[str, str]:
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     token = os.environ.get("DISCOGS_TOKEN")
@@ -61,7 +72,10 @@ def _work_from_result(payload: dict[str, Any]) -> CanonicalWork | None:
             SourceRef(
                 schema="discogs",
                 external_id=f"release/{release_id}",
-                url=str(payload.get("uri") or f"https://www.discogs.com/release/{release_id}"),
+                url=_discogs_url(
+                    payload.get("uri"),
+                    f"https://www.discogs.com/release/{release_id}",
+                ),
             )
         )
     return CanonicalWork(
