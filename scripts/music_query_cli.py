@@ -9,7 +9,7 @@ Usage:
   music_query search "artist album"                     direct search
   music_query search --artist "Taylor" --album "Showgirl"  structured search
   music_query search --jsonl                             machine-readable output
-  music_query download <username> <filename> <size>      enqueue download
+  music_query download <username> <filename> <size>      download (wait/verify with --wait)
   music_query status                                     list transfers
   music_query search --gateway http://localhost:8080      via gateway API
 """
@@ -44,9 +44,8 @@ try:
         SearchHit,
         SearchQuery,
         SearchResult,
-        AcquisitionRequest,
-        AcquisitionResult,
-        AcquisitionStatus,
+        DownloadRequest,
+        DownloadResult,
         QualityTier,
         compute_quality_score,
         infer_quality_tier,
@@ -180,7 +179,41 @@ def _gateway_search(args: argparse.Namespace) -> None:
 # Download
 # ---------------------------------------------------------------------------
 
+def _print_download_result(result: DownloadResult) -> None:
+    print(f"Status: {result.status.value}")
+    print(f"Verified: {result.verified}")
+    if result.slskd_transfer_id:
+        print(f"Transfer: {result.slskd_transfer_id}")
+    if result.expected_size is not None:
+        print(f"Expected: {result.expected_size} bytes")
+    if result.bytes_transferred is not None:
+        print(f"Transferred: {result.bytes_transferred} bytes")
+    if result.local_path:
+        print(f"Local: {result.local_path} ({result.local_size} bytes)")
+    if result.s3_key:
+        print(f"S3 key:  {result.s3_key}")
+    if result.error:
+        print(f"Error:   {result.error}")
+
+
 def _direct_download(args: argparse.Namespace) -> None:
+    try:
+        from maya_gateway.services.slskd_search import run_download
+    except ImportError:
+        run_download = None  # type: ignore[assignment]
+    if run_download is not None and HAS_CONTRACTS:
+        hit = SearchHit(
+            username=args.username,
+            filename=args.filename,
+            size=args.size,
+            extension=Path(args.filename).suffix.lower().lstrip("."),
+        )
+        result = run_download(DownloadRequest(hit=hit, wait_seconds=args.wait))
+        _print_download_result(result)
+        if result.status.value == "failed":
+            sys.exit(1)
+        return
+
     client = _direct_client()
     payload = [{"filename": args.filename, "size": args.size, "startOffset": 0}]
     try:
@@ -202,17 +235,12 @@ def _gateway_download(args: argparse.Namespace) -> None:
         size=args.size,
         extension=Path(args.filename).suffix.lower().lstrip("."),
     )
-    req = AcquisitionRequest(hit=hit)
-    r = httpx.post(f"{base}/api/music/query/download", json=req.model_dump(), timeout=30)
+    req = DownloadRequest(hit=hit, wait_seconds=args.wait)
+    timeout = max(30, int(args.wait) + 15)
+    r = httpx.post(f"{base}/api/music/query/download", json=req.model_dump(), timeout=timeout)
     r.raise_for_status()
-    result = AcquisitionResult(**r.json())
-    print(f"Status: {result.status.value}")
-    if result.slskd_transfer_id:
-        print(f"Transfer: {result.slskd_transfer_id}")
-    if result.s3_key:
-        print(f"S3 key:  {result.s3_key}")
-    if result.error:
-        print(f"Error:   {result.error}")
+    result = DownloadResult(**r.json())
+    _print_download_result(result)
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +313,7 @@ def main() -> int:
     sp.set_defaults(func=_route_search)
 
     # Download
-    sp = sub.add_parser("download", help="Enqueue a file download")
+    sp = sub.add_parser("download", help="Download a file and verify size when --wait > 0")
     sp.add_argument("username", help="Soulseek username")
     sp.add_argument("filename", help="Full Windows-style path to file")
     sp.add_argument("size", type=int, help="File size in bytes")

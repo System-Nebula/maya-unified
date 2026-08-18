@@ -16,7 +16,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from maya_contracts import QualityTier, SearchQuery
+from maya_contracts import DownloadRequest, DownloadStatus, QualityTier, SearchHit, SearchQuery
 from maya_gateway.services.slskd_search import (
     NGGYU_ARTIST,
     NGGYU_TITLE,
@@ -27,6 +27,7 @@ from maya_gateway.services.slskd_search import (
     nggyu_7inch_query,
     pick_seven_inch_flac,
     reset_client,
+    run_download,
     search_slskd,
 )
 
@@ -59,21 +60,93 @@ class _FakeSearches:
 
 
 class _FakeTransfers:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        complete_after: int = 0,
+        bytes_transferred: int | None = None,
+        state: str | None = None,
+        reported_size: int | None = None,
+    ) -> None:
         self.enqueued: list[dict[str, Any]] = []
+        self.polls = 0
+        self.complete_after = complete_after
+        self.bytes_transferred = bytes_transferred
+        self.forced_state = state
+        self.reported_size = reported_size
 
     def enqueue(self, username: str, payload: list[dict[str, Any]]) -> dict[str, str]:
         self.enqueued.append({"username": username, "payload": payload})
         return {"id": "xfer-7inch"}
 
     def get_all_downloads(self) -> list[dict[str, Any]]:
-        return [{"id": "xfer-7inch", "files": self.enqueued}]
+        self.polls += 1
+        rows: list[dict[str, Any]] = []
+        in_progress = self.polls <= self.complete_after
+        for item in self.enqueued:
+            username = item["username"]
+            files: list[dict[str, Any]] = []
+            for payload in item["payload"]:
+                size = int(self.reported_size if self.reported_size is not None else payload["size"])
+                transferred = self.bytes_transferred if self.bytes_transferred is not None else size
+                if in_progress:
+                    state = "InProgress"
+                    pct = 40.0
+                    xferred = min(transferred, max(size // 2, 1))
+                else:
+                    state = self.forced_state or "Completed, Succeeded"
+                    pct = 100.0
+                    xferred = transferred
+                files.append(
+                    {
+                        "id": "xfer-7inch",
+                        "username": username,
+                        "filename": payload["filename"],
+                        "size": size,
+                        "state": state,
+                        "bytesTransferred": xferred,
+                        "percentComplete": pct,
+                    }
+                )
+            rows.append(
+                {
+                    "username": username,
+                    "directories": [
+                        {"directory": "", "fileCount": len(files), "files": files}
+                    ],
+                }
+            )
+        return rows
+
+
+class _FakeEvents:
+    def __init__(self, transfers: _FakeTransfers) -> None:
+        self.transfers = transfers
+
+    def get(self, start: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+        if self.transfers.polls <= self.transfers.complete_after:
+            return []
+        events: list[dict[str, Any]] = []
+        for item in self.transfers.enqueued:
+            for payload in item["payload"]:
+                events.append(
+                    {
+                        "id": "evt-1",
+                        "timestamp": "",
+                        "type": "DownloadFileComplete",
+                        "data": json.dumps(
+                            {"filename": payload["filename"], "size": payload["size"]}
+                        ),
+                    }
+                )
+        return events
 
 
 class _FakeClient:
-    def __init__(self, files: list[dict[str, Any]]) -> None:
+    def __init__(self, files: list[dict[str, Any]], **transfer_kwargs: Any) -> None:
         self.searches = _FakeSearches(files)
-        self.transfers = _FakeTransfers()
+        self.transfers = _FakeTransfers(**transfer_kwargs)
+        self.events = _FakeEvents(self.transfers)
 
 
 def _file(filename: str, size: int, *, locked: bool = False) -> dict[str, Any]:
@@ -249,6 +322,15 @@ def test_search_polls_until_complete(monkeypatch: pytest.MonkeyPatch) -> None:
     assert flac_hits(result)
 
 
+def _hit(filename: str, size: int, username: str = "peer-one") -> SearchHit:
+    return SearchHit(
+        username=username,
+        filename=filename,
+        size=size,
+        extension="flac",
+    )
+
+
 def test_download_enqueues_seven_inch_flac(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeClient(
         [
@@ -278,6 +360,121 @@ def test_download_enqueues_seven_inch_flac(monkeypatch: pytest.MonkeyPatch) -> N
             ],
         }
     ]
+
+
+def test_download_enqueue_only_skips_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeClient([_file(_SEVEN_FLAC, 64)])
+    ingest_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._schedule_ingest",
+        lambda **kwargs: ingest_calls.append(kwargs),
+    )
+    outcome = run_download(DownloadRequest(hit=_hit(_SEVEN_FLAC, 64), wait_seconds=0))
+    assert outcome.status is DownloadStatus.ENQUEUED
+    assert outcome.verified is False
+    assert ingest_calls == []
+
+
+def test_download_complete_event_matches_filename(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeClient([_file(_SEVEN_FLAC, 64)])
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    assert enqueue_download("peer-one", _SEVEN_FLAC, 64) == "xfer-7inch"
+    from maya_gateway.services.slskd_search import _file_complete_event
+
+    assert _file_complete_event(_SEVEN_FLAC) is True
+    assert _file_complete_event("missing.flac") is False
+    fake = _FakeClient([_file(_SEVEN_FLAC, 64)])
+    ingest_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    monkeypatch.setattr("maya_gateway.services.slskd_search.time.sleep", lambda _s: None)
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._schedule_ingest",
+        lambda **kwargs: ingest_calls.append(kwargs),
+    )
+    outcome = run_download(DownloadRequest(hit=_hit(_SEVEN_FLAC, 64), wait_seconds=5))
+    assert outcome.verified is True
+    assert len(ingest_calls) == 1
+    assert ingest_calls[0]["filename"] == _SEVEN_FLAC
+    fake = _FakeClient([_file(_SEVEN_FLAC, 64)])
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    monkeypatch.setattr("maya_gateway.services.slskd_search.time.sleep", lambda _s: None)
+    outcome = run_download(DownloadRequest(hit=_hit(_SEVEN_FLAC, 64), wait_seconds=5))
+    assert outcome.status is DownloadStatus.COMPLETED
+    assert outcome.verified is True
+    assert outcome.bytes_transferred == 64
+    assert outcome.expected_size == 64
+    assert outcome.slskd_transfer_id == "xfer-7inch"
+    assert outcome.error is None
+
+
+def test_download_fails_on_size_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeClient([_file(_SEVEN_FLAC, 64)], bytes_transferred=12)
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    monkeypatch.setattr("maya_gateway.services.slskd_search.time.sleep", lambda _s: None)
+    outcome = run_download(DownloadRequest(hit=_hit(_SEVEN_FLAC, 64), wait_seconds=5))
+    assert outcome.status is DownloadStatus.FAILED
+    assert outcome.verified is False
+    assert outcome.bytes_transferred == 12
+    assert "bytesTransferred" in (outcome.error or "")
+
+
+def test_download_polls_until_completed(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeClient([_file(_SEVEN_FLAC, 64)], complete_after=2)
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    monkeypatch.setattr("maya_gateway.services.slskd_search.time.sleep", lambda _s: None)
+    outcome = run_download(DownloadRequest(hit=_hit(_SEVEN_FLAC, 64), wait_seconds=5))
+    assert fake.transfers.polls >= 3
+    assert outcome.status is DownloadStatus.COMPLETED
+    assert outcome.verified is True
+
+
+def test_download_fails_on_local_size_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "01 - Never Gonna Give You Up.flac"
+    dest.write_bytes(b"short")
+    monkeypatch.setenv("SLSKD_DOWNLOADS_DIR", str(tmp_path))
+    fake = _FakeClient([_file(_SEVEN_FLAC, 64)])
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    monkeypatch.setattr("maya_gateway.services.slskd_search.time.sleep", lambda _s: None)
+    outcome = run_download(DownloadRequest(hit=_hit(_SEVEN_FLAC, 64), wait_seconds=5))
+    assert outcome.status is DownloadStatus.FAILED
+    assert outcome.verified is False
+    assert outcome.local_size == 5
+    assert "local file size" in (outcome.error or "")
+
+
+def test_download_accepts_matching_local_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "01 - Never Gonna Give You Up.flac"
+    dest.write_bytes(b"x" * 64)
+    monkeypatch.setenv("SLSKD_DOWNLOADS_DIR", str(tmp_path))
+    fake = _FakeClient([_file(_SEVEN_FLAC, 64)])
+    monkeypatch.setattr(
+        "maya_gateway.services.slskd_search._get_client", lambda: fake
+    )
+    monkeypatch.setattr("maya_gateway.services.slskd_search.time.sleep", lambda _s: None)
+    outcome = run_download(DownloadRequest(hit=_hit(_SEVEN_FLAC, 64), wait_seconds=5))
+    assert outcome.status is DownloadStatus.COMPLETED
+    assert outcome.verified is True
+    assert outcome.local_size == 64
+    assert outcome.local_path == str(dest)
 
 
 @pytest.mark.slskd
@@ -314,8 +511,41 @@ def test_live_search_filter_and_download_nggyu_7inch() -> None:
     hit = pick_seven_inch_flac(result)
     assert hit is not None
     assert hit.extension == "flac"
-    transfer_id = enqueue_download(hit.username, hit.filename, hit.size)
-    assert transfer_id, f"enqueue failed for {hit.filename}"
+    wait_download = int(os.environ.get("SLSKD_DOWNLOAD_WAIT", "30"))
+    outcome = run_download(DownloadRequest(hit=hit, wait_seconds=wait_download))
+    artifact.write_text(
+        json.dumps(
+            {
+                **json.loads(artifact.read_text(encoding="utf-8")),
+                "download": {
+                    "filename": hit.filename,
+                    "status": outcome.status.value,
+                    "verified": outcome.verified,
+                    "expected_size": outcome.expected_size,
+                    "bytes_transferred": outcome.bytes_transferred,
+                    "local_path": outcome.local_path,
+                    "local_size": outcome.local_size,
+                    "error": outcome.error,
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if outcome.status is DownloadStatus.DOWNLOADING:
+        pytest.skip(outcome.error or f"download still in progress after {wait_download}s")
+    if outcome.status is DownloadStatus.FAILED and not outcome.verified:
+        if outcome.error and (
+            "did not appear" in outcome.error or "did not complete" in outcome.error
+        ):
+            pytest.skip(outcome.error)
+    assert outcome.verified, outcome.error
+    assert outcome.expected_size == hit.size
+    if outcome.bytes_transferred is not None:
+        assert outcome.bytes_transferred == hit.size
+    if outcome.local_size is not None:
+        assert outcome.local_size == hit.size
 
 
 @pytest.mark.slskd

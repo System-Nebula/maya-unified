@@ -42,6 +42,7 @@ class ExampleSlskdHandler(BaseHTTPRequestHandler):
     fixtures: dict[str, Any] = {}
     searches: dict[str, dict[str, Any]] = {}
     downloads: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -58,19 +59,30 @@ class ExampleSlskdHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_json(self) -> dict[str, Any]:
+    def _read_body(self) -> Any:
         length = int(self.headers.get("Content-Length") or "0")
         raw = self.rfile.read(length) if length else b""
         if not raw:
-            return {}
+            return None
         try:
-            payload = json.loads(raw.decode("utf-8"))
+            return json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError:
-            return {}
+            return None
+
+    def _read_json(self) -> dict[str, Any]:
+        payload = self._read_body()
         return payload if isinstance(payload, dict) else {}
 
     def _deny(self) -> None:
         self._json({"message": "Unauthorized"}, status=401)
+
+    def _user_download(self, username: str) -> dict[str, Any]:
+        for row in self.downloads:
+            if row.get("username") == username:
+                return row
+        row = {"username": username, "directories": []}
+        self.downloads.append(row)
+        return row
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._authorized():
@@ -114,6 +126,9 @@ class ExampleSlskdHandler(BaseHTTPRequestHandler):
         if path in {"/api/v0/transfers/downloads", "/api/v0/transfers/downloads/"}:
             self._json(list(self.downloads))
             return
+        if path in {"/api/v0/events", "/api/v0/events/"}:
+            self._json(list(self.events))
+            return
         self._json({"message": "not found"}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -137,11 +152,51 @@ class ExampleSlskdHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/v0/transfers/downloads/"):
             username = unquote(path.rsplit("/", 1)[-1])
-            transfer_id = f"xfer-{uuid.uuid4().hex[:8]}"
-            self.downloads.append(
-                {"id": transfer_id, "username": username, "files": self._read_json() or []}
-            )
-            self._json({"id": transfer_id})
+            body = self._read_body()
+            files = body if isinstance(body, list) else []
+            if isinstance(body, dict) and body:
+                files = [body]
+            user_row = self._user_download(username)
+            directories: list[dict[str, Any]] = user_row.setdefault("directories", [])
+            last_id = ""
+            for item in files:
+                if not isinstance(item, dict):
+                    continue
+                filename = str(item.get("filename") or "")
+                size = int(item.get("size") or 0)
+                transfer_id = str(item.get("id") or f"xfer-{uuid.uuid4().hex[:8]}")
+                last_id = transfer_id
+                file_row = {
+                    "id": transfer_id,
+                    "username": username,
+                    "direction": "Download",
+                    "filename": filename,
+                    "size": size,
+                    "startOffset": int(item.get("startOffset") or 0),
+                    "state": "Completed, Succeeded",
+                    "bytesTransferred": size,
+                    "percentComplete": 100.0,
+                    "bytesRemaining": 0,
+                    "averageSpeed": 0.0,
+                    "requestedAt": "",
+                }
+                parent = str(filename.rsplit("\\", 1)[0] if "\\" in filename else "")
+                directory = next((d for d in directories if d.get("directory") == parent), None)
+                if directory is None:
+                    directory = {"directory": parent, "fileCount": 0, "files": []}
+                    directories.append(directory)
+                directory["files"].append(file_row)
+                directory["fileCount"] = len(directory["files"])
+                self.events.append(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "timestamp": "",
+                        "type": "DownloadFileComplete",
+                        "data": json.dumps({"filename": filename, "size": size, "id": transfer_id}),
+                    }
+                )
+            # slskd-api treats any 2xx as success (bool). Include an id for direct HTTP tests.
+            self._json({"id": last_id or f"xfer-{uuid.uuid4().hex[:8]}"})
             return
         self._json({"message": "not found"}, status=404)
 
@@ -151,6 +206,7 @@ def serve(host: str = "127.0.0.1", port: int = 5030, api_key: str | None = None)
     ExampleSlskdHandler.fixtures = load_fixtures()
     ExampleSlskdHandler.searches = {}
     ExampleSlskdHandler.downloads = []
+    ExampleSlskdHandler.events = []
     httpd = ThreadingHTTPServer((host, port), ExampleSlskdHandler)
     httpd.serve_forever()
 

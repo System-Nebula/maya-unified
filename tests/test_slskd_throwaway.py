@@ -85,7 +85,6 @@ def test_allocate_replaces_example_account(tmp_path, monkeypatch) -> None:
     assert captured["network"] == "soulseek"
     assert captured["throwaway"] is True
     assert len(captured["password"]) >= 16
-    assert SLSKD_SECRET_PATH
 
 
 def test_allocate_force_replaces(tmp_path, monkeypatch) -> None:

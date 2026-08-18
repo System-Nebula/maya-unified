@@ -95,6 +95,7 @@ def test_example_http_search_and_download() -> None:
     ExampleSlskdHandler.fixtures = load_fixtures()
     ExampleSlskdHandler.searches = {}
     ExampleSlskdHandler.downloads = []
+    ExampleSlskdHandler.events = []
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), ExampleSlskdHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -131,6 +132,50 @@ def test_example_http_search_and_download() -> None:
         )
         files = state["responses"][0]["files"]
         assert any(item["filename"].endswith(".flac") for item in files)
+        flac = next(item for item in files if item["filename"].endswith(".flac"))
+        created = json.loads(
+            urlopen(
+                Request(
+                    f"http://127.0.0.1:{port}/api/v0/transfers/downloads/peer-example",
+                    data=json.dumps(
+                        [
+                            {
+                                "filename": flac["filename"],
+                                "size": flac["size"],
+                                "startOffset": 0,
+                            }
+                        ]
+                    ).encode(),
+                    headers=headers,
+                    method="POST",
+                ),
+                timeout=2,
+            ).read()
+        )
+        assert created["id"]
+        transfers = json.loads(
+            urlopen(
+                Request(
+                    f"http://127.0.0.1:{port}/api/v0/transfers/downloads/",
+                    headers=headers,
+                ),
+                timeout=2,
+            ).read()
+        )
+        file_row = transfers[0]["directories"][0]["files"][0]
+        assert file_row["state"] == "Completed, Succeeded"
+        assert file_row["bytesTransferred"] == flac["size"]
+        assert file_row["size"] == flac["size"]
+        events = json.loads(
+            urlopen(
+                Request(f"http://127.0.0.1:{port}/api/v0/events", headers=headers),
+                timeout=2,
+            ).read()
+        )
+        assert events[0]["type"] == "DownloadFileComplete"
+        event_data = json.loads(events[0]["data"])
+        assert event_data["filename"] == flac["filename"]
+        assert event_data["size"] == flac["size"]
     finally:
         httpd.shutdown()
         httpd.server_close()

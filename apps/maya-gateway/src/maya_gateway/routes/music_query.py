@@ -1,18 +1,16 @@
-"""Music query and acquisition endpoints — search Soulseek, download to SeaweedFS, reference in ontology."""
+"""Music query and download endpoints — search Soulseek, download to SeaweedFS, reference in ontology."""
 
 from __future__ import annotations
 
 from maya_contracts import (
-    AcquisitionRequest,
-    AcquisitionResult,
-    AcquisitionStatus,
-    SearchHit,
+    DownloadRequest,
+    DownloadResult,
     SearchQuery,
     SearchResult,
 )
 from maya_gateway.services.slskd_search import (
-    enqueue_download,
     get_downloads,
+    run_download,
     search_slskd,
 )
 
@@ -32,7 +30,7 @@ async def search(query: SearchQuery) -> SearchResult:
     """Run a structured Soulseek search.
 
     Returns ranked hits with quality scores. Results are ephemeral —
-    save interesting hits as AcquisitionRequests.
+    save interesting hits as DownloadRequests.
     """
     try:
         return search_slskd(query)
@@ -40,34 +38,18 @@ async def search(query: SearchQuery) -> SearchResult:
         raise _slskd_unavailable(exc) from exc
 
 
-@router.post("/download", response_model=AcquisitionResult)
-async def download(req: AcquisitionRequest) -> AcquisitionResult:
+@router.post("/download", response_model=DownloadResult)
+async def download(req: DownloadRequest) -> DownloadResult:
     """Enqueue a file download on slskd.
 
-    Does NOT wait for completion — returns immediately with an enqueued
-    status. Poll GET /api/music/query/status for progress.
+    ``wait_seconds`` defaults to 0 so the HTTP call returns immediately with
+    an enqueued status. Pass a positive wait to poll until complete and
+    verify transferred size (and on-disk size when the file is present).
     """
     try:
-        transfer_id = enqueue_download(
-            username=req.hit.username,
-            filename=req.hit.filename,
-            size=req.hit.size,
-        )
+        return run_download(req)
     except Exception as exc:
         raise _slskd_unavailable(exc) from exc
-    if transfer_id is None:
-        return AcquisitionResult(
-            request=req,
-            status=AcquisitionStatus.FAILED,
-            error="Failed to enqueue download on slskd",
-        )
-
-    return AcquisitionResult(
-        request=req,
-        status=AcquisitionStatus.ENQUEUED,
-        slskd_transfer_id=transfer_id,
-        s3_key=req.build_s3_key(),
-    )
 
 
 @router.get("/status", response_model=list[dict])
@@ -98,5 +80,5 @@ async def search_and_best(query: SearchQuery) -> dict:
         "total_hits": result.total_hits,
         "search_id": result.search_id,
         "elapsed_seconds": result.elapsed_seconds,
-        "hint": f"POST /api/music/query/download with this hit to acquire" if best else "No hits",
+        "hint": "POST /api/music/query/download with this hit to download" if best else "No hits",
     }
