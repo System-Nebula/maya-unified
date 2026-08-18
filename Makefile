@@ -10,11 +10,11 @@ test:
 
 ci:
 	@if [ -n "$(IN_NIX_SHELL)" ]; then \
-		uv run pytest -m "not integration"; \
+		uv run --no-sync pytest -m "not integration"; \
 	elif command -v nix >/dev/null 2>&1; then \
-		nix develop "$(ROOT)" --command uv run pytest -m "not integration"; \
+		nix develop "$(ROOT)" --command uv run --no-sync pytest -m "not integration"; \
 	else \
-		uv run pytest -m "not integration"; \
+		uv run --no-sync pytest -m "not integration"; \
 	fi
 
 tts-check:

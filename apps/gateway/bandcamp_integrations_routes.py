@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,7 +21,7 @@ router = APIRouter(tags=["bandcamp-integrations"])
 async def bandcamp_integration_status(
     op: Annotated[OperatorUser, Depends(require_operator)],
 ):
-    settings = load_effective_settings(str(op.id))
+    settings = await asyncio.to_thread(load_effective_settings, str(op.id))
     username = resolve_username(settings)
     if not username:
         return {
@@ -29,7 +30,10 @@ async def bandcamp_integration_status(
             "wishlist_count": 0,
             "enabled": bool((settings.get("bandcamp") or {}).get("enabled", True)),
         }
-    status = connection_status(username)
+    try:
+        status = await asyncio.to_thread(connection_status, username)
+    except BandcampError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     status["enabled"] = bool((settings.get("bandcamp") or {}).get("enabled", True))
     return status
 
@@ -48,11 +52,13 @@ async def bandcamp_save_username(
         }
     }
     try:
-        hub.apply_settings_patch(patch, operator_id=str(op.id))
+        await asyncio.to_thread(
+            hub.apply_settings_patch, patch, operator_id=str(op.id)
+        )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    settings = load_effective_settings(str(op.id))
+    settings = await asyncio.to_thread(load_effective_settings, str(op.id))
     resolved = resolve_username(settings)
     if not resolved:
         return {
@@ -63,7 +69,7 @@ async def bandcamp_save_username(
         }
 
     try:
-        status = connection_status(resolved)
+        status = await asyncio.to_thread(connection_status, resolved)
     except BandcampError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, **status}

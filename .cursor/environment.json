@@ -5,7 +5,7 @@
   "terminals": [
     {
       "name": "gateway",
-      "command": "MAYA_PROFILE=operator HOST=127.0.0.1 PORT=8090 VA_TTS_ENABLED=0 VA_STT_DEVICE=cpu ENV=production ./launch.sh",
+      "command": "MAYA_PROFILE=operator HOST=127.0.0.1 PORT=8090 VA_TTS_ENABLED=0 VA_STT_DEVICE=cpu ENV=production nix develop . --command ./launch.sh",
       "description": "Unified gateway + dashboard on :8090 (operator profile, TTS disabled)"
     }
   ],

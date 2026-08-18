@@ -21,6 +21,12 @@ from fastapi import APIRouter, HTTPException
 router = APIRouter(prefix="/api/music/query", tags=["music_query"])
 
 
+def _slskd_unavailable(exc: Exception) -> HTTPException:
+    detail = str(exc)
+    status = 503 if "SLSKD_API_KEY" in detail else 502
+    return HTTPException(status_code=status, detail=detail)
+
+
 @router.post("/search", response_model=SearchResult)
 async def search(query: SearchQuery) -> SearchResult:
     """Run a structured Soulseek search.
@@ -31,7 +37,7 @@ async def search(query: SearchQuery) -> SearchResult:
     try:
         return search_slskd(query)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise _slskd_unavailable(exc) from exc
 
 
 @router.post("/download", response_model=AcquisitionResult)
@@ -41,11 +47,14 @@ async def download(req: AcquisitionRequest) -> AcquisitionResult:
     Does NOT wait for completion — returns immediately with an enqueued
     status. Poll GET /api/music/query/status for progress.
     """
-    transfer_id = enqueue_download(
-        username=req.hit.username,
-        filename=req.hit.filename,
-        size=req.hit.size,
-    )
+    try:
+        transfer_id = enqueue_download(
+            username=req.hit.username,
+            filename=req.hit.filename,
+            size=req.hit.size,
+        )
+    except Exception as exc:
+        raise _slskd_unavailable(exc) from exc
     if transfer_id is None:
         return AcquisitionResult(
             request=req,
@@ -64,7 +73,10 @@ async def download(req: AcquisitionRequest) -> AcquisitionResult:
 @router.get("/status", response_model=list[dict])
 async def download_status() -> list[dict]:
     """List all current and recent slskd transfers."""
-    return get_downloads()
+    try:
+        return get_downloads()
+    except Exception as exc:
+        raise _slskd_unavailable(exc) from exc
 
 
 @router.post("/search-and-best", response_model=dict)
@@ -76,7 +88,10 @@ async def search_and_best(query: SearchQuery) -> dict:
         total_hits: int
         search_id: str
     """
-    result = search_slskd(query)
+    try:
+        result = search_slskd(query)
+    except Exception as exc:
+        raise _slskd_unavailable(exc) from exc
     best = result.best()
     return {
         "best": best.model_dump() if best else None,

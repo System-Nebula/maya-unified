@@ -18,12 +18,20 @@ def _script() -> ScriptDirectory:
 def test_alembic_has_exactly_one_head() -> None:
     heads = _script().get_heads()
     assert len(heads) == 1, f"expected one alembic head, got {heads}"
-    assert heads[0] == "20260712_merge_msg_ids_browser_capture"
+    assert heads[0] == "20260712_merge_kb"
 
 
 def test_merge_revision_parents_are_former_heads() -> None:
     script = _script()
-    rev = script.get_revision("20260712_merge_msg_ids_browser_capture")
+    rev = script.get_revision("20260712_merge_msg_cap")
     assert rev is not None
     parents = set(rev.down_revision if isinstance(rev.down_revision, tuple) else (rev.down_revision,))
     assert parents == {"20260703_msg_ids", "20260708_browser_capture"}
+
+
+def test_kb_merge_parents() -> None:
+    script = _script()
+    rev = script.get_revision("20260712_merge_kb")
+    assert rev is not None
+    parents = set(rev.down_revision if isinstance(rev.down_revision, tuple) else (rev.down_revision,))
+    assert parents == {"20260712_kb", "20260712_merge_msg_cap"}

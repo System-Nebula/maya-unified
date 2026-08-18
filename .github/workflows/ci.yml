@@ -50,4 +50,4 @@ jobs:
         run: nix develop . --command ./scripts/cloud-agent-start.sh
 
       - name: Test
-        run: nix develop . --command make ci
+        run: nix develop . --command uv run --no-sync pytest -m "not integration"

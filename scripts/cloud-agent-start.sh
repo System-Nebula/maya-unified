@@ -113,7 +113,14 @@ if ! pg_ready; then
   exit 1
 fi
 
-echo "==> alembic upgrade head"
-( cd "$ROOT/packages/maya-db" && uv run alembic upgrade head )
+echo "==> postgres extensions"
+psql -h 127.0.0.1 -U postgres -d maya_public -v ON_ERROR_STOP=1 \
+  -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";' \
+  -c 'CREATE EXTENSION IF NOT EXISTS pgcrypto;' \
+  -c 'CREATE EXTENSION IF NOT EXISTS vector;' \
+  >/dev/null
+
+echo "==> alembic upgrade heads"
+( cd "$ROOT/packages/maya-db" && uv run --no-sync alembic upgrade heads )
 
 echo "Start complete (postgres ready, schema migrated)."

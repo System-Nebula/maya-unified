@@ -24,9 +24,9 @@ else
   echo "    no NVIDIA GPU — installing CPU torch/torchaudio wheels"
   uv sync --extra dev --no-install-package torch --no-install-package torchaudio
   uv pip install --python "$ROOT/.venv/bin/python" \
+    --no-sources \
     --index-url https://download.pytorch.org/whl/cpu \
-    --extra-index-url https://pypi.org/simple \
-    "torch==2.7.0" "torchaudio==2.7.0"
+    "torch==2.7.0+cpu" "torchaudio==2.7.0+cpu"
 fi
 
 if [[ ! -f "$ROOT/.env" ]]; then
