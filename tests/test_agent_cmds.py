@@ -52,6 +52,23 @@ def test_agent_chat_falls_through_for_plain_text(chat_client) -> None:
     mock_hub.chat_text.assert_called_once_with("hello there", operator_id=None)
 
 
+def test_agent_chat_dispatches_maya_play_utterance(chat_client) -> None:
+    with patch("services.cmd.chat_bridge.try_dispatch_chat_cmd_async", new_callable=AsyncMock) as mock_dispatch:
+        mock_dispatch.return_value = {
+            "ok": True,
+            "text": "Queuing music…",
+            "mode": "cmd",
+            "pending": True,
+        }
+        res = chat_client.post(
+            "/api/voice/agent/chat",
+            json={"text": "maya play brat"},
+        )
+    assert res.status_code == 200
+    assert res.json()["mode"] == "cmd"
+    mock_dispatch.assert_called_once_with("maya play brat", operator_id=None)
+
+
 def test_agent_chat_falls_through_for_unknown_slash(chat_client) -> None:
     with patch("services.cmd.chat_bridge.try_dispatch_chat_cmd_async", new_callable=AsyncMock) as mock_dispatch:
         mock_dispatch.return_value = None

@@ -13,9 +13,11 @@ from services.cmd.chat_bridge import (
     _broadcast_cmd_turn,
     _ensure_cmd_result,
     _format_cmd_exception,
+    _prepare_chat_cmd,
     _resolve_cmd_error_text,
     _run_long_cmd_async,
     try_dispatch_chat_cmd,
+    try_dispatch_chat_cmd_async,
 )
 from services.cmd.models import CmdContext, CmdResult, CmdSurface, ParsedCmd
 
@@ -475,3 +477,79 @@ async def test_chat_play_double_prefix_queues_andrea_setlist(monkeypatch) -> Non
     playlist = load_events[0]["playlist"]
     assert playlist["presentation"] == "set"
     assert len(playlist.get("tracks") or []) == 26
+
+
+def test_prepare_chat_cmd_rewrites_maya_play() -> None:
+    from services.cmd.bootstrap import ensure_cmds_registered
+
+    ensure_cmds_registered()
+    brat = _prepare_chat_cmd("maya play brat")
+    assert brat is not None
+    dispatch, parsed = brat
+    assert dispatch == "/play brat"
+    assert parsed.cmd_id == "play"
+
+    nggyu = _prepare_chat_cmd("maya play never going to give you up")
+    assert nggyu is not None
+    dispatch, parsed = nggyu
+    assert dispatch == "/play never going to give you up"
+    assert parsed.cmd_id == "play"
+
+    assert _prepare_chat_cmd("hello") is None
+    assert _prepare_chat_cmd("play brat") is None
+    assert _prepare_chat_cmd("maya play pokemon") is None
+
+
+@pytest.mark.asyncio
+async def test_maya_play_utterances_dispatch_play_cmd() -> None:
+    from services.cmd import bootstrap
+    from services.cmd.bootstrap import ensure_cmds_registered
+    from services.cmd.registry import registry
+
+    bootstrap._bootstrapped = False
+    registry._by_id.clear()
+    registry._alias_index.clear()
+    ensure_cmds_registered()
+
+    captured: list[tuple[ParsedCmd, CmdContext]] = []
+
+    async def _capture_dispatch(parsed, ctx):
+        captured.append((parsed, ctx))
+        return CmdResult(ok=True, text='Now playing “brat”.')
+
+    broadcasts: list[dict] = []
+    mock_hub = MagicMock()
+    mock_hub.ready = False
+    mock_hub.agent = None
+    mock_hub.broadcast.side_effect = lambda payload, **_: broadcasts.append(payload)
+    scheduled: list = []
+
+    def _capture_schedule(coro) -> None:
+        scheduled.append(coro)
+
+    utterances = (
+        ("maya play brat", "/play brat"),
+        ("maya play never going to give you up", "/play never going to give you up"),
+    )
+    with _patch_voice_hub(mock_hub):
+        with patch("services.async_bridge.schedule_coro", side_effect=_capture_schedule):
+            with patch(
+                "services.cmd.chat_bridge.dispatch_cmd_async",
+                side_effect=_capture_dispatch,
+            ):
+                with patch("services.cmd.chat_bridge._schedule_persist_cmd_turns"):
+                    for text, expected_raw in utterances:
+                        captured.clear()
+                        scheduled.clear()
+                        out = await try_dispatch_chat_cmd_async(text, operator_id="op-1")
+                        assert out is not None
+                        assert out["ok"] is True
+                        assert out["mode"] == "cmd"
+                        assert out["pending"] is True
+                        assert "Queuing music" in out["text"]
+                        assert len(scheduled) == 1
+                        await scheduled[0]
+                        assert len(captured) == 1
+                        parsed, ctx = captured[0]
+                        assert parsed.cmd_id == "play"
+                        assert ctx.raw_text == expected_raw

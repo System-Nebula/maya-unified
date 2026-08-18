@@ -1359,6 +1359,8 @@ class VoiceHub(Hub):
                                 if direct is None:
                                     direct = self.agent._try_dashboard_queue_direct(text)  # noqa: SLF001
                                 if direct is None:
+                                    direct = self.agent._try_dashboard_play_direct(text)  # noqa: SLF001
+                                if direct is None:
                                     direct = self.agent._try_discord_direct(text)  # noqa: SLF001
                     with _inference_lock:
                         self.agent._avatar_mood_set_this_turn = False  # noqa: SLF001
@@ -1435,6 +1437,7 @@ class VoiceHub(Hub):
                                         parts.append(chunk)
                                 reply = "".join(parts).strip()
                                 tool_trace = []
+                            from services.cmd.play_query import looks_like_maya_play_request
                             from services.dashboard.music_intent import (
                                 looks_like_dashboard_queue_request,
                             )
@@ -1447,6 +1450,13 @@ class VoiceHub(Hub):
                                 and not _trace_has_tool(tool_trace, "dashboard_queue_music")
                             ):
                                 guarded = self.agent._try_dashboard_queue_direct(text)  # noqa: SLF001
+                                if guarded:
+                                    reply = guarded
+                            if (
+                                looks_like_maya_play_request(text)
+                                and not _trace_has_tool(tool_trace, "dashboard_play_music")
+                            ):
+                                guarded = self.agent._try_dashboard_play_direct(text)  # noqa: SLF001
                                 if guarded:
                                     reply = guarded
                             try:

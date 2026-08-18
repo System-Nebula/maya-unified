@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from services.cmd.play_query import (
+    extract_maya_play_query,
     extract_play_query_from_raw_text,
     looks_like_cmd_residue,
+    looks_like_maya_play_request,
     normalize_play_query,
+    rewrite_maya_play_as_cmd,
     salvage_media_url,
 )
 
@@ -33,3 +36,32 @@ def test_looks_like_cmd_residue() -> None:
 def test_salvage_media_url_from_cmd_garbage() -> None:
     url = "https://youtu.be/u1NHX9FcHVw"
     assert salvage_media_url(f"/play {url}") == url
+
+
+def test_extract_maya_play_query_brat_and_nggyu() -> None:
+    assert extract_maya_play_query("maya play brat") == "brat"
+    assert (
+        extract_maya_play_query("maya play never going to give you up")
+        == "never going to give you up"
+    )
+    assert rewrite_maya_play_as_cmd("maya play brat") == "/play brat"
+    assert rewrite_maya_play_as_cmd("Maya, play never going to give you up") == (
+        "/play never going to give you up"
+    )
+    assert looks_like_maya_play_request("maya play brat") is True
+
+
+def test_extract_maya_play_query_wake_variants() -> None:
+    assert extract_maya_play_query("@maya play brat") == "brat"
+    assert extract_maya_play_query("hey maya play brat") == "brat"
+    assert extract_maya_play_query("maya play me brat") == "brat"
+
+
+def test_extract_maya_play_query_rejects_non_play() -> None:
+    assert extract_maya_play_query("hello") is None
+    assert extract_maya_play_query("play brat") is None
+    assert extract_maya_play_query("/play brat") is None
+    assert extract_maya_play_query("maya play pokemon") is None
+    assert extract_maya_play_query("maya play next song") is None
+    assert extract_maya_play_query("maya pause the music") is None
+    assert looks_like_maya_play_request("hello there") is False

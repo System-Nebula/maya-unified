@@ -68,3 +68,89 @@ def extract_cmd_query_from_raw_text(raw_text: str, *, cmd: str = "play") -> str:
     if head == cmd.lower():
         return normalize_play_query(query)
     return normalize_play_query(query if query else body)
+
+
+_WAKE_PREFIX = re.compile(
+    r"^(?:(?:hey|hi|hello|ok|okay|yo)\s+)?(?:@)?maya\b[\s,;:\-]*",
+    re.I,
+)
+_PLAY_UTTERANCE = re.compile(
+    r"^(?:please\s+)?(?:can you\s+|could you\s+)?play(?:\s+me)?\s+(.+)$",
+    re.I,
+)
+_PLAY_TRAILING = re.compile(
+    r"\s*(?:in the channel|on discord|please|for me|now|with your tool)[.!?,]*$",
+    re.I,
+)
+_PLAYBACK_CONTROL_QUERIES = frozenset(
+    {
+        "next",
+        "skip",
+        "pause",
+        "stop",
+        "resume",
+        "previous",
+        "it",
+        "that",
+        "this",
+        "something",
+        "next song",
+        "next track",
+        "the next song",
+        "the next track",
+        "the song",
+        "the music",
+    }
+)
+
+
+def extract_maya_play_query(text: str) -> str | None:
+    """Return search text from ``maya play <query>`` chat/voice utterances.
+
+    Slash ``/play`` stays on the cmd parser. Bare ``play …`` without the wake
+    word is left to voice/Discord extractors so game talk is not stolen.
+    """
+    original = (text or "").strip()
+    if not original or original.lstrip().startswith("/"):
+        return None
+    try:
+        from services.game.intent import is_game_play_request
+
+        if is_game_play_request(original):
+            return None
+    except ImportError:
+        pass
+    try:
+        from services.imagine.intent import classify_music_playback_command
+
+        if classify_music_playback_command(original):
+            return None
+    except ImportError:
+        pass
+
+    wake = _WAKE_PREFIX.match(original)
+    if not wake:
+        return None
+    rest = original[wake.end() :].strip()
+    match = _PLAY_UTTERANCE.match(rest)
+    if not match:
+        return None
+    query = match.group(1).strip(" .,!?'\"")
+    query = _PLAY_TRAILING.sub("", query).strip(" .,!?'\"")
+    if len(query) < 2:
+        return None
+    if query.lower() in _PLAYBACK_CONTROL_QUERIES:
+        return None
+    return query
+
+
+def rewrite_maya_play_as_cmd(text: str) -> str | None:
+    """Rewrite ``maya play <query>`` to ``/play <query>``, else None."""
+    query = extract_maya_play_query(text)
+    if not query:
+        return None
+    return f"/play {query}"
+
+
+def looks_like_maya_play_request(text: str) -> bool:
+    return extract_maya_play_query(text) is not None

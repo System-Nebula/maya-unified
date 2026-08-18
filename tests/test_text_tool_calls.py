@@ -49,6 +49,15 @@ def test_extract_play_query_with_tool_preamble():
     assert VoiceAgent._extract_play_query(tl, text) == "creepy nuts daten"
 
 
+def test_extract_play_query_maya_play_utterances():
+    brat = "maya play brat"
+    nggyu = "maya play never going to give you up"
+    assert VoiceAgent._extract_play_query(brat.lower(), brat) == "brat"
+    assert VoiceAgent._extract_play_query(nggyu.lower(), nggyu) == (
+        "never going to give you up"
+    )
+
+
 def test_spoken_leaked_tool_result():
     assert (
         VoiceAgent._spoken_leaked_tool_result(
