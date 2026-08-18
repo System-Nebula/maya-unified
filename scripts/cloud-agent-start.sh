@@ -14,6 +14,9 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
 fi
 
 export DATABASE_URL="${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@localhost:5432/maya_public}"
+# Nix `psql`/`pg_isready` are libpq clients. GHA's Postgres service uses
+# password auth; without PGPASSWORD they prompt: "no password supplied".
+eval "$(python3 "$ROOT/scripts/pg_env_from_database_url.py")"
 SECRET_FILE="$ROOT/data/session_secret"
 mkdir -p "$ROOT/data"
 

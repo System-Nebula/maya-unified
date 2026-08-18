@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/maya_public
+      PGPASSWORD: postgres
       MAYA_PROFILE: operator
       HOST: 127.0.0.1
       VA_TTS_ENABLED: "0"

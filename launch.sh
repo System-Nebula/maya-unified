@@ -17,4 +17,8 @@ fi
 export UV_PYTHON="$PY"
 export PYTHONNOUSERSITE=1
 unset PYTHONHOME
+if [[ -f "$ROOT/.venv/nix-ld-library-path" ]]; then
+  extra="$(tr -d '\n' < "$ROOT/.venv/nix-ld-library-path")"
+  export LD_LIBRARY_PATH="${extra}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 exec "$PY" -I "$ROOT/launch.py" "$@"

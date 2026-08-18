@@ -29,6 +29,11 @@ else
     "torch==2.7.0+cpu" "torchaudio==2.7.0+cpu"
 fi
 
+if [[ -x "$ROOT/scripts/maya-nix-libs.sh" ]]; then
+  echo "==> nix native library path (venv RPATH)"
+  "$ROOT/scripts/maya-nix-libs.sh" patch || true
+fi
+
 if [[ ! -f "$ROOT/.env" ]]; then
   echo "==> writing .env from .env.example (cloud/CI defaults)"
   cp "$ROOT/.env.example" "$ROOT/.env"

@@ -13,6 +13,18 @@
           inherit system;
           config.allowUnfree = true;
         };
+        # Native libs manylinux wheels (greenlet, numpy, sounddevice, …) dlopen.
+        # Must be a mkShell *attribute*, not only shellHook: `nix develop --command`
+        # and direnv export attributes; interactive hooks are easy to skip.
+        nativeLibs = with pkgs; [
+          stdenv.cc.cc.lib
+          zlib
+          portaudio
+          openssl
+          libffi
+        ];
+        libPath = pkgs.lib.makeLibraryPath nativeLibs;
+        dynamicLinker = pkgs.lib.fileContents "${pkgs.stdenv.cc}/nix-support/dynamic-linker";
       in {
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
@@ -26,6 +38,7 @@
             openssl
             git
             uv
+            patchelf
             stdenv.cc.cc.lib
             zlib
             # CI / Cloud Agent: local Postgres with pgvector when Docker is unavailable.
@@ -33,9 +46,22 @@
             openbao
           ];
 
+          LD_LIBRARY_PATH = libPath;
+          NIX_LD_LIBRARY_PATH = libPath;
+          NIX_LD = dynamicLinker;
+
           shellHook = ''
-            # PortAudio (sounddevice) + torch pip wheels need these on the loader path.
-            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib:${pkgs.portaudio}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            # Nix python's loader does not search FHS /usr/lib. Keep nix gcc/zlib
+            # first so libstdc++.so.6 matches the interpreter, then host leftovers.
+            export LD_LIBRARY_PATH="${libPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export NIX_LD_LIBRARY_PATH="${libPath}''${NIX_LD_LIBRARY_PATH:+:$NIX_LD_LIBRARY_PATH}"
+            export NIX_LD="''${NIX_LD:-${dynamicLinker}}"
+            if [[ -d "$PWD/.venv/bin" ]]; then
+              export PATH="$PWD/.venv/bin:$PATH"
+            fi
+            if [[ -x "$PWD/scripts/maya-nix-libs.sh" ]]; then
+              "$PWD/scripts/maya-nix-libs.sh" stamp >/dev/null 2>&1 || true
+            fi
 
             echo "Maya Unified dev shell"
             echo "  make setup     # uv sync (torch cu124 + faster-qwen3-tts + platform deps)"
