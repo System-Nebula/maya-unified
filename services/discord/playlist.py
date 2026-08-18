@@ -26,6 +26,28 @@ def is_url(value: str) -> bool:
     return bool(_URL_RE.match((value or "").strip()))
 
 
+def is_expandable_playlist_url(value: str) -> bool:
+    """True for multi-track playlist/album URLs that should skip DJ-set indexing.
+
+    A YouTube ``/playlist?list=`` link has no video id, so ``detect_platform``
+    already returns None. Make that path explicit so playback still expands
+    track URLs, then ontology fan-out can attach Apple / MB / WD / Discogs.
+    """
+    target = (value or "").strip()
+    if not is_url(target):
+        return False
+    from urllib.parse import parse_qs, urlparse
+
+    parsed = urlparse(target)
+    path = (parsed.path or "").lower()
+    if "/playlist" in path:
+        return True
+    qs = parse_qs(parsed.query)
+    if qs.get("list") and not qs.get("v"):
+        return True
+    return False
+
+
 def _playlist_id(url: str) -> str | None:
     from urllib.parse import parse_qs, urlparse
 

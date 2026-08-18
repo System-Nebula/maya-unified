@@ -33,6 +33,7 @@ from services.tracing import corr_span
 logger = logging.getLogger(__name__)
 
 _TITLE_MATCH = 82.0
+_TITLE_AGREE = 90.0
 _ALBUM_OVERLAP = 0.5
 _TRAILING_PUNCT = re.compile(r"[.\u2026]+$")
 
@@ -67,6 +68,47 @@ def _title_ratio(left: str, right: str) -> float:
     if not a or not b:
         return 0.0
     return float(fuzz.token_set_ratio(a, b, processor=fuzz_utils.default_process))
+
+
+def _simple_ratio(left: str, right: str) -> float:
+    """Full-string similarity. ``token_set_ratio`` treats ``Flip`` ⊂ ``Fanoodle (Flip)`` as 100."""
+    a, b = _norm_title(left), _norm_title(right)
+    if not a or not b:
+        return 0.0
+    return float(fuzz.ratio(a, b, processor=fuzz_utils.default_process))
+
+
+def _merge_anchors(work: CanonicalWork, extra: CanonicalWork | None) -> CanonicalWork:
+    if extra is None:
+        return work
+    existing = {a.domain_key() for a in work.anchors}
+    added = tuple(a for a in extra.anchors if a.domain_key() not in existing)
+    if not added:
+        return work
+    return CanonicalWork(
+        key=work.key,
+        label=work.label,
+        aliases=work.aliases,
+        anchors=work.anchors + added,
+        artists=work.artists or extra.artists,
+        attrs=dict(work.attrs),
+    )
+
+
+def _prefer_apple_identity(work: CanonicalWork, apple_song: CanonicalWork | None) -> CanonicalWork:
+    """Keep Apple when a deep catalog hit stole a short title (Flip → Fanoodle (Flip))."""
+    if apple_song is None or work.key == apple_song.key:
+        return work
+    if _simple_ratio(work.label, apple_song.label) >= _TITLE_AGREE:
+        return _merge_anchors(work, apple_song)
+    return CanonicalWork(
+        key=apple_song.key,
+        label=apple_song.label,
+        aliases=apple_song.aliases,
+        anchors=apple_song.anchors,
+        artists=apple_song.artists or work.artists,
+        attrs=dict(apple_song.attrs),
+    )
 
 
 def _video_id_for(expansion: PlaylistExpansion, index: int, url: str) -> str | None:
@@ -218,7 +260,10 @@ async def resolve_playlist_ontology(
             )
             extra = tuple(w for w in (apple_song,) if w is not None)
             if deep:
-                work = await map_identity(parsed, schemas, extra_works=extra)
+                work = _prefer_apple_identity(
+                    await map_identity(parsed, schemas, extra_works=extra),
+                    apple_song,
+                )
             elif apple_song is not None:
                 work = apple_song
             else:

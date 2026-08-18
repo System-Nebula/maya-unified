@@ -10,6 +10,11 @@ def test_detect_platform_youtube():
     assert detect_platform("https://youtu.be/gfF8jzBVWvM") == PLATFORM_YOUTUBE
 
 
+def test_detect_platform_youtube_playlist_is_not_a_set():
+    url = "https://youtube.com/playlist?list=OLAK5uy_mcs9iYWN2LEM-J7drMBsjBYJhbmE544rQ"
+    assert detect_platform(url) is None
+
+
 def test_detect_platform_1001tracklists():
     url = "https://www.1001tracklists.com/tracklist/2gu8q2xk/fred-again.html"
     assert detect_platform(url) == PLATFORM_1001TL

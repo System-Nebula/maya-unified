@@ -53,7 +53,7 @@ async def build_playlist_for_query(query: str, *, ontology_deep: bool = False) -
     import asyncio
 
     from services.cmd.play_query import looks_like_cmd_residue, normalize_play_query, salvage_media_url
-    from services.discord.playlist import expand_playlist, is_url
+    from services.discord.playlist import expand_playlist, is_expandable_playlist_url, is_url
     from services.tracing import corr_span
 
     with corr_span("play.build_playlist") as span:
@@ -71,7 +71,7 @@ async def build_playlist_for_query(query: str, *, ontology_deep: bool = False) -
                 from services.music.url_handler import detect_platform, index_music_url
                 from services.music.set_playlist import build_playlist_from_set
 
-                if detect_platform(q):
+                if detect_platform(q) and not is_expandable_playlist_url(q):
                     resolved = await index_music_url(q, ingest=False)
                     if resolved is not None:
                         try:
