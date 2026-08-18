@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from maya_graph.music.normalize import artist_refs, clean_name
+from maya_graph.music.otel import TRACER, record_http
 from maya_graph.music.primitives import CanonicalWork, Recording, SourceRef, WorkQuery
 
 logger = logging.getLogger(__name__)
@@ -153,21 +154,25 @@ class MusicBrainzSchema:
         return []
 
     async def _search(self, client: httpx.AsyncClient, lucene: str) -> list[CanonicalWork]:
-        resp = await client.get(
-            MUSICBRAINZ_API,
-            params={
-                "query": lucene,
-                "fmt": "json",
-                "limit": 5,
-            },
-        )
-        if resp.status_code != 200:
-            return []
-        works: list[CanonicalWork] = []
-        for payload in resp.json().get("recordings") or []:
-            if not isinstance(payload, dict):
-                continue
-            work = _work_from_recording(payload)
-            if work is not None:
-                works.append(work)
-        return works
+        with TRACER.start_as_current_span("catalog.http.mb") as span:
+            span.set_attribute("catalog.query", lucene[:160])
+            resp = await client.get(
+                MUSICBRAINZ_API,
+                params={
+                    "query": lucene,
+                    "fmt": "json",
+                    "limit": 5,
+                },
+            )
+            if resp.status_code != 200:
+                record_http(resp.status_code, error=f"HTTP {resp.status_code}", hits=0)
+                return []
+            works: list[CanonicalWork] = []
+            for payload in resp.json().get("recordings") or []:
+                if not isinstance(payload, dict):
+                    continue
+                work = _work_from_recording(payload)
+                if work is not None:
+                    works.append(work)
+            record_http(resp.status_code, hits=len(works))
+            return works

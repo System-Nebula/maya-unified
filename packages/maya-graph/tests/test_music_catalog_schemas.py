@@ -545,3 +545,45 @@ async def test_map_identity_reuses_extra_works_without_requery() -> None:
     parsed = ParsedTrack(artist="Charli XCX", title="360", base_title="360")
     mapped = await map_identity(parsed, [_Boom()], extra_works=(mb,))
     assert mapped.key == "mb:recording/abc"
+
+
+@pytest.mark.asyncio
+async def test_map_identity_records_otel_spans() -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous = trace.get_tracer_provider()
+    trace.set_tracer_provider(provider)
+    try:
+        mb = CanonicalWork(
+            key="mb:recording/abc",
+            label="360",
+            artists=artist_refs("Charli XCX"),
+            anchors=(SourceRef(schema="mb", external_id="recording/abc"),),
+        )
+
+        class _Stub:
+            schema_id = "mb"
+
+            async def search_work(self, query: WorkQuery) -> list[CanonicalWork]:
+                return [mb]
+
+            async def fetch_recording(self, ref):
+                return None
+
+            async def fetch_recordings(self, work):
+                return []
+
+        parsed = ParsedTrack(artist="Charli XCX", title="360", base_title="360")
+        await map_identity(parsed, [_Stub()])
+        names = [span.name for span in exporter.get_finished_spans()]
+        assert "catalog.map_identity" in names
+        assert "catalog.search.mb" in names
+    finally:
+        trace.set_tracer_provider(previous)

@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from maya_graph.music.normalize import artist_refs, clean_name
+from maya_graph.music.otel import record_http
 from maya_graph.music.primitives import CanonicalWork, Recording, SourceRef, WorkQuery
 from maya_graph.projector import normalize_key
 
@@ -213,6 +214,7 @@ class ItunesSchema:
             params={"term": term, "entity": "song", "limit": 5},
         )
         if resp.status_code != 200:
+            record_http(resp.status_code, error=f"HTTP {resp.status_code}", hits=0)
             return []
         works: list[CanonicalWork] = []
         for payload in resp.json().get("results") or []:
@@ -223,4 +225,5 @@ class ItunesSchema:
             work = _work_from_track(payload)
             if work is not None:
                 works.append(work)
+        record_http(resp.status_code, hits=len(works))
         return works

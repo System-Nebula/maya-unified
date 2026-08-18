@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from maya_graph.music.normalize import artist_refs, clean_name, split_artist_title
+from maya_graph.music.otel import record_http
 from maya_graph.music.primitives import CanonicalWork, Recording, SourceRef, WorkQuery
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,7 @@ class DiscogsSchema:
     ) -> list[CanonicalWork]:
         resp = await client.get(DISCOGS_SEARCH, params=params)
         if resp.status_code != 200:
+            record_http(resp.status_code, error=f"HTTP {resp.status_code}", hits=0)
             return []
         works: list[CanonicalWork] = []
         for payload in resp.json().get("results") or []:
@@ -135,4 +137,5 @@ class DiscogsSchema:
             work = _work_from_result(payload)
             if work is not None:
                 works.append(work)
+        record_http(resp.status_code, hits=len(works))
         return works

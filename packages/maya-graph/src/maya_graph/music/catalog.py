@@ -14,6 +14,7 @@ from rapidfuzz import fuzz
 from rapidfuzz import utils as fuzz_utils
 
 from maya_graph.music.normalize import ParsedTrack, artist_refs, fingerprint_work
+from maya_graph.music.otel import TRACER
 from maya_graph.music.primitives import CanonicalWork, SourceRef, WorkQuery
 from maya_graph.music.schemas.base import SourceSchema
 
@@ -150,28 +151,44 @@ async def map_identity(
     ``extra_works`` are hits from an earlier pass — matching schema ids are
     not queried again (avoids MusicBrainz 1 req/s 503s).
     """
-    accepted: list[CanonicalWork] = []
-    seen_schema: set[str] = set()
-    for work in extra_works:
-        if not _accept(parsed, work):
-            continue
-        accepted.append(work)
-        seen_schema.add(work.key.split(":", 1)[0])
-    for schema in schemas:
-        if schema.schema_id in seen_schema:
-            continue
-        try:
-            works = await schema.search_work(
-                WorkQuery(
-                    text=parsed.base_title or parsed.title,
-                    artist=parsed.artist,
-                )
-            )
-        except Exception:
-            continue
-        for work in works:
-            if _accept(parsed, work):
-                accepted.append(work)
-                seen_schema.add(schema.schema_id)
-                break
-    return merge_identity(parsed, accepted)
+    with TRACER.start_as_current_span("catalog.map_identity") as root:
+        root.set_attribute("catalog.artist", parsed.artist or "")
+        root.set_attribute("catalog.title", parsed.base_title or parsed.title or "")
+        root.set_attribute("catalog.album", parsed.album or "")
+        accepted: list[CanonicalWork] = []
+        seen_schema: set[str] = set()
+        for work in extra_works:
+            if not _accept(parsed, work):
+                continue
+            accepted.append(work)
+            seen_schema.add(work.key.split(":", 1)[0])
+        root.set_attribute("catalog.prefetch_schemas", ",".join(sorted(seen_schema)))
+        for schema in schemas:
+            if schema.schema_id in seen_schema:
+                continue
+            with TRACER.start_as_current_span(f"catalog.search.{schema.schema_id}") as child:
+                child.set_attribute("catalog.schema", schema.schema_id)
+                try:
+                    works = await schema.search_work(
+                        WorkQuery(
+                            text=parsed.base_title or parsed.title,
+                            artist=parsed.artist,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    child.set_attribute("catalog.error", str(exc)[:160])
+                    continue
+                child.set_attribute("catalog.hit_count", len(works))
+                hit = False
+                for work in works:
+                    if _accept(parsed, work):
+                        accepted.append(work)
+                        seen_schema.add(schema.schema_id)
+                        child.set_attribute("catalog.work_key", work.key)
+                        hit = True
+                        break
+                child.set_attribute("catalog.accepted", hit)
+        mapped = merge_identity(parsed, accepted)
+        root.set_attribute("catalog.work_key", mapped.key)
+        root.set_attribute("catalog.anchor_count", len(mapped.anchors))
+        return mapped

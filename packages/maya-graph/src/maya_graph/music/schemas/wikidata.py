@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from maya_graph.music.normalize import artist_refs
+from maya_graph.music.otel import TRACER, record_http
 from maya_graph.music.primitives import (
     CanonicalWork,
     Recording,
@@ -298,22 +299,28 @@ class WikidataSchema:
         instance_qids: set[str] | None = None,
     ) -> list[CanonicalWork]:
         allowed = instance_qids or _SONG_LIKE_QIDS
-        resp = await client.get(
-            WIKIDATA_API,
-            params={
-                "action": "wbsearchentities",
-                "format": "json",
-                "language": "en",
-                "search": text,
-                "type": "item",
-                "limit": 10,
-            },
-        )
-        if resp.status_code != 200:
-            return []
-        candidates = [
-            row for row in (resp.json().get("search") or []) if isinstance(row, dict) and row.get("id")
-        ]
+        with TRACER.start_as_current_span("catalog.http.wd") as span:
+            span.set_attribute("catalog.query", text[:160])
+            resp = await client.get(
+                WIKIDATA_API,
+                params={
+                    "action": "wbsearchentities",
+                    "format": "json",
+                    "language": "en",
+                    "search": text,
+                    "type": "item",
+                    "limit": 10,
+                },
+            )
+            if resp.status_code != 200:
+                record_http(resp.status_code, error=f"HTTP {resp.status_code}", hits=0)
+                return []
+            candidates = [
+                row
+                for row in (resp.json().get("search") or [])
+                if isinstance(row, dict) and row.get("id")
+            ]
+            record_http(resp.status_code, hits=len(candidates))
         qids = [str(row["id"]) for row in candidates]
         entities = await self._fetch_entities(client, qids)
         ranked: list[tuple[int, CanonicalWork, list[str]]] = []

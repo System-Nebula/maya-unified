@@ -37,6 +37,7 @@ from maya_graph.music.normalize import (  # noqa: E402
     parse_share_path,
     slskd_external_id,
 )
+from maya_graph.music.otel import TRACER  # noqa: E402
 from maya_graph.music.primitives import (  # noqa: E402
     DOMAIN,
     EDGE_APPEARS_ON,
@@ -115,11 +116,21 @@ def _hit_from_work(provider: str, work: CanonicalWork | None, *, error: str = ""
 
 async def _schema_hit(schema, query: WorkQuery) -> ProviderHit:
     name = schema.schema_id
-    try:
-        works = await schema.search_work(query)
-    except Exception as exc:  # noqa: BLE001
-        return ProviderHit(name, False, "—", "—", "—", "", "", str(exc)[:160])
-    return _hit_from_work(name, works[0] if works else None, error="no hit")
+    with TRACER.start_as_current_span(f"catalog.probe.search.{name}") as span:
+        span.set_attribute("catalog.schema", name)
+        span.set_attribute("catalog.artist", query.artist or "")
+        span.set_attribute("catalog.title", query.text or "")
+        try:
+            works = await schema.search_work(query)
+        except Exception as exc:  # noqa: BLE001
+            span.set_attribute("catalog.error", str(exc)[:160])
+            return ProviderHit(name, False, "—", "—", "—", "", "", str(exc)[:160])
+        span.set_attribute("catalog.hit_count", len(works))
+        hit = _hit_from_work(name, works[0] if works else None, error="no hit")
+        span.set_attribute("catalog.accepted", hit.ok)
+        if hit.ok:
+            span.set_attribute("catalog.work_key", hit.work_key)
+        return hit
 
 
 async def _discogs_master(artist: str, release_title: str) -> ProviderHit:
@@ -301,6 +312,22 @@ def _album_work(hits: list[ProviderHit], artist: str, title: str) -> CanonicalWo
 
 
 async def probe() -> dict[str, Any]:
+    exporter, provider = _setup_tracer()
+    with TRACER.start_as_current_span("catalog.live_probe") as root:
+        root.set_attribute("catalog.subjects", "brat_cd,brat_360,nggyu")
+        payload = await _probe_body()
+    if provider is not None:
+        provider.force_flush()
+    traces = _span_records(exporter)
+    payload["traces"] = {
+        "service": "maya-catalog-probe",
+        "span_count": len(traces),
+        "spans": traces,
+    }
+    return payload
+
+
+async def _probe_body() -> dict[str, Any]:
     schemas = default_catalog_schemas()
     brat_track = parse_share_path(BRAT_CD_PATH)
     nggyu = parse_share_path(NGGYU_PATH)
@@ -517,6 +544,49 @@ async def probe() -> dict[str, Any]:
     }
 
 
+def _setup_tracer():
+    """In-memory OTEL exporter so the probe can dump spans without Jaeger."""
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    except ImportError:
+        return None, None
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(
+        resource=Resource.create({"service.name": "maya-catalog-probe"})
+    )
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    return exporter, provider
+
+
+def _span_records(exporter) -> list[dict[str, Any]]:
+    if exporter is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    for span in exporter.get_finished_spans():
+        ctx = span.get_span_context()
+        parent = span.parent.span_id if span.parent else 0
+        start = span.start_time or 0
+        end = span.end_time or start
+        rows.append(
+            {
+                "name": span.name,
+                "trace_id": format(ctx.trace_id, "032x"),
+                "span_id": format(ctx.span_id, "016x"),
+                "parent_span_id": format(parent, "016x") if parent else None,
+                "duration_ms": round((end - start) / 1_000_000, 2),
+                "status": span.status.status_code.name if span.status else "UNSET",
+                "attributes": {k: v for k, v in (span.attributes or {}).items()},
+            }
+        )
+    rows.sort(key=lambda row: (row["trace_id"], row["name"]))
+    return rows
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -526,13 +596,16 @@ def main() -> int:
     )
     args = parser.parse_args()
     payload = asyncio.run(probe())
+    traces = (payload.get("traces") or {}).get("spans") or []
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     html_path = out / "catalog_live_tint.html"
     json_path = out / "catalog_live.json"
+    traces_path = out / "catalog_live_traces.json"
     html_path.write_text(payload["html"], encoding="utf-8")
     slim = {k: v for k, v in payload.items() if k != "html"}
     json_path.write_text(json.dumps(slim, indent=2) + "\n", encoding="utf-8")
+    traces_path.write_text(json.dumps(payload["traces"], indent=2) + "\n", encoding="utf-8")
     print(f"parsed brat: {payload['parsed']['brat']}")
     print(f"parsed nggyu: {payload['parsed']['nggyu']}")
     print()
@@ -558,8 +631,15 @@ def main() -> int:
     print(f"mapped brat album key: {payload['mapped']['brat_album']['key']}")
     print(f"mapped nggyu key: {payload['mapped']['nggyu']['key']}")
     print(f"graph: {payload['graph']}")
+    print()
+    print(f"## OTEL spans ({len(traces)})")
+    for row in traces:
+        attrs = row["attributes"]
+        extra = attrs.get("catalog.work_key") or attrs.get("http.status_code") or attrs.get("catalog.error") or ""
+        print(f"- {row['name']} {row['duration_ms']}ms {extra}".rstrip())
     print(f"wrote {html_path}")
     print(f"wrote {json_path}")
+    print(f"wrote {traces_path}")
     return 0
 
 
