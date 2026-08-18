@@ -45,6 +45,7 @@ overrides = {
     "VA_TTS_ENABLED": "0",
     "VA_STT_DEVICE": "cpu",
     "ENV": "production",
+    "SLSKD_HOST": "http://127.0.0.1:5030",
 }
 lines = text.splitlines()
 seen: set[str] = set()

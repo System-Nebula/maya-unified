@@ -1,4 +1,4 @@
-.PHONY: setup test ci tts-check e2e-install e2e-test homepage-deploy docs-serve docs-build
+.PHONY: setup test ci slskd ci-slskd tts-check e2e-install e2e-test homepage-deploy docs-serve docs-build
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -15,6 +15,18 @@ ci:
 		nix develop "$(ROOT)" --command uv run --no-sync pytest -m "not integration"; \
 	else \
 		uv run --no-sync pytest -m "not integration"; \
+	fi
+
+slskd:
+	@bash scripts/start-slskd.sh
+
+ci-slskd:
+	@if [ -n "$(IN_NIX_SHELL)" ]; then \
+		uv run --no-sync pytest tests/test_slskd_nggyu.py; \
+	elif command -v nix >/dev/null 2>&1; then \
+		nix develop "$(ROOT)" --command uv run --no-sync pytest tests/test_slskd_nggyu.py; \
+	else \
+		uv run --no-sync pytest tests/test_slskd_nggyu.py; \
 	fi
 
 tts-check:

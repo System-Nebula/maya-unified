@@ -42,6 +42,7 @@ dependencies = [
     "json-repair>=0.61.2",
     "maya-feeds",
     "mia-docs[embed]",
+    "slskd-api",
 ]
 
 [project.optional-dependencies]
@@ -116,6 +117,7 @@ mia-docs = { workspace = true }
 asyncio_mode = "auto"
 markers = [
     "integration: live network tests (OpenRouter, etc.)",
+    "slskd: live slskd/Soulseek search and download",
     "security: TEST-002 security and audience regression suite",
 ]
 testpaths = [

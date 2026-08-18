@@ -17,6 +17,10 @@
     {
       "name": "postgres",
       "port": 5432
+    },
+    {
+      "name": "slskd",
+      "port": 5030
     }
   ]
 }

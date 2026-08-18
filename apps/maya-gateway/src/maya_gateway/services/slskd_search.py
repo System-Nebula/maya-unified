@@ -26,6 +26,47 @@ from maya_contracts import (
 
 _SLSKD_CLIENT = None
 
+NGGYU_ARTIST = "Rick Astley"
+NGGYU_TITLE = "Never Gonna Give You Up"
+_SEVEN_INCH_TOKENS = ('7"', "7''", "7inch", "7-inch", "7 inch", "7in")
+
+
+def reset_client() -> None:
+    """Drop the cached slskd client (tests / process reconfig)."""
+    global _SLSKD_CLIENT
+    _SLSKD_CLIENT = None
+
+
+def nggyu_7inch_query() -> SearchQuery:
+    """Canonical smoke query: Never Gonna Give You Up 7\" FLAC."""
+    return SearchQuery(
+        artist=NGGYU_ARTIST,
+        title=NGGYU_TITLE,
+        album='7"',
+        exact_phrase=False,
+        format_filter=QualityTier.LOSSLESS,
+        max_results=50,
+    )
+
+
+def is_seven_inch(filename: str) -> bool:
+    lower = filename.lower()
+    return any(token in lower for token in _SEVEN_INCH_TOKENS)
+
+
+def flac_hits(result: SearchResult) -> list[SearchHit]:
+    return [hit for hit in result.hits if hit.extension.lower() == "flac"]
+
+
+def pick_seven_inch_flac(result: SearchResult) -> SearchHit | None:
+    """Prefer a 7\" FLAC; otherwise the best remaining FLAC hit."""
+    flacs = flac_hits(result)
+    seven = [hit for hit in flacs if is_seven_inch(hit.filename)]
+    pool = seven or flacs
+    if not pool:
+        return None
+    return max(pool, key=lambda hit: hit.quality_score)
+
 
 def _get_client():
     global _SLSKD_CLIENT

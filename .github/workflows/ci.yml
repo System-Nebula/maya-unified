@@ -51,3 +51,31 @@ jobs:
 
       - name: Test
         run: nix develop . --command uv run --no-sync pytest -m "not integration"
+
+  slskd:
+    runs-on: ubuntu-latest
+    env:
+      SLSKD_HOST: http://127.0.0.1:5030
+      SLSKD_API_KEY: ci-cloud-agent-slskd-key
+      SLSKD_SLSK_USERNAME: ${{ secrets.SLSK_USERNAME }}
+      SLSKD_SLSK_PASSWORD: ${{ secrets.SLSK_PASSWORD }}
+      SLSKD_SEARCH_WAIT: "25"
+      VA_TTS_ENABLED: "0"
+      VA_STT_DEVICE: cpu
+      SESSION_SECRET: ci-cloud-agent-session-secret-not-for-production
+      ENV: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Install Python deps
+        run: nix develop . --command ./scripts/cloud-agent-install.sh
+
+      - name: Start slskd
+        run: nix develop . --command ./scripts/start-slskd.sh
+
+      - name: Search, FLAC filter, NGGYU 7-inch download
+        run: nix develop . --command uv run --no-sync pytest tests/test_slskd_nggyu.py -q --tb=short

@@ -123,4 +123,11 @@ psql -h 127.0.0.1 -U postgres -d maya_public -v ON_ERROR_STOP=1 \
 echo "==> alembic upgrade heads"
 ( cd "$ROOT/packages/maya-db" && uv run --no-sync alembic upgrade heads )
 
+echo "==> slskd"
+if "$ROOT/scripts/start-slskd.sh"; then
+  echo "slskd ready"
+else
+  echo "slskd skipped (docker unavailable or not ready)"
+fi
+
 echo "Start complete (postgres ready, schema migrated)."
