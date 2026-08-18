@@ -41,7 +41,7 @@
             echo "  make setup     # uv sync (torch cu124 + faster-qwen3-tts + platform deps)"
             echo "  make test      # pytest"
             echo "  make ci        # pytest -m 'not integration' (Cloud/CI)"
-            echo "  make slskd    # start OpenBao + slskd (bundled test account, or Soulseek from OpenBao)"
+            echo "  make slskd    # start OpenBao + slskd (throwaway Soulseek account, or SLSKD_EXAMPLE=1 stand-in)"
             echo "  make tts-check # GPU smoke synth (optional)"
             echo "  ./launch.sh    # start gateway + voice agent"
           '';

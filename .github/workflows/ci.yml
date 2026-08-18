@@ -57,6 +57,7 @@ jobs:
     env:
       SLSKD_HOST: http://127.0.0.1:5030
       SLSKD_API_KEY: ci-cloud-agent-slskd-key
+      SLSKD_EXAMPLE: "1"
       BAO_ADDR: ${{ secrets.BAO_ADDR }}
       BAO_TOKEN: ${{ secrets.BAO_TOKEN }}
       # Optional override while migrating; OpenBao secret/maya/integrations/slskd is canonical.

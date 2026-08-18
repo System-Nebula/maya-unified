@@ -26,7 +26,7 @@ Copied to `data/skills/` when each file is missing.
 
 - `dev-seed.json` — first-run OpenBao KV seed, including the bundled **maya-dev-example** slskd test account
 
-Copied once to `data/openbao/dev-seed.json` by `make openbao`. Replace that copy with a real Soulseek login (and drop `"network": "example"`) to use the live network.
+Copied once to `data/openbao/dev-seed.json` by `make openbao`. `make slskd` replaces that with a throwaway Soulseek login (created on first connect) unless `SLSKD_EXAMPLE=1`. Drop `"network": "example"` and set a real username/password to use an existing account.
 
 ## `slskd/`
 

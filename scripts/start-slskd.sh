@@ -151,54 +151,130 @@ start_nix_slskd() {
     >/tmp/slskd-nix.log 2>&1 &
 }
 
+allocate_throwaway() {
+  local force="${1:-}"
+  if [[ "$force" == "force" ]]; then
+    PYTHONPATH="$ROOT" python3 -m services.secrets.openbao throwaway-force
+  else
+    PYTHONPATH="$ROOT" python3 -m services.secrets.openbao throwaway
+  fi
+  eval "$(PYTHONPATH="$ROOT" python3 -m services.secrets.openbao)"
+  ensure_api_key
+}
+
+wait_slskd_login() {
+  local i
+  for i in $(seq 1 45); do
+    if slskd_logged_in; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+start_live_slskd() {
+  printf 'soulseek\n' > "$MODE_FILE"
+  start_docker_slskd || start_nix_slskd
+}
+
 load_openbao_creds
 export SLSKD_HOST="${SLSKD_HOST:-http://127.0.0.1:5030}"
 ensure_api_key
 
-use_example=0
+want_example=0
 case "${SLSKD_EXAMPLE:-}" in
-  1|true|TRUE|yes|YES) use_example=1 ;;
+  1|true|TRUE|yes|YES) want_example=1 ;;
 esac
-
-if slskd_listening; then
-  if slskd_logged_in; then
-    echo "slskd already listening on 127.0.0.1:5030"
-    exit 0
-  fi
-  if [[ "$use_example" -eq 1 || ( -n "${SLSKD_SLSK_USERNAME:-}" && -n "${SLSKD_SLSK_PASSWORD:-}" ) ]]; then
-    stop_listening_slskd
-  else
-    echo "slskd already listening on 127.0.0.1:5030 (not logged in; no OpenBao/env Soulseek creds)"
-    exit 0
+if [[ "${CI:-}" == "true" && "${SLSKD_THROWAY:-}" != "1" && "${SLSKD_THROWAY:-}" != "true" ]]; then
+  if [[ -z "${SLSKD_SLSK_USERNAME:-}" || "${SLSKD_SLSK_USERNAME}" == "maya-dev-example" ]]; then
+    want_example=1
   fi
 fi
 
-if [[ "$use_example" -eq 1 ]]; then
-  start_example_slskd
-elif [[ -z "${SLSKD_SLSK_USERNAME:-}" || -z "${SLSKD_SLSK_PASSWORD:-}" ]]; then
-  echo "slskd Soulseek login missing; seeding bundled example test account" >&2
+mode_file_value=""
+if [[ -f "$MODE_FILE" ]]; then
+  mode_file_value="$(tr -d '[:space:]' < "$MODE_FILE")"
+fi
+
+if slskd_listening; then
+  if [[ "$want_example" -eq 1 && "$mode_file_value" == "example" ]] && slskd_logged_in; then
+    echo "slskd example stand-in already listening on 127.0.0.1:5030"
+    exit 0
+  fi
+  if [[ "$want_example" -eq 0 && "$mode_file_value" == "soulseek" ]] && slskd_logged_in; then
+    echo "slskd already listening on 127.0.0.1:5030"
+    exit 0
+  fi
+  stop_listening_slskd
+fi
+
+if [[ "$want_example" -eq 1 ]]; then
   start_example_slskd
 else
-  printf 'soulseek\n' > "$MODE_FILE"
-  start_docker_slskd || start_nix_slskd || {
+  if [[ -z "${SLSKD_SLSK_USERNAME:-}" || "${SLSKD_SLSK_USERNAME}" == "maya-dev-example" || -z "${SLSKD_SLSK_PASSWORD:-}" ]]; then
+    echo "==> allocating throwaway Soulseek account (created on first slskd login)"
+    allocate_throwaway
+  fi
+  if [[ -z "${SLSKD_SLSK_USERNAME:-}" || -z "${SLSKD_SLSK_PASSWORD:-}" ]]; then
+    echo "throwaway allocate failed; falling back to bundled example" >&2
+    start_example_slskd
+  elif ! start_live_slskd; then
     echo "real slskd unavailable; falling back to bundled example" >&2
     start_example_slskd
-  }
+  fi
 fi
 
 for _ in $(seq 1 60); do
   if slskd_listening; then
-    echo "slskd ready on 127.0.0.1:5030"
-    exit 0
+    break
   fi
   sleep 1
 done
 
-echo "slskd did not become ready on 127.0.0.1:5030" >&2
-if [[ -f /tmp/slskd-example.log ]]; then
-  tail -n 40 /tmp/slskd-example.log >&2 || true
+if ! slskd_listening; then
+  echo "slskd did not become ready on 127.0.0.1:5030" >&2
+  if [[ -f /tmp/slskd-example.log ]]; then
+    tail -n 40 /tmp/slskd-example.log >&2 || true
+  fi
+  if [[ -f /tmp/slskd-nix.log ]]; then
+    tail -n 40 /tmp/slskd-nix.log >&2 || true
+  fi
+  exit 1
 fi
-if [[ -f /tmp/slskd-nix.log ]]; then
-  tail -n 40 /tmp/slskd-nix.log >&2 || true
+
+if [[ "$want_example" -eq 0 && -f "$MODE_FILE" && "$(tr -d '[:space:]' < "$MODE_FILE")" == "soulseek" ]]; then
+  if wait_slskd_login; then
+    echo "slskd ready on 127.0.0.1:5030 (Soulseek logged in)"
+    exit 0
+  fi
+  echo "Soulseek login did not succeed; allocating a new throwaway and retrying" >&2
+  stop_listening_slskd
+  allocate_throwaway force
+  if start_live_slskd; then
+    for _ in $(seq 1 60); do
+      if slskd_listening; then
+        break
+      fi
+      sleep 1
+    done
+    if wait_slskd_login; then
+      echo "slskd ready on 127.0.0.1:5030 (Soulseek logged in)"
+      exit 0
+    fi
+  fi
+  echo "Soulseek throwaway login failed; falling back to bundled example" >&2
+  stop_listening_slskd
+  start_example_slskd
+  for _ in $(seq 1 30); do
+    if slskd_listening; then
+      echo "slskd ready on 127.0.0.1:5030 (example stand-in)"
+      exit 0
+    fi
+    sleep 1
+  done
+  exit 1
 fi
-exit 1
+
+echo "slskd ready on 127.0.0.1:5030"
+exit 0

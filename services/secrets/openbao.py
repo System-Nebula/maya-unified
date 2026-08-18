@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shlex
 import sys
 import urllib.error
@@ -27,6 +28,7 @@ IDEOGRAM_SECRET_PATH = "secret/data/maya/providers/ideogram"
 DEFAULT_BAO_ADDR = "http://127.0.0.1:8200"
 EXAMPLE_SLSKD_USERNAME = "maya-dev-example"
 EXAMPLE_SLSKD_API_KEY = "ci-cloud-agent-slskd-key"
+THROWAWAY_USERNAME_PREFIX = "MayaDev"
 DEV_SEED_EXAMPLE = ROOT / "examples" / "openbao" / "dev-seed.json"
 DEV_SEED_LOCAL = DATA_DIR / "openbao" / "dev-seed.json"
 
@@ -98,8 +100,10 @@ def write_secret(path: str, data: dict[str, Any], *, timeout: float = 5.0) -> No
 
 
 def slskd_credentials() -> dict[str, str]:
-    """Soulseek login + optional API key from OpenBao (empty strings if missing)."""
+    """Soulseek login + optional API key from OpenBao, then the local seed file."""
     secret = read_secret(SLSKD_SECRET_PATH)
+    if not (secret.get("username") and secret.get("password")):
+        secret = {**load_dev_seed().get(SLSKD_SECRET_PATH, {}), **secret}
     username = str(
         secret.get("username")
         or secret.get("SLSKD_SLSK_USERNAME")
@@ -114,11 +118,14 @@ def slskd_credentials() -> dict[str, str]:
     )
     api_key = str(secret.get("api_key") or secret.get("SLSKD_API_KEY") or "")
     network = str(secret.get("network") or "")
+    throwaway = secret.get("throwaway")
+    throwaway_flag = "true" if str(throwaway).lower() in {"1", "true", "yes"} else ""
     return {
         "username": username,
         "password": password,
         "api_key": api_key,
         "network": network,
+        "throwaway": throwaway_flag,
     }
 
 
@@ -139,6 +146,59 @@ def is_example_slskd_account(secret: dict[str, Any] | None = None) -> bool:
     if _env("SLSKD_SLSK_USERNAME") and _env("SLSKD_SLSK_USERNAME") != EXAMPLE_SLSKD_USERNAME:
         return False
     return network == "example" or username == EXAMPLE_SLSKD_USERNAME
+
+
+def new_throwaway_username() -> str:
+    """Unique Soulseek username; accounts are created on first successful login."""
+    return f"{THROWAWAY_USERNAME_PREFIX}{secrets.token_hex(4)}"
+
+
+def persist_slskd_secret(data: dict[str, Any]) -> None:
+    """Write slskd KV to the local seed file and to local OpenBao when available."""
+    DEV_SEED_LOCAL.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {"secrets": {}}
+    if DEV_SEED_LOCAL.is_file():
+        try:
+            loaded = json.loads(DEV_SEED_LOCAL.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                payload = loaded
+        except (OSError, json.JSONDecodeError):
+            payload = {"secrets": {}}
+    secrets_map = payload.setdefault("secrets", {})
+    if not isinstance(secrets_map, dict):
+        secrets_map = {}
+        payload["secrets"] = secrets_map
+    secrets_map[SLSKD_SECRET_PATH] = dict(data)
+    DEV_SEED_LOCAL.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    try:
+        DEV_SEED_LOCAL.chmod(0o600)
+    except OSError:
+        pass
+    if bao_token() and bao_is_local():
+        write_secret(SLSKD_SECRET_PATH, dict(data))
+
+
+def allocate_throwaway_slskd(*, force: bool = False) -> str:
+    """Create or reuse a throwaway Soulseek login and persist it (password never printed).
+
+    Soulseek registers a new username on first login. Existing non-example creds are
+    left alone unless ``force`` is set.
+    """
+    existing = slskd_credentials()
+    if not force and existing["username"] and existing["password"] and not is_example_slskd_account(existing):
+        if existing.get("throwaway") == "true":
+            return "reusing throwaway Soulseek account"
+        return "reusing existing Soulseek account"
+    api_key = existing["api_key"] or _env("SLSKD_API_KEY") or EXAMPLE_SLSKD_API_KEY
+    payload = {
+        "username": new_throwaway_username(),
+        "password": secrets.token_hex(16),
+        "api_key": api_key if len(api_key) >= 16 else EXAMPLE_SLSKD_API_KEY,
+        "network": "soulseek",
+        "throwaway": True,
+    }
+    persist_slskd_secret(payload)
+    return "allocated throwaway Soulseek account"
 
 
 def load_dev_seed(path: Path | None = None) -> dict[str, dict[str, Any]]:
@@ -231,8 +291,6 @@ def export_slskd_shell() -> str:
         lines.append(f"export SLSKD_SLSK_PASSWORD={shlex.quote(creds['password'])}")
     if not _env("SLSKD_API_KEY") and len(creds["api_key"]) >= 16:
         lines.append(f"export SLSKD_API_KEY={shlex.quote(creds['api_key'])}")
-    if is_example_slskd_account(creds):
-        lines.append("export SLSKD_EXAMPLE=1")
     return "\n".join(lines)
 
 
@@ -241,5 +299,7 @@ if __name__ == "__main__":
         print(init_dev())
     elif len(sys.argv) > 1 and sys.argv[1] == "seed":
         print(seed_slskd_from_env())
+    elif len(sys.argv) > 1 and sys.argv[1] in {"throwaway", "throwaway-force"}:
+        print(allocate_throwaway_slskd(force=sys.argv[1] == "throwaway-force"))
     else:
         print(export_slskd_shell())
