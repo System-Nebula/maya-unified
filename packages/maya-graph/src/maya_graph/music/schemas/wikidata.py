@@ -119,6 +119,19 @@ def _name_matches(expected: str, actual: str) -> bool:
     return left == right or left in right or right in left
 
 
+def _entity_label(entity: dict[str, Any]) -> str | None:
+    """English, then multilingual ``mul``, then any remaining label."""
+    labels = entity.get("labels") or {}
+    for lang in ("en", "mul"):
+        value = (labels.get(lang) or {}).get("value")
+        if value:
+            return str(value)
+    for row in labels.values():
+        if isinstance(row, dict) and row.get("value"):
+            return str(row["value"])
+    return None
+
+
 def _qid_from_work_key(work_key: str) -> str | None:
     if not work_key.startswith("wd:"):
         return None
@@ -336,14 +349,11 @@ class WikidataSchema:
         for _, work, pqids in ranked:
             names: list[str] = []
             for pqid in pqids:
-                label = (
-                    (performers.get(pqid) or {})
-                    .get("labels", {})
-                    .get("en", {})
-                    .get("value")
-                )
+                label = _entity_label(performers.get(pqid) or {})
                 if label:
-                    names.append(str(label))
+                    names.append(label)
+            if artist:
+                names.sort(key=lambda n: (0 if _name_matches(artist, n) else 1))
             filled = CanonicalWork(
                 key=work.key,
                 label=work.label,
@@ -436,7 +446,7 @@ class WikidataSchema:
         for char_qid, entity in char_entities.items():
             if entity.get("missing"):
                 continue
-            char_label = entity.get("labels", {}).get("en", {}).get("value") or label
+            char_label = _entity_label(entity) or label
             add_from_claims(_entity_claims(entity), char_label, rank_boost=1.0)
 
         if not candidates:

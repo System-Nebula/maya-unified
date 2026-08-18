@@ -90,7 +90,11 @@ def _work_from_album(payload: dict[str, Any]) -> CanonicalWork | None:
     if not collection_id or not title:
         return None
     artist = clean_name(str(payload.get("artistName") or ""))
-    view = payload.get("collectionViewUrl") or f"https://music.apple.com/us/album/{collection_id}"
+    raw_view = str(payload.get("collectionViewUrl") or "")
+    if raw_view and "i=" not in raw_view:
+        view = raw_view
+    else:
+        view = f"https://music.apple.com/us/album/{collection_id}"
     artist_id = payload.get("artistId")
     anchors = [
         SourceRef(schema="apple_music", external_id=f"album/{collection_id}", url=str(view)),

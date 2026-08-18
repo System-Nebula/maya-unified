@@ -439,7 +439,7 @@ async def test_itunes_album_harvests_song_collection() -> None:
                         "artistId": 319375941,
                         "collectionName": "BRAT",
                         "collectionId": 1739079974,
-                        "collectionViewUrl": "https://music.apple.com/us/album/brat/1739079974",
+                        "collectionViewUrl": "https://music.apple.com/us/album/brat/1739079974?i=1739080645",
                     }
                 ]
             }
@@ -451,7 +451,74 @@ async def test_itunes_album_harvests_song_collection() -> None:
     works = await search_album("Charli XCX", "Brat", client=client)
     assert works[0].key == "apple_music:album/1739079974"
     assert works[0].label == "BRAT"
-    assert works[0].anchors[0].url == "https://music.apple.com/us/album/brat/1739079974"
+    assert works[0].anchors[0].url == "https://music.apple.com/us/album/1739079974"
+
+
+@pytest.mark.asyncio
+async def test_wikidata_uses_mul_performer_label_when_en_missing() -> None:
+    qid = "Q57"
+    artist = "Q219237"
+
+    class _Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            params = dict(request.url.params)
+            action = params.get("action", "")
+            if action == "wbsearchentities":
+                return httpx.Response(
+                    200,
+                    json={
+                        "search": [
+                            {
+                                "id": qid,
+                                "label": "Never Gonna Give You Up",
+                                "description": "originally recorded by Rick Astley",
+                            }
+                        ]
+                    },
+                )
+            if action == "wbgetentities":
+                ids = params.get("ids", "")
+                entities = {}
+                if qid in ids:
+                    entities[qid] = {
+                        "id": qid,
+                        "labels": {"en": {"value": "Never Gonna Give You Up"}},
+                        "claims": {
+                            "P31": [
+                                {
+                                    "mainsnak": {
+                                        "datavalue": {
+                                            "type": "wikibase-entityid",
+                                            "value": {"id": "Q105543609"},
+                                        }
+                                    }
+                                }
+                            ],
+                            "P175": [
+                                {
+                                    "mainsnak": {
+                                        "datavalue": {
+                                            "type": "wikibase-entityid",
+                                            "value": {"id": artist},
+                                        }
+                                    }
+                                }
+                            ],
+                        },
+                    }
+                if artist in ids:
+                    entities[artist] = {
+                        "id": artist,
+                        "labels": {"mul": {"value": "Rick Astley"}},
+                        "claims": {},
+                    }
+                return httpx.Response(200, json={"entities": entities})
+            return httpx.Response(404, json={})
+
+    works = await WikidataSchema(client=httpx.AsyncClient(transport=_Transport())).search_work(
+        WorkQuery(text="Never Gonna Give You Up", artist="Rick Astley")
+    )
+    assert works[0].artists[0].name == "Rick Astley"
 
 
 @pytest.mark.asyncio

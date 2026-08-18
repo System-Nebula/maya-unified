@@ -159,36 +159,45 @@ async def _discogs_master(artist: str, release_title: str) -> ProviderHit:
 
 
 async def _mb_release_group(artist: str, release_title: str) -> ProviderHit:
+    from maya_graph.music.schemas.musicbrainz import _rate_limit
+
     query = f'release:"{release_title}" AND artist:"{artist}" AND primarytype:Album'
-    try:
-        async with httpx.AsyncClient(
-            timeout=8.0,
-            headers={"User-Agent": MB_UA, "Accept": "application/json"},
-        ) as client:
-            resp = await client.get(
-                "https://musicbrainz.org/ws/2/release-group/",
-                params={"query": query, "fmt": "json", "limit": 5},
-            )
-            if resp.status_code != 200:
-                return ProviderHit("mb", False, "—", "—", "—", "", "", f"HTTP {resp.status_code}")
-            groups = resp.json().get("release-groups") or []
-    except Exception as extra:  # noqa: BLE001
-        return ProviderHit("mb", False, "—", artist, "—", "", "", str(extra)[:160])
-    if not groups:
-        return ProviderHit("mb", False, "—", artist, "—", "", "", "no release-group")
-    row = groups[0]
-    rgid = row.get("id")
-    url = f"https://musicbrainz.org/release-group/{rgid}"
-    work = CanonicalWork(
-        key=f"mb:release-group/{rgid}",
-        label=str(row.get("title") or release_title),
-        artists=artist_refs(artist),
-        anchors=(
-            SourceRef(schema="mb", external_id=f"release-group/{rgid}", url=url),
-        ),
-        attrs={"kind": "album", "primary_type": row.get("primary-type")},
-    )
-    return _hit_from_work("mb", work)
+    last_error = "no release-group"
+    for _ in range(3):
+        await _rate_limit()
+        try:
+            async with httpx.AsyncClient(
+                timeout=8.0,
+                headers={"User-Agent": MB_UA, "Accept": "application/json"},
+            ) as client:
+                resp = await client.get(
+                    "https://musicbrainz.org/ws/2/release-group/",
+                    params={"query": query, "fmt": "json", "limit": 5},
+                )
+        except Exception as extra:  # noqa: BLE001
+            return ProviderHit("mb", False, "—", artist, "—", "", "", str(extra)[:160])
+        if resp.status_code == 503:
+            last_error = "HTTP 503"
+            continue
+        if resp.status_code != 200:
+            return ProviderHit("mb", False, "—", "—", "—", "", "", f"HTTP {resp.status_code}")
+        groups = resp.json().get("release-groups") or []
+        if not groups:
+            return ProviderHit("mb", False, "—", artist, "—", "", "", "no release-group")
+        row = groups[0]
+        rgid = row.get("id")
+        url = f"https://musicbrainz.org/release-group/{rgid}"
+        work = CanonicalWork(
+            key=f"mb:release-group/{rgid}",
+            label=str(row.get("title") or release_title),
+            artists=artist_refs(artist),
+            anchors=(
+                SourceRef(schema="mb", external_id=f"release-group/{rgid}", url=url),
+            ),
+            attrs={"kind": "album", "primary_type": row.get("primary-type")},
+        )
+        return _hit_from_work("mb", work)
+    return ProviderHit("mb", False, "—", artist, "—", "", "", last_error)
 
 
 def _markdown_table(hits: list[ProviderHit]) -> str:
