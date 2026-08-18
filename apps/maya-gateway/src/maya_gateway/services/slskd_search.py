@@ -113,38 +113,15 @@ _KNOWN_EXTS = {".flac", ".mp3", ".m4a", ".wav", ".aiff", ".aif", ".ogg", ".opus"
 
 
 def _parse_filename_hints(path: str) -> dict:
-    """Try to extract artist / album / title from a Soulseek share path.
+    """Extract artist / album / title from a Soulseek share path."""
+    from maya_graph.music.normalize import parse_share_path
 
-    Typical patterns:
-        Music\\Artist\\Album\\01 - Title.flac
-        E:\\Music\\Artist\\Album\\Title.mp3
-        Downloads\\Artist - Album\\01 Title.flac
-    """
-    pw = PureWindowsPath(path)
-    parts = list(pw.parents)[::-1] if pw.parents else []
-    stem = pw.stem
-
-    result: dict[str, Optional[str]] = {
-        "artist_hint": None,
-        "album_hint": None,
-        "title_hint": stem,
+    parsed = parse_share_path(path)
+    return {
+        "artist_hint": parsed.artist,
+        "album_hint": parsed.album,
+        "title_hint": parsed.display_title() or parsed.base_title,
     }
-
-    # Walk parents bottom-up, looking for meaningful dir names
-    meaningful = [p for p in parts if p.name and p.name not in ("Music", "Downloads", "E:", "F:")]
-    if len(meaningful) >= 2:
-        result["artist_hint"] = meaningful[-2].name  # second-to-last meaningful dir
-        result["album_hint"] = meaningful[-1].name  # immediate parent
-    elif len(meaningful) == 1:
-        result["album_hint"] = meaningful[-1].name
-
-    # Clean track number prefixes from title
-    import re
-    match = re.match(r"^(\d+)[\s\.\-_]+(.+)$", stem)
-    if match:
-        result["title_hint"] = match.group(2).strip()
-
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +541,7 @@ def _schedule_ingest(
                 filename=filename,
                 artist_hint=hints.get("artist_hint"),
                 title_hint=hints.get("title_hint"),
+                album_hint=hints.get("album_hint"),
                 attrs={
                     "size": size,
                     "bytes_transferred": bytes_transferred,

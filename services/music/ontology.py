@@ -31,7 +31,14 @@ from maya_graph.music.primitives import (
     canonical_fingerprint,
     work_key_from_fingerprint,
 )
+from maya_graph.music.catalog import map_identity
+from maya_graph.music.normalize import (
+    parse_share_path,
+    parsed_from_query,
+    slskd_external_id,
+)
 from maya_graph.music.schemas.wikidata import WikidataSchema
+from maya_graph.music.schemas import default_catalog_schemas
 from sqlalchemy import func, select
 
 logger = logging.getLogger(__name__)
@@ -123,7 +130,12 @@ async def _persist_relational(event: ResolutionEvent) -> None:
                 await session.flush()
             artist_id = artist.id
 
-        fp = canonical_fingerprint(artist_name or "unknown", work.label)
+        fp = canonical_fingerprint(
+            artist_name or "unknown",
+            str(work.attrs.get("base_title") or work.label),
+            work.attrs.get("remix"),
+            work.attrs.get("version"),
+        )
         track_attrs = {"source_schema": event.source_schema, **work.attrs}
 
         track_stmt = (
@@ -131,9 +143,14 @@ async def _persist_relational(event: ResolutionEvent) -> None:
             .values(
                 id=uuid.uuid4(),
                 title=work.label,
-                base_title=work.label,
-                canonical_fingerprint=fp,
-                canonical_work_key=work.key,
+                base_title=work.attrs.get("base_title") or work.label,
+                remix_name=work.attrs.get("remix"),
+                remix_artist=work.attrs.get("remix"),
+                version_type=work.attrs.get("version") or "original",
+                isrc=work.attrs.get("isrc"),
+                duration_seconds=work.attrs.get("duration_seconds"),
+                canonical_fingerprint=fp[:255],
+                canonical_work_key=work.key[:64] if work.key else None,
                 primary_artist_id=artist_id,
                 attrs=track_attrs,
             )
@@ -141,8 +158,10 @@ async def _persist_relational(event: ResolutionEvent) -> None:
                 index_elements=["canonical_fingerprint"],
                 set_={
                     "title": work.label,
-                    "canonical_work_key": work.key,
+                    "base_title": work.attrs.get("base_title") or work.label,
+                    "canonical_work_key": work.key[:64] if work.key else None,
                     "primary_artist_id": artist_id,
+                    "isrc": work.attrs.get("isrc"),
                     "attrs": MusicTrack.attrs.op("||")(pg_insert(MusicTrack).excluded.attrs),
                 },
             )
@@ -150,31 +169,46 @@ async def _persist_relational(event: ResolutionEvent) -> None:
         )
         track_id = (await session.execute(track_stmt)).scalar_one()
 
-        for recording in event.recordings:
-            url = recording.source.url or recording.webpage_url or ""
-            if not url and not recording.source.external_id:
-                continue
+        def _link_values(
+            *,
+            platform: str,
+            external_id: str,
+            url: str,
+            extra_attrs: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {
+                "id": uuid.uuid4(),
+                "entity_type": "track",
+                "entity_id": track_id,
+                "platform": platform[:32],
+                "external_id": (external_id or "")[:255],
+                "url": url,
+                "confidence": event.confidence,
+                "source": f"schema:{event.source_schema}",
+                "attrs": extra_attrs,
+            }
+
+        async def _upsert_link(
+            platform: str,
+            external_id: str,
+            url: str,
+            extra_attrs: dict[str, Any],
+        ) -> None:
+            if not platform or not (external_id or url):
+                return
+            values = _link_values(
+                platform=platform,
+                external_id=external_id or url,
+                url=url or f"{platform}:{external_id}",
+                extra_attrs=extra_attrs,
+            )
             link_stmt = (
                 pg_insert(MusicPlatformLink)
-                .values(
-                    id=uuid.uuid4(),
-                    entity_type="track",
-                    entity_id=track_id,
-                    platform=recording.source.schema,
-                    external_id=recording.source.external_id,
-                    url=url or recording.source.domain_key(),
-                    confidence=event.confidence,
-                    source=f"schema:{event.source_schema}",
-                    attrs={
-                        "title": recording.title,
-                        "duration_seconds": recording.duration_seconds,
-                        **recording.attrs,
-                    },
-                )
+                .values(**values)
                 .on_conflict_do_update(
                     index_elements=["platform", "external_id"],
                     set_={
-                        "url": url or recording.source.domain_key(),
+                        "url": values["url"],
                         "confidence": event.confidence,
                         "attrs": MusicPlatformLink.attrs.op("||")(
                             pg_insert(MusicPlatformLink).excluded.attrs
@@ -184,11 +218,34 @@ async def _persist_relational(event: ResolutionEvent) -> None:
             )
             await session.execute(link_stmt)
 
+        for recording in event.recordings:
+            url = recording.source.url or recording.webpage_url or ""
+            if not url and not recording.source.external_id:
+                continue
+            await _upsert_link(
+                recording.source.schema,
+                recording.source.external_id,
+                url or recording.source.domain_key(),
+                {
+                    "title": recording.title,
+                    "duration_seconds": recording.duration_seconds,
+                    **recording.attrs,
+                },
+            )
+
+        for anchor in work.anchors:
+            await _upsert_link(
+                anchor.schema,
+                anchor.external_id,
+                anchor.url or anchor.domain_key(),
+                {"kind": "anchor"},
+            )
+
         await session.commit()
 
 
 _broker = MusicQueryBroker(
-    schemas=[WikidataSchema()],
+    schemas=default_catalog_schemas(),
     on_resolution=_persist_relational,
 )
 _wikidata = WikidataSchema()
@@ -270,7 +327,8 @@ async def lookup(query: str) -> TrackMetadata | None:
         return None
 
     artist, title = _parse_artist_title(text)
-    work_query = WorkQuery(text=title, artist=artist)
+    parsed = parsed_from_query(text, artist=artist, title=title)
+    work_query = WorkQuery(text=parsed.base_title or title, artist=parsed.artist)
     candidates = await _broker.resolve_work(work_query)
     if not candidates or candidates[0].confidence < _CONFIDENCE_LOOKUP:
         return None
@@ -309,7 +367,8 @@ async def resolve_for_play(query: str) -> ResolvedPlay | None:
         return None
 
     artist, title = _parse_artist_title(text)
-    work_query = WorkQuery(text=title, artist=artist)
+    parsed = parsed_from_query(text, artist=artist, title=title)
+    work_query = WorkQuery(text=parsed.base_title or title, artist=parsed.artist)
     candidates = await _broker.resolve_work(work_query)
     if not candidates or candidates[0].confidence < _CONFIDENCE_PLAY:
         return None
@@ -432,28 +491,56 @@ async def ingest_slskd_file(
     filename: str,
     artist_hint: str | None = None,
     title_hint: str | None = None,
+    album_hint: str | None = None,
     attrs: dict[str, Any] | None = None,
 ) -> None:
-    artist = (artist_hint or username).strip()
-    title = (title_hint or filename).strip()
-    fp = canonical_fingerprint(str(artist), str(title))
-    work = CanonicalWork(
-        key=work_key_from_fingerprint(fp),
-        label=str(title),
-        artists=(ArtistRef(slug=slugify(str(artist)), name=str(artist)),),
+    """Ingest a verified Soulseek file using parsed names + catalog mapping.
+
+    Peer username is stored on the recording only — never as the artist.
+    """
+    from maya_graph.music.normalize import ParsedTrack, merge_parsed
+
+    parsed = parse_share_path(filename)
+    parsed = merge_parsed(
+        parsed,
+        ParsedTrack(
+            artist=artist_hint,
+            title=title_hint,
+            base_title=title_hint,
+            album=album_hint,
+        ),
     )
-    external_id = f"{username}:{filename}"
+    if not parsed.artist or not (parsed.base_title or parsed.title):
+        logger.info("slskd ingest skipped — no artist/title in %r", filename)
+        return
+
+    extra = dict(attrs or {})
+    extra.update(
+        {
+            "username": username,
+            "filename": filename,
+            "album": parsed.album,
+            "remix": parsed.remix,
+            "version": parsed.version,
+        }
+    )
+    work = await map_identity(parsed, _broker.schemas)
     recording = Recording(
-        source=SourceRef(schema="slskd", external_id=external_id),
-        title=str(title),
-        attrs=attrs or {},
+        source=SourceRef(
+            schema="slskd",
+            external_id=slskd_external_id(
+                username, filename, extra.get("size") if isinstance(extra.get("size"), int) else None
+            ),
+        ),
+        title=work.label,
+        attrs=extra,
     )
     await _broker.ingest(
         ResolutionEvent(
             work=work,
             recordings=(recording,),
-            source_schema="slskd",
-            confidence=0.6,
+            source_schema="catalog" if not work.key.startswith("fp:") else "slskd",
+            confidence=0.85 if work.anchors else 0.6,
         )
     )
 

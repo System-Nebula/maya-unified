@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx
 
+from maya_graph.music.normalize import artist_refs
 from maya_graph.music.primitives import (
     CanonicalWork,
     Recording,
@@ -37,6 +38,16 @@ P_HAS_CHARACTERISTIC = "P1552"
 P_YOUTUBE_VIDEO_ID = "P1651"
 P_DURATION = "P2047"
 P_VIEW_COUNT = "P5436"
+P_PERFORMER = "P175"
+P_MB_RECORDING = "P4404"
+P_MB_RELEASE_GROUP = "P436"
+P_MB_WORK = "P435"
+P_MB_ARTIST = "P434"
+P_DISCOGS_MASTER = "P1954"
+P_DISCOGS_ARTIST = "P2206"
+P_SPOTIFY_TRACK = "P2207"
+P_APPLE_ALBUM = "P2281"
+P_ITUNES_ARTIST = "P2850"
 
 _SEARCH_DELAY_SEC = 1.5
 _SEARCH_TIMEOUT_SEC = 3.0
@@ -50,6 +61,35 @@ _SONG_LIKE_QIDS = {
 }
 
 _YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _catalog_anchors(qid: str, claims: dict[str, list]) -> list[SourceRef]:
+    """Resurface MusicBrainz / Discogs / Apple / Spotify ids stored on Wikidata."""
+    anchors: list[SourceRef] = [
+        SourceRef(schema="wd", external_id=qid, url=ENTITY_URL.format(qid=qid)),
+    ]
+    specs = (
+        (P_MB_RECORDING, "mb", "recording/{id}", "https://musicbrainz.org/recording/{id}"),
+        (P_MB_RELEASE_GROUP, "mb", "release-group/{id}", "https://musicbrainz.org/release-group/{id}"),
+        (P_MB_WORK, "mb", "work/{id}", "https://musicbrainz.org/work/{id}"),
+        (P_MB_ARTIST, "mb", "artist/{id}", "https://musicbrainz.org/artist/{id}"),
+        (P_DISCOGS_MASTER, "discogs", "master/{id}", "https://www.discogs.com/master/{id}"),
+        (P_DISCOGS_ARTIST, "discogs", "artist/{id}", "https://www.discogs.com/artist/{id}"),
+        (P_SPOTIFY_TRACK, "spotify", "{id}", "https://open.spotify.com/track/{id}"),
+        (P_APPLE_ALBUM, "apple_music", "album/{id}", "https://music.apple.com/album/{id}"),
+        (P_ITUNES_ARTIST, "apple_music", "artist/{id}", None),
+    )
+    for prop, schema, id_fmt, url_fmt in specs:
+        for value in _claim_string_values(claims, prop):
+            external_id = id_fmt.format(id=value)
+            anchors.append(
+                SourceRef(
+                    schema=schema,
+                    external_id=external_id,
+                    url=url_fmt.format(id=value) if url_fmt else None,
+                )
+            )
+    return anchors
 
 _last_search_at: float = 0.0
 _rate_lock = asyncio.Lock()
@@ -148,7 +188,8 @@ class WikidataSchema:
         if not text:
             return []
         try:
-            await asyncio.wait_for(_rate_limit(), timeout=_SEARCH_TIMEOUT_SEC)
+            if self._client is None:
+                await asyncio.wait_for(_rate_limit(), timeout=_SEARCH_TIMEOUT_SEC)
             if self._client is not None:
                 return await self._search(self._client, text)
             async with httpx.AsyncClient(
@@ -207,23 +248,37 @@ class WikidataSchema:
             qid = candidate.get("id")
             if not qid:
                 continue
-            p31 = await self._fetch_entity_p31(client, qid)
-            if p31 & _SONG_LIKE_QIDS:
-                return [
-                    CanonicalWork(
-                        key=f"wd:{qid}",
-                        label=candidate.get("label", text),
-                        aliases=tuple(candidate.get("aliases", []) or ()),
-                        anchors=(
-                            SourceRef(
-                                schema="wd",
-                                external_id=qid,
-                                url=ENTITY_URL.format(qid=qid),
-                            ),
-                        ),
-                        attrs={"description": candidate.get("description", "")},
+            entity = (await self._fetch_entities(client, [qid])).get(qid) or {}
+            if entity.get("missing"):
+                continue
+            claims = _entity_claims(entity)
+            p31 = set(_claim_entity_ids(claims, P_INSTANCE_OF))
+            if not (p31 & _SONG_LIKE_QIDS):
+                continue
+            performer_qids = _claim_entity_ids(claims, P_PERFORMER)
+            performer_names: list[str] = []
+            if performer_qids:
+                performers = await self._fetch_entities(client, performer_qids[:3])
+                for pqid in performer_qids[:3]:
+                    label = (
+                        (performers.get(pqid) or {})
+                        .get("labels", {})
+                        .get("en", {})
+                        .get("value")
                     )
-                ]
+                    if label:
+                        performer_names.append(str(label))
+            aliases = list(candidate.get("aliases") or [])
+            return [
+                CanonicalWork(
+                    key=f"wd:{qid}",
+                    label=candidate.get("label", text),
+                    aliases=tuple(aliases),
+                    anchors=tuple(_catalog_anchors(qid, claims)),
+                    artists=artist_refs(*performer_names),
+                    attrs={"description": candidate.get("description", "")},
+                )
+            ]
         return []
 
     async def _fetch_entity_p31(self, client: httpx.AsyncClient, qid: str) -> set[str]:
@@ -258,7 +313,7 @@ class WikidataSchema:
                 "action": "wbgetentities",
                 "format": "json",
                 "ids": "|".join(qids),
-                "props": "claims",
+                "props": "claims|labels",
             },
         )
         if resp.status_code != 200:

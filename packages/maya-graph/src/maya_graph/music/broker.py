@@ -31,6 +31,7 @@ from maya_graph.music.primitives import (
     EDGE_PERFORMED_BY,
     NODE_CANONICAL_WORK,
     NODE_RECORDING,
+    ArtistRef,
     CanonicalWork,
     Recording,
     RecordingQuery,
@@ -78,11 +79,17 @@ def _work_from_row(row: Any) -> CanonicalWork:
         for a in attrs.get("anchors", [])
         if isinstance(a, dict)
     )
+    artists = tuple(
+        ArtistRef(slug=str(a.get("slug") or ""), name=str(a.get("name") or ""))
+        for a in attrs.get("artists", [])
+        if isinstance(a, dict) and a.get("slug") and a.get("name")
+    )
     return CanonicalWork(
         key=row["domain_id"],
         label=row["label"],
         aliases=tuple(attrs.get("aliases", []) or ()),
         anchors=anchors,
+        artists=artists,
         attrs=attrs,
     )
 
@@ -345,6 +352,9 @@ class MusicQueryBroker:
                     "anchors": [
                         {"schema": a.schema, "external_id": a.external_id, "url": a.url}
                         for a in work.anchors
+                    ],
+                    "artists": [
+                        {"slug": a.slug, "name": a.name} for a in work.artists
                     ],
                     "source_schema": event.source_schema,
                 },

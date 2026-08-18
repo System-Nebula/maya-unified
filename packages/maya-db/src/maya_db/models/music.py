@@ -243,7 +243,7 @@ class MusicPlatformLink(Base, UUIDPrimaryKey, TimestampMixin):
 
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False)  # artist|track|release|genre
     entity_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
-    platform: Mapped[str] = mapped_column(String(32), nullable=False)  # discogs|soundcloud|spotify|beatport|bandcamp|yt|slskd|1001tl|apple_music
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)  # discogs|soundcloud|spotify|beatport|bandcamp|yt|slskd|1001tl|apple_music|mb|isrc
     external_id: Mapped[str | None] = mapped_column(String(255))
     url: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(
