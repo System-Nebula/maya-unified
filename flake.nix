@@ -28,6 +28,8 @@
             uv
             stdenv.cc.cc.lib
             zlib
+            # CI / Cloud Agent: local Postgres with pgvector when Docker is unavailable.
+            (postgresql_16.withPackages (ps: [ ps.pgvector ]))
           ];
 
           shellHook = ''
@@ -37,6 +39,7 @@
             echo "Maya Unified dev shell"
             echo "  make setup     # uv sync (torch cu124 + faster-qwen3-tts + platform deps)"
             echo "  make test      # pytest"
+            echo "  make ci        # pytest -m 'not integration' (Cloud/CI)"
             echo "  make tts-check # GPU smoke synth (optional)"
             echo "  ./launch.sh    # start gateway + voice agent"
           '';

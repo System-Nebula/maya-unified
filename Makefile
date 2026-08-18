@@ -1,4 +1,4 @@
-.PHONY: setup test tts-check e2e-install e2e-test homepage-deploy docs-serve docs-build
+.PHONY: setup test ci tts-check e2e-install e2e-test homepage-deploy docs-serve docs-build
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -7,6 +7,15 @@ setup:
 
 test:
 	uv run pytest
+
+ci:
+	@if [ -n "$(IN_NIX_SHELL)" ]; then \
+		uv run pytest -m "not integration"; \
+	elif command -v nix >/dev/null 2>&1; then \
+		nix develop "$(ROOT)" --command uv run pytest -m "not integration"; \
+	else \
+		uv run pytest -m "not integration"; \
+	fi
 
 tts-check:
 	uv run python scripts/check_tts.py

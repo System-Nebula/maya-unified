@@ -1,0 +1,22 @@
+{
+  "name": "Maya Unified",
+  "install": "./scripts/cloud-agent-install.sh",
+  "start": "./scripts/cloud-agent-start.sh",
+  "terminals": [
+    {
+      "name": "gateway",
+      "command": "MAYA_PROFILE=operator HOST=127.0.0.1 PORT=8090 VA_TTS_ENABLED=0 VA_STT_DEVICE=cpu ENV=production ./launch.sh",
+      "description": "Unified gateway + dashboard on :8090 (operator profile, TTS disabled)"
+    }
+  ],
+  "ports": [
+    {
+      "name": "gateway",
+      "port": 8090
+    },
+    {
+      "name": "postgres",
+      "port": 5432
+    }
+  ]
+}
