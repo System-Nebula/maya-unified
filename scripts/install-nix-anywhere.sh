@@ -19,6 +19,22 @@ source_nix_profile() {
 
 source_nix_profile
 
+nix_daemon_ok() {
+  local sock="$1"
+  python3 - "$sock" <<'PY'
+import socket
+import sys
+
+path = sys.argv[1]
+sock = socket.socket(socket.AF_UNIX)
+sock.settimeout(1)
+try:
+    sock.connect(path)
+except OSError:
+    sys.exit(1)
+PY
+}
+
 ensure_nix_daemon() {
   local sock="/nix/var/nix/daemon-socket/socket"
   local daemon_bin=""
@@ -37,25 +53,28 @@ ensure_nix_daemon() {
   if [[ -z "$daemon_bin" ]]; then
     return 0
   fi
-  if [[ -S "$sock" ]]; then
+  if nix_daemon_ok "$sock"; then
     return 0
   fi
+  # Snapshots often preserve a unix socket inode with nothing listening.
   echo "==> starting nix-daemon (no systemd init)"
   if command -v sudo >/dev/null 2>&1; then
     sudo mkdir -p "$(dirname "$sock")"
+    sudo rm -f "$sock"
     sudo nohup "$daemon_bin" >/tmp/nix-daemon.log 2>&1 &
   else
     mkdir -p "$(dirname "$sock")"
+    rm -f "$sock"
     nohup "$daemon_bin" >/tmp/nix-daemon.log 2>&1 &
   fi
   local i
   for i in $(seq 1 30); do
-    if [[ -S "$sock" ]]; then
+    if nix_daemon_ok "$sock"; then
       return 0
     fi
     sleep 1
   done
-  echo "nix-daemon socket did not appear at $sock" >&2
+  echo "nix-daemon did not become reachable (see /tmp/nix-daemon.log)" >&2
   false
 }
 
