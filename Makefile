@@ -1,4 +1,4 @@
-.PHONY: setup test tts-check e2e-install e2e-test homepage-deploy docs-serve docs-build
+.PHONY: setup test ci slskd openbao ci-slskd tts-check e2e-install e2e-test homepage-deploy docs-serve docs-build
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -7,6 +7,31 @@ setup:
 
 test:
 	uv run pytest
+
+ci:
+	@if [ -n "$(IN_NIX_SHELL)" ]; then \
+		./scripts/with-openbao-env.sh uv run --no-sync pytest -m "not integration"; \
+	elif command -v nix >/dev/null 2>&1; then \
+		nix develop "$(ROOT)" --command ./scripts/with-openbao-env.sh uv run --no-sync pytest -m "not integration"; \
+	else \
+		./scripts/with-openbao-env.sh uv run --no-sync pytest -m "not integration"; \
+	fi
+
+slskd:
+	@bash scripts/start-openbao.sh || true
+	@bash scripts/start-slskd.sh
+
+openbao:
+	@bash scripts/start-openbao.sh
+
+ci-slskd:
+	@if [ -n "$(IN_NIX_SHELL)" ]; then \
+		uv run --no-sync pytest tests/test_slskd_nggyu.py tests/test_openbao_slskd.py tests/test_slskd_example.py tests/test_slskd_throwaway.py; \
+	elif command -v nix >/dev/null 2>&1; then \
+		nix develop "$(ROOT)" --command uv run --no-sync pytest tests/test_slskd_nggyu.py tests/test_openbao_slskd.py tests/test_slskd_example.py tests/test_slskd_throwaway.py; \
+	else \
+		uv run --no-sync pytest tests/test_slskd_nggyu.py tests/test_openbao_slskd.py tests/test_slskd_example.py tests/test_slskd_throwaway.py; \
+	fi
 
 tts-check:
 	uv run python scripts/check_tts.py

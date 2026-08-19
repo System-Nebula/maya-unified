@@ -12,6 +12,10 @@ fi
 echo "==> uv sync (torch cu124 + faster-qwen3-tts + platform deps)"
 uv sync --extra dev
 
+if [[ -x "$ROOT/scripts/maya-nix-libs.sh" ]]; then
+  "$ROOT/scripts/maya-nix-libs.sh" patch || true
+fi
+
 echo ""
 echo "Setup complete. Next:"
 echo "  source .venv/bin/activate   # or rely on 'uv run'"

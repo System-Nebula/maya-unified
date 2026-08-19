@@ -178,9 +178,9 @@ make tts-check
 
 ## Troubleshooting
 
-**`libportaudio.so` not found**
+**`libportaudio.so` not found** / **`libstdc++.so.6: cannot open shared object file`**
 
-Not in nix develop shell — run `nix develop` before launch.
+Nix python does not search FHS `/usr/lib`. The flake exports `LD_LIBRARY_PATH` via `makeLibraryPath` (gcc lib, zlib, PortAudio). `scripts/maya-nix-libs.sh` stamps that path onto `.venv` and `patchelf`s native wheels so `.venv/bin/python` works outside the shell. Re-enter `nix develop` and rerun `make setup` (or `./scripts/maya-nix-libs.sh patch`).
 
 **CUDA available in nvidia-smi but not torch**
 

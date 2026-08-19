@@ -42,8 +42,9 @@ infra/comfyui/cache/
 infra/comfyui/ComfyUI/*
 !infra/comfyui/ComfyUI/docker-compose.yml
 
-# Editor state
-.cursor/
+# Editor state (keep Cloud Agent environment.json versioned)
+.cursor/*
+!.cursor/environment.json
 local/
 *.db
 *.sqlite3

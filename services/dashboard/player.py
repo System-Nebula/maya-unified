@@ -12,7 +12,7 @@ def stream_src(q: str) -> str:
     return f"/api/media/stream?q={quote(q, safe='')}"
 
 
-def _track_payload(*, query: str, title: str, index: int) -> dict[str, str]:
+def _track_payload(*, query: str, title: str, index: int) -> dict[str, Any]:
     label = (title or "").strip() or f"Track {index + 1}"
     q = (query or "").strip()
     return {"title": label, "query": q, "src": stream_src(q)}
@@ -34,20 +34,26 @@ def build_playlist_artifact(query: str, expansion) -> dict[str, Any]:
         tracks = [_track_payload(query=q, title=fallback_title, index=0)]
         album = fallback_title
         presentation = "single"
-    return {
+    payload: dict[str, Any] = {
         "type": "playlist",
         "presentation": presentation,
         "title": album,
         "url": query,
         "tracks": tracks,
     }
+    if expansion is not None:
+        if getattr(expansion, "artist", None):
+            payload["artist"] = expansion.artist
+        if getattr(expansion, "playlist_id", None):
+            payload["playlist_id"] = expansion.playlist_id
+    return payload
 
 
-async def build_playlist_for_query(query: str) -> dict[str, Any]:
+async def build_playlist_for_query(query: str, *, ontology_deep: bool = False) -> dict[str, Any]:
     import asyncio
 
     from services.cmd.play_query import looks_like_cmd_residue, normalize_play_query, salvage_media_url
-    from services.discord.playlist import expand_playlist, is_url
+    from services.discord.playlist import expand_playlist, is_expandable_playlist_url, is_url
     from services.tracing import corr_span
 
     with corr_span("play.build_playlist") as span:
@@ -65,7 +71,7 @@ async def build_playlist_for_query(query: str) -> dict[str, Any]:
                 from services.music.url_handler import detect_platform, index_music_url
                 from services.music.set_playlist import build_playlist_from_set
 
-                if detect_platform(q):
+                if detect_platform(q) and not is_expandable_playlist_url(q):
                     resolved = await index_music_url(q, ingest=False)
                     if resolved is not None:
                         try:
@@ -98,10 +104,43 @@ async def build_playlist_for_query(query: str) -> dict[str, Any]:
             return result
 
         try:
-            expansion = await asyncio.to_thread(expand_playlist, q)
+            with corr_span("play.expand_playlist", url=q) as expand_span:
+                expansion = await asyncio.to_thread(expand_playlist, q)
+                if expansion is not None:
+                    expand_span.set_attribute("title", expansion.title or "")
+                    expand_span.set_attribute("track_count", len(expansion.tracks))
         except Exception:  # noqa: BLE001
             expansion = None
         result = build_playlist_artifact(q, expansion)
+        if expansion is not None and expansion.tracks:
+            try:
+                from services.music.playlist_ontology import (
+                    apply_playlist_ontology,
+                    resolve_playlist_ontology,
+                )
+
+                onto = await resolve_playlist_ontology(
+                    q, expansion, deep=ontology_deep, ingest=ontology_deep
+                )
+                if onto is not None:
+                    result = apply_playlist_ontology(result, onto)
+                    _stamp_playlist_span(span, result)
+                    span.set_attribute("ontology.artist", onto.artist or "")
+                    if onto.album_work is not None:
+                        span.set_attribute("ontology.album_key", onto.album_work.key)
+                    if not ontology_deep:
+                        try:
+                            from services.async_bridge import schedule_coro
+
+                            schedule_coro(
+                                resolve_playlist_ontology(
+                                    q, expansion, deep=True, ingest=True
+                                )
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+            except Exception:  # noqa: BLE001 — catalog fan-out must not break playback
+                pass
         _stamp_playlist_span(span, result)
         return result
 

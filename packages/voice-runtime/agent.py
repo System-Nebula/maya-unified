@@ -2194,6 +2194,35 @@ class VoiceAgent:
             fail=f"I couldn't queue {query}.",
         )
 
+    def _try_dashboard_play_direct(self, user_text: str) -> Optional[str]:
+        """Load the sticky player for ``maya play …`` without waiting on the LLM."""
+        if self._maybe_motion_request(user_text, raw_text=user_text):
+            return None
+        if self._is_discord_context_turn(user_text):
+            return None
+        if not CONFIG.tools.enabled or self.registry is None:
+            return None
+        spec = self.registry.get("dashboard_play_music")
+        if spec is None:
+            return None
+        from services.cmd.play_query import extract_maya_play_query
+
+        query = extract_maya_play_query(user_text)
+        if not query:
+            return None
+        args = {"query": query}
+
+        def _run() -> dict:
+            return spec.handler(args)
+
+        return self._direct_tool_reply(
+            "dashboard_play_music",
+            args,
+            _run,
+            ok=lambda r: str(r.get("message") or f"Looking up “{query}”…"),
+            fail=f"I couldn't play {query}.",
+        )
+
     def _try_bandcamp_direct(self, user_text: str) -> Optional[str]:
         """Resolve Bandcamp wishlist URLs and queue/read without waiting on the LLM."""
         if not CONFIG.tools.enabled or self.registry is None:
@@ -4600,6 +4629,8 @@ class VoiceAgent:
                         direct = self._try_dashboard_music_direct(user_text)
                     if direct is None:
                         direct = self._try_dashboard_queue_direct(user_text)
+                    if direct is None:
+                        direct = self._try_dashboard_play_direct(user_text)
                     if direct is None:
                         direct = self._try_discord_direct(user_text)
             if direct is None:

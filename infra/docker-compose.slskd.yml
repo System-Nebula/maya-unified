@@ -1,0 +1,28 @@
+# slskd (Soulseek) for music-query CI / Cloud Agent smoke.
+# Start: docker compose -f infra/docker-compose.slskd.yml up -d
+# Live search: Soulseek login from OpenBao (scripts/start-slskd.sh) or env override.
+services:
+  slskd:
+    image: slskd/slskd:latest
+    container_name: maya-slskd
+    restart: unless-stopped
+    ports:
+      - "5030:5030"
+      - "50300:50300"
+    environment:
+      SLSKD_REMOTE_CONFIGURATION: "true"
+      SLSKD_NO_AUTH: "false"
+      SLSKD_API_KEY: ${SLSKD_API_KEY:-ci-cloud-agent-slskd-key}
+      SLSKD_SLSK_USERNAME: ${SLSKD_SLSK_USERNAME:-}
+      SLSKD_SLSK_PASSWORD: ${SLSKD_SLSK_PASSWORD:-}
+      SLSKD_DOWNLOADS_DIR: /downloads
+      SLSKD_SHARED_DIR: /shared
+    volumes:
+      - ../data/slskd/app:/app
+      - ../data/slskd/downloads:/downloads
+      - ../data/slskd/shared:/shared
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/5030'"]
+      interval: 5s
+      timeout: 5s
+      retries: 24

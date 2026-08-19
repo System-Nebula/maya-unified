@@ -413,6 +413,22 @@ def test_expand_playlist_non_url_returns_none() -> None:
     assert playlist.expand_playlist("daft punk one more time") is None
 
 
+def test_is_expandable_playlist_url() -> None:
+    from services.discord.playlist import is_expandable_playlist_url
+
+    assert is_expandable_playlist_url(
+        "https://youtube.com/playlist?list=OLAK5uy_mcs9iYWN2LEM-J7drMBsjBYJhbmE544rQ"
+    )
+    assert is_expandable_playlist_url(
+        "https://music.youtube.com/playlist?list=OLAK5uy_mcs9iYWN2LEM-J7drMBsjBYJhbmE544rQ"
+    )
+    assert not is_expandable_playlist_url(
+        "https://music.apple.com/us/album/alexandra-palace-london-feb-27-2026-dj-mix/1890298647"
+    )
+    assert not is_expandable_playlist_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    assert not is_expandable_playlist_url("maya play brat")
+
+
 def test_stream_src_percent_encodes_query() -> None:
     from services.dashboard.player import stream_src
 

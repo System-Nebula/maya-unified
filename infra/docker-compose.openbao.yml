@@ -1,0 +1,27 @@
+# Local OpenBao (KV v2 at secret/) for Maya Unified secrets.
+# Start: docker compose -f infra/docker-compose.openbao.yml up -d
+# Token: BAO_DEV_ROOT_TOKEN_ID (default maya-dev-root) also written by scripts/start-openbao.sh
+# Put Soulseek login with:
+#   bao kv put secret/maya/integrations/slskd username=... password=...
+services:
+  openbao:
+    image: openbao/openbao:latest
+    container_name: maya-openbao
+    restart: unless-stopped
+    cap_add: [IPC_LOCK]
+    ports:
+      - "8200:8200"
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: ${BAO_DEV_ROOT_TOKEN_ID:-maya-dev-root}
+      BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      BAO_ADDR: http://127.0.0.1:8200
+    command:
+      - server
+      - -dev
+      - -dev-listen-address=0.0.0.0:8200
+      - -dev-root-token-id=${BAO_DEV_ROOT_TOKEN_ID:-maya-dev-root}
+    healthcheck:
+      test: ["CMD-SHELL", "bao status >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12

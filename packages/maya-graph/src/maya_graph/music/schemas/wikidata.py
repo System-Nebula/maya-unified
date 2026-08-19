@@ -18,6 +18,8 @@ from typing import Any
 
 import httpx
 
+from maya_graph.music.normalize import artist_refs
+from maya_graph.music.otel import TRACER, record_http
 from maya_graph.music.primitives import (
     CanonicalWork,
     Recording,
@@ -37,9 +39,19 @@ P_HAS_CHARACTERISTIC = "P1552"
 P_YOUTUBE_VIDEO_ID = "P1651"
 P_DURATION = "P2047"
 P_VIEW_COUNT = "P5436"
+P_PERFORMER = "P175"
+P_MB_RECORDING = "P4404"
+P_MB_RELEASE_GROUP = "P436"
+P_MB_WORK = "P435"
+P_MB_ARTIST = "P434"
+P_DISCOGS_MASTER = "P1954"
+P_DISCOGS_ARTIST = "P2206"
+P_SPOTIFY_TRACK = "P2207"
+P_APPLE_ALBUM = "P2281"
+P_ITUNES_ARTIST = "P2850"
 
 _SEARCH_DELAY_SEC = 1.5
-_SEARCH_TIMEOUT_SEC = 3.0
+_SEARCH_TIMEOUT_SEC = 12.0
 
 # "instance of" (P31) QIDs that count as a song/track for our purposes.
 _SONG_LIKE_QIDS = {
@@ -49,7 +61,44 @@ _SONG_LIKE_QIDS = {
     "Q105543609",  # music release
 }
 
+# Album / studio-album P31s for release-group mapping (Brat CD, LPs).
+_ALBUM_LIKE_QIDS = {
+    "Q482994",  # album
+    "Q208569",  # studio album
+    "Q41582469",  # musical work / album class used on some items
+    "Q3307153",  # double album
+}
+
 _YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _catalog_anchors(qid: str, claims: dict[str, list]) -> list[SourceRef]:
+    """Resurface MusicBrainz / Discogs / Apple / Spotify ids stored on Wikidata."""
+    anchors: list[SourceRef] = [
+        SourceRef(schema="wd", external_id=qid, url=ENTITY_URL.format(qid=qid)),
+    ]
+    specs = (
+        (P_MB_RECORDING, "mb", "recording/{id}", "https://musicbrainz.org/recording/{id}"),
+        (P_MB_RELEASE_GROUP, "mb", "release-group/{id}", "https://musicbrainz.org/release-group/{id}"),
+        (P_MB_WORK, "mb", "work/{id}", "https://musicbrainz.org/work/{id}"),
+        (P_MB_ARTIST, "mb", "artist/{id}", "https://musicbrainz.org/artist/{id}"),
+        (P_DISCOGS_MASTER, "discogs", "master/{id}", "https://www.discogs.com/master/{id}"),
+        (P_DISCOGS_ARTIST, "discogs", "artist/{id}", "https://www.discogs.com/artist/{id}"),
+        (P_SPOTIFY_TRACK, "spotify", "{id}", "https://open.spotify.com/track/{id}"),
+        (P_APPLE_ALBUM, "apple_music", "album/{id}", "https://music.apple.com/album/{id}"),
+        (P_ITUNES_ARTIST, "apple_music", "artist/{id}", None),
+    )
+    for prop, schema, id_fmt, url_fmt in specs:
+        for value in _claim_string_values(claims, prop):
+            external_id = id_fmt.format(id=value)
+            anchors.append(
+                SourceRef(
+                    schema=schema,
+                    external_id=external_id,
+                    url=url_fmt.format(id=value) if url_fmt else None,
+                )
+            )
+    return anchors
 
 _last_search_at: float = 0.0
 _rate_lock = asyncio.Lock()
@@ -62,6 +111,26 @@ async def _rate_limit() -> None:
         if elapsed < _SEARCH_DELAY_SEC:
             await asyncio.sleep(_SEARCH_DELAY_SEC - elapsed)
         _last_search_at = time.monotonic()
+
+
+def _name_matches(expected: str, actual: str) -> bool:
+    left, right = expected.casefold().strip(), actual.casefold().strip()
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
+
+
+def _entity_label(entity: dict[str, Any]) -> str | None:
+    """English, then multilingual ``mul``, then any remaining label."""
+    labels = entity.get("labels") or {}
+    for lang in ("en", "mul"):
+        value = (labels.get(lang) or {}).get("value")
+        if value:
+            return str(value)
+    for row in labels.values():
+        if isinstance(row, dict) and row.get("value"):
+            return str(row["value"])
+    return None
 
 
 def _qid_from_work_key(work_key: str) -> str | None:
@@ -140,22 +209,55 @@ class WikidataSchema:
         self._client = client
 
     async def search_work(self, query: WorkQuery) -> list[CanonicalWork]:
-        text = (query.text or "").strip()
-        if query.artist and text:
-            text = f"{query.artist} {text}"
-        elif query.artist:
-            text = query.artist
-        if not text:
+        """Title-only wbsearchentities; artist is used to rank song-like hits.
+
+        Concatenating ``"{artist} {title}"`` often returns zero Wikidata hits
+        (e.g. Rick Astley + Never Gonna Give You Up). Search the title, skip
+        non-song P31s, then prefer a matching P175 performer.
+        """
+        title = (query.text or "").strip()
+        artist = (query.artist or "").strip()
+        if not title and artist:
+            title, artist = artist, ""
+        if not title:
             return []
+        return await self._run_search(title, artist=artist, instance_qids=_SONG_LIKE_QIDS)
+
+    async def search_release(self, query: WorkQuery) -> list[CanonicalWork]:
+        """Album/studio-album identity (``Brat (album)`` before bare title)."""
+        title = (query.text or "").strip()
+        artist = (query.artist or "").strip()
+        if not title:
+            return []
+        for text in (f"{title} (album)", title):
+            works = await self._run_search(
+                text, artist=artist, instance_qids=_ALBUM_LIKE_QIDS
+            )
+            if works:
+                return works
+        return []
+
+    async def _run_search(
+        self,
+        text: str,
+        *,
+        artist: str,
+        instance_qids: set[str],
+    ) -> list[CanonicalWork]:
         try:
-            await asyncio.wait_for(_rate_limit(), timeout=_SEARCH_TIMEOUT_SEC)
+            if self._client is None:
+                await _rate_limit()
             if self._client is not None:
-                return await self._search(self._client, text)
+                return await self._search(
+                    self._client, text, artist=artist, instance_qids=instance_qids
+                )
             async with httpx.AsyncClient(
                 timeout=_SEARCH_TIMEOUT_SEC,
                 headers={"User-Agent": USER_AGENT},
             ) as client:
-                return await self._search(client, text)
+                return await self._search(
+                    client, text, artist=artist, instance_qids=instance_qids
+                )
         except (TimeoutError, httpx.HTTPError) as exc:
             logger.warning("wikidata search failed for %r: %s", text, exc)
             return []
@@ -188,43 +290,95 @@ class WikidataSchema:
         recordings = await self.fetch_recordings(work)
         return recordings[0] if recordings else None
 
-    async def _search(self, client: httpx.AsyncClient, text: str) -> list[CanonicalWork]:
-        resp = await client.get(
-            WIKIDATA_API,
-            params={
-                "action": "wbsearchentities",
-                "format": "json",
-                "language": "en",
-                "search": text,
-                "type": "item",
-                "limit": 5,
-            },
-        )
-        if resp.status_code != 200:
-            return []
-        candidates = resp.json().get("search", [])
+    async def _search(
+        self,
+        client: httpx.AsyncClient,
+        text: str,
+        *,
+        artist: str = "",
+        instance_qids: set[str] | None = None,
+    ) -> list[CanonicalWork]:
+        allowed = instance_qids or _SONG_LIKE_QIDS
+        with TRACER.start_as_current_span("catalog.http.wd") as span:
+            span.set_attribute("catalog.query", text[:160])
+            resp = await client.get(
+                WIKIDATA_API,
+                params={
+                    "action": "wbsearchentities",
+                    "format": "json",
+                    "language": "en",
+                    "search": text,
+                    "type": "item",
+                    "limit": 10,
+                },
+            )
+            if resp.status_code != 200:
+                record_http(resp.status_code, error=f"HTTP {resp.status_code}", hits=0)
+                return []
+            candidates = [
+                row
+                for row in (resp.json().get("search") or [])
+                if isinstance(row, dict) and row.get("id")
+            ]
+            record_http(resp.status_code, hits=len(candidates))
+        qids = [str(row["id"]) for row in candidates]
+        entities = await self._fetch_entities(client, qids)
+        ranked: list[tuple[int, CanonicalWork, list[str]]] = []
+        performer_qids: list[str] = []
         for candidate in candidates:
-            qid = candidate.get("id")
-            if not qid:
+            qid = str(candidate["id"])
+            entity = entities.get(qid) or {}
+            if entity.get("missing"):
                 continue
-            p31 = await self._fetch_entity_p31(client, qid)
-            if p31 & _SONG_LIKE_QIDS:
-                return [
+            claims = _entity_claims(entity)
+            p31 = set(_claim_entity_ids(claims, P_INSTANCE_OF))
+            if not (p31 & allowed):
+                continue
+            pqids = _claim_entity_ids(claims, P_PERFORMER)[:3]
+            performer_qids.extend(pqids)
+            ranked.append(
+                (
+                    0,
                     CanonicalWork(
                         key=f"wd:{qid}",
                         label=candidate.get("label", text),
-                        aliases=tuple(candidate.get("aliases", []) or ()),
-                        anchors=(
-                            SourceRef(
-                                schema="wd",
-                                external_id=qid,
-                                url=ENTITY_URL.format(qid=qid),
-                            ),
-                        ),
+                        aliases=tuple(candidate.get("aliases") or []),
+                        anchors=tuple(_catalog_anchors(qid, claims)),
                         attrs={"description": candidate.get("description", "")},
-                    )
-                ]
-        return []
+                    ),
+                    pqids,
+                )
+            )
+        if not ranked:
+            return []
+        performers = await self._fetch_entities(client, list(dict.fromkeys(performer_qids)))
+        works: list[CanonicalWork] = []
+        for _, work, pqids in ranked:
+            names: list[str] = []
+            for pqid in pqids:
+                label = _entity_label(performers.get(pqid) or {})
+                if label:
+                    names.append(label)
+            if artist:
+                names.sort(key=lambda n: (0 if _name_matches(artist, n) else 1))
+            filled = CanonicalWork(
+                key=work.key,
+                label=work.label,
+                aliases=work.aliases,
+                anchors=work.anchors,
+                artists=artist_refs(*names),
+                attrs=work.attrs,
+            )
+            works.append(filled)
+        if artist:
+            for work in works:
+                if any(_name_matches(artist, a.name) for a in work.artists):
+                    return [work]
+            needle = artist.casefold()
+            for work in works:
+                if needle in str(work.attrs.get("description") or "").casefold():
+                    return [work]
+        return works[:1]
 
     async def _fetch_entity_p31(self, client: httpx.AsyncClient, qid: str) -> set[str]:
         resp = await client.get(
@@ -258,7 +412,7 @@ class WikidataSchema:
                 "action": "wbgetentities",
                 "format": "json",
                 "ids": "|".join(qids),
-                "props": "claims",
+                "props": "claims|labels",
             },
         )
         if resp.status_code != 200:
@@ -299,7 +453,7 @@ class WikidataSchema:
         for char_qid, entity in char_entities.items():
             if entity.get("missing"):
                 continue
-            char_label = entity.get("labels", {}).get("en", {}).get("value") or label
+            char_label = _entity_label(entity) or label
             add_from_claims(_entity_claims(entity), char_label, rank_boost=1.0)
 
         if not candidates:

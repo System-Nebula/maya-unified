@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix-test:
+    runs-on: ubuntu-latest
+    env:
+      MAYA_PROFILE: operator
+      HOST: 127.0.0.1
+      VA_TTS_ENABLED: "0"
+      VA_STT_DEVICE: cpu
+      SESSION_SECRET: ci-cloud-agent-session-secret-not-for-production
+      ENV: production
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: maya_public
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d maya_public"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Install Python deps
+        run: nix develop . --command ./scripts/cloud-agent-install.sh
+
+      - name: Migrate Postgres
+        run: nix develop . --command ./scripts/cloud-agent-start.sh
+
+      - name: Test
+        run: nix develop . --command ./scripts/with-openbao-env.sh uv run --no-sync pytest -m "not integration"
+
+  slskd:
+    runs-on: ubuntu-latest
+    env:
+      SLSKD_HOST: http://127.0.0.1:5030
+      SLSKD_API_KEY: ci-cloud-agent-slskd-key
+      SLSKD_EXAMPLE: "1"
+      BAO_ADDR: ${{ secrets.BAO_ADDR }}
+      BAO_TOKEN: ${{ secrets.BAO_TOKEN }}
+      # Optional override while migrating; OpenBao secret/maya/integrations/slskd is canonical.
+      SLSKD_SLSK_USERNAME: ${{ secrets.SLSK_USERNAME }}
+      SLSKD_SLSK_PASSWORD: ${{ secrets.SLSK_PASSWORD }}
+      VA_TTS_ENABLED: "0"
+      VA_STT_DEVICE: cpu
+      SESSION_SECRET: ci-cloud-agent-session-secret-not-for-production
+      ENV: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Install Python deps
+        run: nix develop . --command ./scripts/cloud-agent-install.sh
+
+      - name: Start OpenBao
+        run: nix develop . --command ./scripts/start-openbao.sh
+
+      - name: Start slskd
+        run: nix develop . --command ./scripts/start-slskd.sh
+
+      - name: Search, FLAC filter, NGGYU 7-inch download
+        run: nix develop . --command uv run --no-sync pytest tests/test_slskd_nggyu.py -q --tb=short

@@ -25,7 +25,7 @@ Variables load from repo root `.env` and `packages/voice-runtime/.env` via `serv
 | `SESSION_SECRET` | fallback insecure | HMAC secret for `maya_op_session` |
 | `SESSION_SECRET_FALLBACK` | `dev-insecure-change-me` | Used when SESSION_SECRET empty |
 | `SESSION_COOKIE_SECURE` | `0` | Set `1` behind HTTPS |
-| `DATABASE_URL` | *(none)* | Postgres async DSN for operators |
+| `DATABASE_URL` | *(OpenBao)* | Postgres async DSN; OpenBao `secret/maya/integrations/postgres` when unset |
 
 Prefix `OPERATOR_*` may appear in legacy docs — prefer `SESSION_*` + `DATABASE_URL`.
 

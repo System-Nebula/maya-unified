@@ -1,6 +1,6 @@
 """Merge operator msg_ids and browser_capture heads (DB-001).
 
-Revision ID: 20260712_merge_msg_ids_browser_capture
+Revision ID: 20260712_merge_msg_cap
 Revises: 20260703_msg_ids, 20260708_browser_capture
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Sequence, Union
 
-revision: str = "20260712_merge_msg_ids_browser_capture"
+revision: str = "20260712_merge_msg_cap"
 down_revision: Union[str, tuple[str, ...], None] = (
     "20260703_msg_ids",
     "20260708_browser_capture",

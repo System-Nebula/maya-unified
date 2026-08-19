@@ -10,6 +10,7 @@ from services.cmd.bootstrap import ensure_cmds_registered
 from services.cmd.dispatcher import dispatch_cmd_async
 from services.cmd.models import CmdContext, CmdResult, CmdSurface, ParsedCmd
 from services.cmd.parser import is_cmd_input, parse_cmd_input
+from services.cmd.play_query import rewrite_maya_play_as_cmd
 from services.cmd.registry import registry
 from services.ids import new_corr_id, new_message_id
 
@@ -409,21 +410,36 @@ async def _run_long_cmd_async(
             otel_context_mod.detach(token)
 
 
+def _prepare_chat_cmd(text: str) -> tuple[str, ParsedCmd] | None:
+    """Parse a slash cmd, or rewrite ``maya play …`` into ``/play``."""
+    dispatch_text = (text or "").strip()
+    if not dispatch_text:
+        return None
+    if not is_cmd_input(dispatch_text):
+        rewritten = rewrite_maya_play_as_cmd(dispatch_text)
+        if not rewritten:
+            return None
+        dispatch_text = rewritten
+    parsed = parse_cmd_input(dispatch_text)
+    if parsed is None:
+        return None
+    return dispatch_text, parsed
+
+
 async def try_dispatch_chat_cmd_async(
     text: str, *, operator_id: str | None = None,
 ) -> dict | None:
     """Return a chat-shaped response when text is a registered cmd, else None."""
     ensure_cmds_registered()
-    if not is_cmd_input(text):
+    prepared = _prepare_chat_cmd(text)
+    if prepared is None:
         return None
-    parsed = parse_cmd_input(text)
-    if parsed is None:
-        return None
+    dispatch_text, parsed = prepared
     corr_id = new_corr_id()
     ctx = CmdContext(
         operator_id=operator_id,
         surface=CmdSurface.DASHBOARD,
-        raw_text=text,
+        raw_text=dispatch_text,
         metadata={"corr_id": corr_id},
     )
     long_running = parsed.cmd_id in _LONG_RUNNING_CMDS
@@ -480,16 +496,15 @@ def try_dispatch_chat_cmd(text: str, *, operator_id: str | None = None) -> dict 
 def try_dispatch_chat_cmd_sync(text: str, *, operator_id: str | None = None) -> dict | None:
     """Return a chat-shaped response when text is a registered cmd, else None."""
     ensure_cmds_registered()
-    if not is_cmd_input(text):
+    prepared = _prepare_chat_cmd(text)
+    if prepared is None:
         return None
-    parsed = parse_cmd_input(text)
-    if parsed is None:
-        return None
+    dispatch_text, parsed = prepared
     corr_id = new_corr_id()
     ctx = CmdContext(
         operator_id=operator_id,
         surface=CmdSurface.DASHBOARD,
-        raw_text=text,
+        raw_text=dispatch_text,
         metadata={"corr_id": corr_id},
     )
     long_running = parsed.cmd_id in _LONG_RUNNING_CMDS

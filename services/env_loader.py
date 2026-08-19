@@ -35,3 +35,9 @@ def load_env_files(*env_files: Path) -> None:
                 continue
             if key in _DOTENV_OVERRIDE_KEYS or key not in os.environ:
                 os.environ[key] = val.strip().strip('"').strip("'")
+    try:
+        from services.secrets.openbao import apply_database_url_env
+
+        apply_database_url_env()
+    except Exception:  # noqa: BLE001 — OpenBao must not block process start
+        pass

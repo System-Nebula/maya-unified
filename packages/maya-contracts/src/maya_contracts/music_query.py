@@ -1,4 +1,4 @@
-"""Music acquisition query contracts — search Soulseek, acquire to SeaweedFS, reference from ontology graph."""
+"""Music download query contracts — search Soulseek, store on SeaweedFS, reference from ontology graph."""
 
 from __future__ import annotations
 
@@ -159,7 +159,7 @@ class SearchResult(StrictModel):
         return max(self.hits, key=lambda h: h.quality_score)
 
 
-class AcquisitionStatus(str, Enum):
+class DownloadStatus(str, Enum):
     """Lifecycle of a music download from request to graph reference."""
 
     PENDING = "pending"
@@ -171,7 +171,7 @@ class AcquisitionStatus(str, Enum):
     FAILED = "failed"
 
 
-class AcquisitionRequest(StrictModel):
+class DownloadRequest(StrictModel):
     """Request to download a specific SearchHit and store it."""
 
     hit: SearchHit
@@ -182,6 +182,7 @@ class AcquisitionRequest(StrictModel):
     s3_bucket: str = "music"
     s3_prefix: Optional[str] = None  # override auto-generated S3 key
     import_to_beets: bool = True
+    wait_seconds: int = 0  # 0 = enqueue and return; >0 poll until complete/verify
 
     def build_s3_key(self) -> str:
         """Generate a canonical S3 key from the hit + structured metadata.
@@ -204,17 +205,22 @@ class AcquisitionRequest(StrictModel):
         return f"{artist}/{album}/{num}{track}.{ext}"
 
 
-class AcquisitionResult(StrictModel):
-    """Result of an acquisition attempt."""
+class DownloadResult(StrictModel):
+    """Result of a download attempt, including size verification when waited."""
 
-    request: AcquisitionRequest
-    status: AcquisitionStatus
+    request: DownloadRequest
+    status: DownloadStatus
     slskd_transfer_id: Optional[str] = None
     s3_key: Optional[str] = None
     s3_url: Optional[str] = None
     ontology_node_id: Optional[str] = None
     ontology_node_slug: Optional[str] = None
     error: Optional[str] = None
+    verified: bool = False
+    bytes_transferred: Optional[int] = None
+    expected_size: Optional[int] = None
+    local_path: Optional[str] = None
+    local_size: Optional[int] = None
     created_at: datetime = datetime.now()
 
 
