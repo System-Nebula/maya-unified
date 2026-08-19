@@ -13,12 +13,38 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop "$ROOT" --command "$ROOT/scripts/cloud-agent-start.sh" "$@"
 fi
 
-export DATABASE_URL="${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@localhost:5432/maya_public}"
-# Nix `psql`/`pg_isready` are libpq clients. GHA's Postgres service uses
-# password auth; without PGPASSWORD they prompt: "no password supplied".
-eval "$(python3 "$ROOT/scripts/pg_env_from_database_url.py")"
 SECRET_FILE="$ROOT/data/session_secret"
+TOKEN_FILE="$ROOT/data/openbao_root_token"
 mkdir -p "$ROOT/data"
+
+load_openbao_token() {
+  if [[ -n "${BAO_TOKEN:-}" ]]; then
+    return 0
+  fi
+  if [[ -n "${VAULT_TOKEN:-}" ]]; then
+    export BAO_TOKEN="$VAULT_TOKEN"
+    return 0
+  fi
+  if [[ -f "$TOKEN_FILE" ]]; then
+    BAO_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+    if [[ -n "$BAO_TOKEN" ]]; then
+      export BAO_TOKEN
+    fi
+  fi
+}
+
+load_db_secrets() {
+  # Explicit DATABASE_URL wins. Otherwise OpenBao secret/maya/integrations/postgres.
+  load_openbao_token
+  if [[ -z "${BAO_ADDR:-}" ]]; then
+    export BAO_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}"
+  fi
+  eval "$(PYTHONPATH="$ROOT" python3 -m services.secrets.openbao db)"
+  if [[ -z "${DATABASE_URL:-}" ]]; then
+    echo "DATABASE_URL missing after OpenBao lookup" >&2
+    return 1
+  fi
+}
 
 ensure_session_secret() {
   local current="${SESSION_SECRET:-}"
@@ -116,8 +142,20 @@ if ! pg_ready; then
   exit 1
 fi
 
+echo "==> openbao"
+if "$ROOT/scripts/start-openbao.sh"; then
+  echo "openbao ready"
+else
+  echo "openbao skipped (docker/nix unavailable or not ready)"
+fi
+
+if ! load_db_secrets; then
+  echo "failed to resolve postgres secrets from OpenBao (or DATABASE_URL)" >&2
+  exit 1
+fi
+
 echo "==> postgres extensions"
-psql -h 127.0.0.1 -U postgres -d maya_public -v ON_ERROR_STOP=1 \
+psql -h "${PGHOST:-127.0.0.1}" -U "${PGUSER:-postgres}" -d "${PGDATABASE:-maya_public}" -v ON_ERROR_STOP=1 \
   -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";' \
   -c 'CREATE EXTENSION IF NOT EXISTS pgcrypto;' \
   -c 'CREATE EXTENSION IF NOT EXISTS vector;' \
@@ -125,13 +163,6 @@ psql -h 127.0.0.1 -U postgres -d maya_public -v ON_ERROR_STOP=1 \
 
 echo "==> alembic upgrade heads"
 ( cd "$ROOT/packages/maya-db" && uv run --no-sync alembic upgrade heads )
-
-echo "==> openbao"
-if "$ROOT/scripts/start-openbao.sh"; then
-  echo "openbao ready"
-else
-  echo "openbao skipped (docker/nix unavailable or not ready)"
-fi
 
 echo "==> slskd"
 if "$ROOT/scripts/start-slskd.sh"; then

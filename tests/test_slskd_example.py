@@ -49,6 +49,8 @@ def test_init_dev_writes_example_when_kv_empty(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BAO_TOKEN", "dev-token")
     monkeypatch.delenv("SLSKD_SLSK_USERNAME", raising=False)
     monkeypatch.delenv("SLSKD_SLSK_PASSWORD", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("MAYA_DATABASE_URL", raising=False)
     monkeypatch.setattr("services.secrets.openbao.DEV_SEED_LOCAL", tmp_path / "dev-seed.json")
     written: list[tuple[str, dict]] = []
 
@@ -60,24 +62,35 @@ def test_init_dev_writes_example_when_kv_empty(tmp_path, monkeypatch) -> None:
             "services.secrets.openbao.slskd_credentials",
             return_value={"username": "", "password": "", "api_key": "", "network": ""},
         ):
-            with patch("services.secrets.openbao.write_secret", side_effect=fake_write):
-                status = init_dev()
+            with patch("services.secrets.openbao.read_secret", return_value={}):
+                with patch("services.secrets.openbao.write_secret", side_effect=fake_write):
+                    status = init_dev()
     assert "example test account" in status
-    assert written
-    assert written[0][0] == SLSKD_SECRET_PATH
-    assert written[0][1]["username"] == EXAMPLE_SLSKD_USERNAME
+    paths = {path for path, _data in written}
+    assert SLSKD_SECRET_PATH in paths
+    from services.secrets.openbao import POSTGRES_SECRET_PATH
+
+    assert POSTGRES_SECRET_PATH in paths
+    slskd = next(data for path, data in written if path == SLSKD_SECRET_PATH)
+    assert slskd["username"] == EXAMPLE_SLSKD_USERNAME
 
 
 def test_init_dev_skips_remote(monkeypatch) -> None:
     monkeypatch.setenv("BAO_TOKEN", "dev-token")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     with patch("services.secrets.openbao.bao_is_local", return_value=False):
         with patch(
             "services.secrets.openbao.seed_slskd_from_env",
             return_value="openbao slskd secret missing; bao kv put",
         ) as seed:
-            with patch("services.secrets.openbao.write_secret") as write:
-                status = init_dev()
+            with patch(
+                "services.secrets.openbao.seed_postgres_from_env",
+                return_value="openbao postgres secret missing; bao kv put",
+            ) as seed_pg:
+                with patch("services.secrets.openbao.write_secret") as write:
+                    status = init_dev()
     seed.assert_called_once()
+    seed_pg.assert_called_once()
     write.assert_not_called()
     assert "missing" in status
 

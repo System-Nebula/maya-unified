@@ -21,7 +21,7 @@ Maya Unified configuration is layered:
 |----------|---------|---------|
 | `PORT` | `8090` | Uvicorn listen port |
 | `ENV` | `production` | Set `development` for hot reload |
-| `DATABASE_URL` | — | PostgreSQL async URL for operators, OAuth, platform |
+| `DATABASE_URL` | OpenBao postgres KV | PostgreSQL async URL for operators, OAuth, platform. Canonical: `secret/maya/integrations/postgres`. Env overrides OpenBao. |
 | `SESSION_SECRET` | — | HMAC key for `maya_op_session` cookie |
 | `SESSION_COOKIE_SECURE` | `0` | Set `1` behind HTTPS |
 | `OPERATOR_DEFAULT_USERNAME` | `admin` | Seed operator username |

@@ -24,6 +24,7 @@ from typing import Any
 from services.paths import DATA_DIR, ROOT
 
 SLSKD_SECRET_PATH = "secret/data/maya/integrations/slskd"
+POSTGRES_SECRET_PATH = "secret/data/maya/integrations/postgres"
 IDEOGRAM_SECRET_PATH = "secret/data/maya/providers/ideogram"
 DEFAULT_BAO_ADDR = "http://127.0.0.1:8200"
 EXAMPLE_SLSKD_USERNAME = "maya-dev-example"
@@ -221,41 +222,158 @@ def load_dev_seed(path: Path | None = None) -> dict[str, dict[str, Any]]:
 
 
 def ensure_local_dev_seed() -> Path:
-    """Copy the bundled example seed into ``data/`` once (like voices/personalities)."""
+    """Copy the bundled example seed into ``data/`` once (like voices/personalities).
+
+    New example paths (e.g. postgres) are merged into an existing local seed
+    without overwriting Soulseek throwaway creds already stored there.
+    """
     DEV_SEED_LOCAL.parent.mkdir(parents=True, exist_ok=True)
     if not DEV_SEED_LOCAL.is_file():
         DEV_SEED_LOCAL.write_text(DEV_SEED_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
-        try:
-            DEV_SEED_LOCAL.chmod(0o600)
-        except OSError:
-            pass
+    else:
+        local = load_dev_seed(DEV_SEED_LOCAL)
+        example = load_dev_seed(DEV_SEED_EXAMPLE)
+        missing = {path: data for path, data in example.items() if path not in local}
+        if missing:
+            try:
+                payload = json.loads(DEV_SEED_LOCAL.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {"secrets": {}}
+            if not isinstance(payload, dict):
+                payload = {"secrets": {}}
+            secrets_map = payload.setdefault("secrets", {})
+            if not isinstance(secrets_map, dict):
+                secrets_map = {}
+                payload["secrets"] = secrets_map
+            for path, data in missing.items():
+                secrets_map[path] = dict(data)
+            DEV_SEED_LOCAL.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    try:
+        DEV_SEED_LOCAL.chmod(0o600)
+    except OSError:
+        pass
     return DEV_SEED_LOCAL
 
 
 def init_dev() -> str:
     """Seed local OpenBao from ``data/openbao/dev-seed.json`` (example on first run).
 
-    Remote OpenBao is never overwritten with the bundled example account.
-    Env Soulseek creds still win when the KV path is empty.
+    Remote OpenBao is never overwritten with the bundled example. Empty KV paths
+    may be filled from env (``DATABASE_URL``, Soulseek creds). Env still wins
+    at read time.
     """
     if not bao_token():
         return "openbao token missing; skip init-dev"
+    slskd_status = seed_slskd_from_env()
+    postgres_status = seed_postgres_from_env()
     if not bao_is_local():
-        return seed_slskd_from_env()
-    env_status = seed_slskd_from_env()
-    if env_status.startswith("seeded") or "already present" in env_status:
-        return env_status
+        return f"{slskd_status}; {postgres_status}"
     ensure_local_dev_seed()
     secrets = load_dev_seed(DEV_SEED_LOCAL)
     if not secrets:
-        return "openbao dev seed missing or empty"
+        return f"{slskd_status}; {postgres_status}; openbao dev seed missing or empty"
     written = 0
     for kv_path, data in secrets.items():
+        if read_secret(kv_path):
+            continue
         write_secret(kv_path, data)
         written += 1
-    if is_example_slskd_account(secrets.get(SLSKD_SECRET_PATH) or {}):
-        return f"seeded {written} openbao path(s) from bundled example test account"
-    return f"seeded {written} openbao path(s) from data/openbao/dev-seed.json"
+    origin = (
+        "bundled example test account"
+        if is_example_slskd_account(secrets.get(SLSKD_SECRET_PATH) or {})
+        else "data/openbao/dev-seed.json"
+    )
+    return f"{slskd_status}; {postgres_status}; seeded {written} empty openbao path(s) from {origin}"
+
+
+def _compose_database_url(secret: dict[str, Any]) -> str:
+    raw = str(
+        secret.get("url")
+        or secret.get("DATABASE_URL")
+        or secret.get("database_url")
+        or ""
+    ).strip()
+    if raw:
+        return raw
+    user = str(secret.get("username") or secret.get("user") or "").strip()
+    password = str(secret.get("password") or "")
+    host = str(secret.get("host") or secret.get("hostname") or "").strip()
+    port = str(secret.get("port") or "5432").strip() or "5432"
+    database = str(secret.get("database") or secret.get("dbname") or "").strip()
+    if not (user and host and database):
+        return ""
+    driver = str(secret.get("driver") or "postgresql+asyncpg").strip() or "postgresql+asyncpg"
+    return (
+        f"{driver}://{urllib.parse.quote(user, safe='')}:{urllib.parse.quote(password, safe='')}"
+        f"@{host}:{port}/{database}"
+    )
+
+
+def postgres_secret() -> dict[str, Any]:
+    """Postgres DSN fields from OpenBao, then the local seed file."""
+    secret = read_secret(POSTGRES_SECRET_PATH)
+    if not _compose_database_url(secret):
+        secret = {**load_dev_seed().get(POSTGRES_SECRET_PATH, {}), **secret}
+    return dict(secret)
+
+
+def database_url() -> str:
+    """Explicit env wins; otherwise OpenBao ``secret/maya/integrations/postgres``."""
+    return _env("DATABASE_URL") or _env("MAYA_DATABASE_URL") or _compose_database_url(postgres_secret())
+
+
+def apply_database_url_env() -> str:
+    """Set ``DATABASE_URL`` from OpenBao when unset. Never prints the value."""
+    url = database_url()
+    if url and not _env("DATABASE_URL"):
+        os.environ["DATABASE_URL"] = url
+    return url
+
+
+def seed_postgres_from_env() -> str:
+    """Copy ``DATABASE_URL`` into OpenBao only when the KV path is empty."""
+    if not bao_token():
+        return "openbao token missing; skip postgres seed"
+    if _compose_database_url(read_secret(POSTGRES_SECRET_PATH)):
+        return "openbao postgres secret already present"
+    env_url = _env("DATABASE_URL") or _env("MAYA_DATABASE_URL")
+    if not env_url:
+        return (
+            "openbao postgres secret missing; "
+            "bao kv put secret/maya/integrations/postgres url=postgresql+asyncpg://..."
+        )
+    from scripts.pg_env_from_database_url import libpq_env
+
+    payload: dict[str, Any] = {"url": env_url}
+    libpq = libpq_env(env_url)
+    if libpq.get("PGUSER"):
+        payload["username"] = libpq["PGUSER"]
+    if "PGPASSWORD" in libpq:
+        payload["password"] = libpq["PGPASSWORD"]
+    if libpq.get("PGHOST"):
+        payload["host"] = libpq["PGHOST"]
+    if libpq.get("PGPORT"):
+        payload["port"] = libpq["PGPORT"]
+    if libpq.get("PGDATABASE"):
+        payload["database"] = libpq["PGDATABASE"]
+    write_secret(POSTGRES_SECRET_PATH, payload)
+    return "seeded openbao postgres secret from environment"
+
+
+def export_postgres_shell() -> str:
+    """POSIX export lines for DATABASE_URL + libpq. Env already set wins."""
+    url = database_url()
+    if not url:
+        return ""
+    lines: list[str] = []
+    if not _env("DATABASE_URL"):
+        lines.append(f"export DATABASE_URL={shlex.quote(url)}")
+    from scripts.pg_env_from_database_url import libpq_env
+
+    for key, value in libpq_env(url).items():
+        if not _env(key):
+            lines.append(f"export {key}={shlex.quote(value)}")
+    return "\n".join(lines)
 
 
 def seed_slskd_from_env() -> str:
@@ -299,6 +417,8 @@ if __name__ == "__main__":
         print(init_dev())
     elif len(sys.argv) > 1 and sys.argv[1] == "seed":
         print(seed_slskd_from_env())
+    elif len(sys.argv) > 1 and sys.argv[1] in {"db", "postgres"}:
+        print(export_postgres_shell())
     elif len(sys.argv) > 1 and sys.argv[1] in {"throwaway", "throwaway-force"}:
         print(allocate_throwaway_slskd(force=sys.argv[1] == "throwaway-force"))
     else:

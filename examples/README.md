@@ -24,9 +24,9 @@ Copied to `data/skills/` when each file is missing.
 
 ## `openbao/`
 
-- `dev-seed.json` — first-run OpenBao KV seed, including the bundled **maya-dev-example** slskd test account
+- `dev-seed.json` — first-run OpenBao KV seed, including the bundled **maya-dev-example** slskd test account and local Postgres (`secret/maya/integrations/postgres`, matching docker-compose / GHA pgvector)
 
-Copied once to `data/openbao/dev-seed.json` by `make openbao`. `make slskd` replaces that with a throwaway Soulseek login (created on first connect) unless `SLSKD_EXAMPLE=1`. Drop `"network": "example"` and set a real username/password to use an existing account.
+Copied once to `data/openbao/dev-seed.json` by `make openbao`. New example paths are merged into an existing seed without overwriting a throwaway Soulseek login. `make slskd` replaces slskd with a throwaway Soulseek login (created on first connect) unless `SLSKD_EXAMPLE=1`. Drop `"network": "example"` and set a real username/password to use an existing account.
 
 ## `slskd/`
 
