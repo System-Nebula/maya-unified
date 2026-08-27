@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0nrm1erftkyIls0GPUnKBk7yBuvGtafEpRE5Enj7sqN2wgfvVupNFs9ovI5FEy0yeWJVkEgMmIfYKaLOjCYiZyNo1LiPqsk9ulYZ+nKipTqfX1M6ZeIlar1XbDW1uccfc4HvJi14bd+FULGlvFNv4LiYszAbsaTHT0QabV5qXETuFhjy4Qh+Hwi2kdtkikwkFEY3ZhlPjQlHFeSz+3ZzDqzR+7mzjRyjQZxUvy/I4DeG5bbmniwKU84g6scAGF/gKZW4//3EXGPfwEJmmBfPN6r0KBX0dvBVtlRnLa3W41zW5dvOa/KUP6N2n3sd22uz4RTaNjuslqbNfW3LOZU5/QIDAQAB",
+  "name": "Maya Browser Companion — Developer Capture",
+  "version": "0.2.0",
+  "description": "Privileged Maya developer build with Chromium DOMSnapshot and AXTree capture.",
+  "permissions": ["activeTab", "contextMenus", "debugger", "nativeMessaging", "scripting", "sidePanel", "storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "side_panel": {"default_path": "sidepanel.html"},
+  "options_ui": {"page": "options.html", "open_in_tab": true},
+  "action": {"default_title": "Open Maya Developer Capture"},
+  "content_scripts": [{"matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_idle"}],
+  "icons": {"16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png"}
+}

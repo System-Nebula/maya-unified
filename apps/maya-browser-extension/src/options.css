@@ -1,0 +1,12 @@
+:root { color-scheme: dark; }
+body { margin: 0; background: #111019; color: #eeeaf7; font: 15px system-ui, sans-serif; }
+main { max-width: 560px; margin: 36px auto; padding: 0 20px; }
+.eyebrow { font: 11px ui-monospace, monospace; color: #69d7cf; letter-spacing: .15em; }
+h1 { margin: 8px 0 24px; }
+form, section, label { display: grid; gap: 8px; }
+form, section { gap: 18px; }
+label { color: #b8b1c5; }
+input, select, button { border: 1px solid #393348; background: #191724; color: #eeeaf7; border-radius: 5px; padding: 10px; }
+button { cursor: pointer; justify-self: start; }
+.hint, #saved { color: #9992aa; }
+[hidden] { display: none; }

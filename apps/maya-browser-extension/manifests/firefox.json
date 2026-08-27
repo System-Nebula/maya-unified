@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Maya Browser Companion",
+  "version": "0.2.0",
+  "description": "Capture pages, selections, screenshots, and structured browser context for Maya.",
+  "permissions": ["activeTab", "contextMenus", "nativeMessaging", "scripting", "storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": {"scripts": ["background.js"], "type": "module"},
+  "sidebar_action": {"default_title": "Maya", "default_panel": "sidebar.html", "default_icon": "icons/icon48.png"},
+  "options_ui": {"page": "options.html", "open_in_tab": true},
+  "action": {"default_title": "Open Maya Browser Companion"},
+  "content_scripts": [{"matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_idle"}],
+  "browser_specific_settings": {
+    "gecko": {"id": "browser-adapter@lamia.local", "strict_min_version": "140.0", "data_collection_permissions": {"required": ["none"]}},
+    "gecko_android": {"strict_min_version": "142.0"}
+  },
+  "icons": {"16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png"}
+}

@@ -1,0 +1,12 @@
+:root { color-scheme: dark; }
+body { margin: 0; background: #111019; color: #eeeaf7; font: 14px system-ui, sans-serif; }
+main { padding: 18px; display: grid; gap: 10px; }
+h1 { font-size: 20px; margin: 0; }
+.eyebrow { font: 10px ui-monospace, monospace; color: #69d7cf; letter-spacing: .15em; }
+.destination { margin: 0 0 8px; color: #9992aa; }
+label { display: grid; gap: 5px; color: #9992aa; }
+input, button, select { border: 1px solid #393348; background: #191724; color: #eeeaf7; border-radius: 5px; padding: 10px; }
+button { cursor: pointer; text-align: left; }
+button:hover { border-color: #ae78ff; }
+#status { color: #9992aa; min-height: 36px; overflow-wrap: anywhere; }
+.link-button { border: 0; padding: 0; background: transparent; color: #69d7cf; }

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width">
+    <title>Maya Browser Companion — Options</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <span class="eyebrow">MAYA / BROWSER</span>
+      <h1>Extension options</h1>
+      <form id="settings">
+        <label>Capture destination
+          <select id="destination">
+            <option value="legacy">Legacy Maya gateway</option>
+            <option value="lamia">Lamia v1 (paired)</option>
+          </select>
+        </label>
+        <p class="hint">The extension uses only the selected destination and never switches automatically.</p>
+        <section id="legacyFields">
+          <label>Gateway URL <input id="gatewayUrl" type="url" required placeholder="http://localhost:8090"></label>
+          <label>Capture token <input id="captureToken" type="password" autocomplete="off"></label>
+          <label>Default capture type
+            <select id="defaultCaptureType">
+              <option value="article">Article</option><option value="generic">Generic</option>
+              <option value="paper">Paper</option><option value="repo">Repository</option>
+              <option value="product">Product</option><option value="recipe">Recipe</option>
+              <option value="tweet">Tweet</option><option value="video">Video</option>
+            </select>
+          </label>
+        </section>
+        <p class="hint">Lamia v1 requires the local <code>lamia-browser-host</code>. Pairing begins when the panel connects.</p>
+        <button type="submit">Save options</button>
+        <p id="saved" role="status"></p>
+      </form>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "maya-browser-companion",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit",
+    "test": "npm run build && node --experimental-strip-types --test tests/*.test.mjs",
+    "dev:chromium": "../../scripts/maya-browser-remote.sh"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.31",
+    "esbuild": "^0.27.2",
+    "typescript": "^5.9.3",
+    "web-ext": "^9.4.0"
+  }
+}
